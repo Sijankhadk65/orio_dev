@@ -1,0 +1,11 @@
+[project]
+name = "orio"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "faster-whisper>=1.2.1",
+    "ollama>=0.6.2",
+    "piper-tts>=1.4.2",
+]
