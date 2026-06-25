@@ -74,6 +74,37 @@ VAD_THRESHOLD_FACTOR = float(os.environ.get("ORIO_VAD_THRESHOLD_FACTOR", "3.0"))
 VAD_MIN_RMS = float(os.environ.get("ORIO_VAD_MIN_RMS", "300"))
 
 
+# ── Wake word ("Hey Orio") ────────────────────────────────────────────────────
+# Gate the conversation behind a spoken wake word so Orio only acts when it's
+# addressed. Detection reuses the Whisper ASR — each endpointed phrase is
+# transcribed and checked for a wake phrase, so there's no extra model or
+# dependency. Set ORIO_WAKE=0 to disable and fall back to always-on listening.
+WAKE_ENABLED = os.environ.get("ORIO_WAKE", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Accepted wake phrases (comma-separated), matched as whole words anywhere in the
+# transcript. Whatever the user says after the phrase in the same breath is taken
+# as the first command, so "Hey Orio, what's your status" works in one go.
+WAKE_PHRASES = tuple(
+    p.strip().lower()
+    for p in os.environ.get(
+        "ORIO_WAKE_PHRASES", "hey orio,okay orio,ok orio,hello orio,hi orio,orio"
+    ).split(",")
+    if p.strip()
+)
+
+# Fuzzy-match tolerance for multi-word phrases, to absorb Whisper mishearings of
+# the name ("hey oreo", "hey ario"). Ratio in [0,1]; raise toward 1.0 to require
+# a closer match (fewer false wakes), set >1.0 to disable fuzzy matching.
+WAKE_FUZZY = float(os.environ.get("ORIO_WAKE_FUZZY", "0.82"))
+
+# After Orio answers it stays awake for a follow-up command for this long
+# (seconds) before going back to sleep — so you can chain commands without
+# re-saying the wake word each time.
+FOLLOWUP_WINDOW_S = float(os.environ.get("ORIO_FOLLOWUP_WINDOW_S", "8.0"))
+
+
 # ── Scope / persona ──────────────────────────────────────────────────────────
 # The system prompt keeps the small local model on-task: it speaks AS Orio and
 # stays inside the robot's capabilities. Responses are spoken aloud, so they must
