@@ -490,6 +490,8 @@ dependencies = [
     { name = "faster-whisper" },
     { name = "ollama" },
     { name = "piper-tts" },
+    { name = "pygame" },
+    { name = "rlottie-python" },
 ]
 
 [package.metadata]
@@ -497,6 +499,8 @@ requires-dist = [
     { name = "faster-whisper", specifier = ">=1.2.1" },
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "piper-tts", specifier = ">=1.4.2" },
+    { name = "pygame", specifier = ">=2.6.1" },
+    { name = "rlottie-python", specifier = ">=1.3.8" },
 ]
 
 [[package]]
@@ -667,6 +671,35 @@ wheels = [
 ]
 
 [[package]]
+name = "pygame"
+version = "2.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/49/cc/08bba60f00541f62aaa252ce0cfbd60aebd04616c0b9574f755b583e45ae/pygame-2.6.1.tar.gz", hash = "sha256:56fb02ead529cee00d415c3e007f75e0780c655909aaa8e8bf616ee09c9feb1f", size = 14808125, upload-time = "2024-09-29T13:41:34.698Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/ca/8f367cb9fe734c4f6f6400e045593beea2635cd736158f9fabf58ee14e3c/pygame-2.6.1-cp311-cp311-macosx_10_9_x86_64.whl", hash = "sha256:20349195326a5e82a16e351ed93465a7845a7e2a9af55b7bc1b2110ea3e344e1", size = 13113753, upload-time = "2024-09-29T14:26:13.751Z" },
+    { url = "https://files.pythonhosted.org/packages/83/47/6edf2f890139616b3219be9cfcc8f0cb8f42eb15efd59597927e390538cb/pygame-2.6.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:f3935459109da4bb0b3901da9904f0a3e52028a3332a355d298b1673a334cf21", size = 12378146, upload-time = "2024-09-29T14:26:22.456Z" },
+    { url = "https://files.pythonhosted.org/packages/00/9e/0d8aa8cf93db2d2ee38ebaf1c7b61d0df36ded27eb726221719c150c673d/pygame-2.6.1-cp311-cp311-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c31dbdb5d0217f32764797d21c2752e258e5fb7e895326538d82b5f75a0cd856", size = 13611760, upload-time = "2024-09-29T11:10:47.317Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/9e/d06adaa5cc65876bcd7a24f59f67e07f7e4194e6298130024ed3fb22c456/pygame-2.6.1-cp311-cp311-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:173badf82fa198e6888017bea40f511cb28e69ecdd5a72b214e81e4dcd66c3b1", size = 14298054, upload-time = "2024-09-29T11:39:53.891Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/a1/9ae2852ebd3a7cc7d9ae7ff7919ab983e4a5c1b7a14e840732f23b2b48f6/pygame-2.6.1-cp311-cp311-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ce8cc108b92de9b149b344ad2e25eedbe773af0dc41dfb24d1f07f679b558c60", size = 13977107, upload-time = "2024-09-29T11:39:56.831Z" },
+    { url = "https://files.pythonhosted.org/packages/31/df/6788fd2e9a864d0496a77670e44a7c012184b7a5382866ab0e60c55c0f28/pygame-2.6.1-cp311-cp311-win32.whl", hash = "sha256:811e7b925146d8149d79193652cbb83e0eca0aae66476b1cb310f0f4226b8b5c", size = 10250863, upload-time = "2024-09-29T11:44:48.199Z" },
+    { url = "https://files.pythonhosted.org/packages/d2/55/ca3eb851aeef4f6f2e98a360c201f0d00bd1ba2eb98e2c7850d80aabc526/pygame-2.6.1-cp311-cp311-win_amd64.whl", hash = "sha256:91476902426facd4bb0dad4dc3b2573bc82c95c71b135e0daaea072ed528d299", size = 10622016, upload-time = "2024-09-29T12:17:01.545Z" },
+    { url = "https://files.pythonhosted.org/packages/92/16/2c602c332f45ff9526d61f6bd764db5096ff9035433e2172e2d2cadae8db/pygame-2.6.1-cp312-cp312-macosx_10_9_x86_64.whl", hash = "sha256:4ee7f2771f588c966fa2fa8b829be26698c9b4836f82ede5e4edc1a68594942e", size = 13118279, upload-time = "2024-09-29T14:26:30.427Z" },
+    { url = "https://files.pythonhosted.org/packages/cd/53/77ccbc384b251c6e34bfd2e734c638233922449a7844e3c7a11ef91cee39/pygame-2.6.1-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:c8040ea2ab18c6b255af706ec01355c8a6b08dc48d77fd4ee783f8fc46a843bf", size = 12384524, upload-time = "2024-09-29T14:26:49.996Z" },
+    { url = "https://files.pythonhosted.org/packages/06/be/3ed337583f010696c3b3435e89a74fb29d0c74d0931e8f33c0a4246307a9/pygame-2.6.1-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:c47a6938de93fa610accd4969e638c2aebcb29b2fca518a84c3a39d91ab47116", size = 13587123, upload-time = "2024-09-29T11:10:50.072Z" },
+    { url = "https://files.pythonhosted.org/packages/fd/ca/b015586a450db59313535662991b34d24c1f0c0dc149cc5f496573900f4e/pygame-2.6.1-cp312-cp312-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:33006f784e1c7d7e466fcb61d5489da59cc5f7eb098712f792a225df1d4e229d", size = 14275532, upload-time = "2024-09-29T11:39:59.356Z" },
+    { url = "https://files.pythonhosted.org/packages/b9/f2/d31e6ad42d657af07be2ffd779190353f759a07b51232b9e1d724f2cda46/pygame-2.6.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1206125f14cae22c44565c9d333607f1d9f59487b1f1432945dfc809aeaa3e88", size = 13952653, upload-time = "2024-09-29T11:40:01.781Z" },
+    { url = "https://files.pythonhosted.org/packages/f3/42/8ea2a6979e6fa971702fece1747e862e2256d4a8558fe0da6364dd946c53/pygame-2.6.1-cp312-cp312-win32.whl", hash = "sha256:84fc4054e25262140d09d39e094f6880d730199710829902f0d8ceae0213379e", size = 10252421, upload-time = "2024-09-29T11:14:26.877Z" },
+    { url = "https://files.pythonhosted.org/packages/5f/90/7d766d54bb95939725e9a9361f9c06b0cfbe3fe100aa35400f0a461a278a/pygame-2.6.1-cp312-cp312-win_amd64.whl", hash = "sha256:3a9e7396be0d9633831c3f8d5d82dd63ba373ad65599628294b7a4f8a5a01a65", size = 10624591, upload-time = "2024-09-29T11:52:54.489Z" },
+    { url = "https://files.pythonhosted.org/packages/e1/91/718acf3e2a9d08a6ddcc96bd02a6f63c99ee7ba14afeaff2a51c987df0b9/pygame-2.6.1-cp313-cp313-macosx_10_13_x86_64.whl", hash = "sha256:ae6039f3a55d800db80e8010f387557b528d34d534435e0871326804df2a62f2", size = 13090765, upload-time = "2024-09-29T14:27:02.377Z" },
+    { url = "https://files.pythonhosted.org/packages/0e/c6/9cb315de851a7682d9c7568a41ea042ee98d668cb8deadc1dafcab6116f0/pygame-2.6.1-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:2a3a1288e2e9b1e5834e425bedd5ba01a3cd4902b5c2bff8ed4a740ccfe98171", size = 12381704, upload-time = "2024-09-29T14:27:10.228Z" },
+    { url = "https://files.pythonhosted.org/packages/9f/8f/617a1196e31ae3b46be6949fbaa95b8c93ce15e0544266198c2266cc1b4d/pygame-2.6.1-cp313-cp313-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:27eb17e3dc9640e4b4683074f1890e2e879827447770470c2aba9f125f74510b", size = 13581091, upload-time = "2024-09-29T11:30:27.653Z" },
+    { url = "https://files.pythonhosted.org/packages/3b/87/2851a564e40a2dad353f1c6e143465d445dab18a95281f9ea458b94f3608/pygame-2.6.1-cp313-cp313-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:4c1623180e70a03c4a734deb9bac50fc9c82942ae84a3a220779062128e75f3b", size = 14273844, upload-time = "2024-09-29T11:40:04.138Z" },
+    { url = "https://files.pythonhosted.org/packages/85/b5/aa23aa2e70bcba42c989c02e7228273c30f3b44b9b264abb93eaeff43ad7/pygame-2.6.1-cp313-cp313-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:ef07c0103d79492c21fced9ad68c11c32efa6801ca1920ebfd0f15fb46c78b1c", size = 13951197, upload-time = "2024-09-29T11:40:06.785Z" },
+    { url = "https://files.pythonhosted.org/packages/a6/06/29e939b34d3f1354738c7d201c51c250ad7abefefaf6f8332d962ff67c4b/pygame-2.6.1-cp313-cp313-win32.whl", hash = "sha256:3acd8c009317190c2bfd81db681ecef47d5eb108c2151d09596d9c7ea9df5c0e", size = 10249309, upload-time = "2024-09-29T11:10:23.329Z" },
+    { url = "https://files.pythonhosted.org/packages/7e/11/17f7f319ca91824b86557e9303e3b7a71991ef17fd45286bf47d7f0a38e6/pygame-2.6.1-cp313-cp313-win_amd64.whl", hash = "sha256:813af4fba5d0b2cb8e58f5d95f7910295c34067dcc290d34f1be59c48bd1ea6a", size = 10620084, upload-time = "2024-09-29T11:48:51.587Z" },
+]
+
+[[package]]
 name = "pygments"
 version = "2.20.0"
 source = { registry = "https://pypi.org/simple" }
@@ -741,6 +774,30 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/c0/8f/0722ca900cc807c13a6a0c696dacf35430f72e0ec571c4275d2371fca3e9/rich-15.0.0.tar.gz", hash = "sha256:edd07a4824c6b40189fb7ac9bc4c52536e9780fbbfbddf6f1e2502c31b068c36", size = 230680, upload-time = "2026-04-12T08:24:00.75Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/82/3b/64d4899d73f91ba49a8c18a8ff3f0ea8f1c1d75481760df8c68ef5235bf5/rich-15.0.0-py3-none-any.whl", hash = "sha256:33bd4ef74232fb73fe9279a257718407f169c09b78a87ad3d296f548e27de0bb", size = 310654, upload-time = "2026-04-12T08:24:02.83Z" },
+]
+
+[[package]]
+name = "rlottie-python"
+version = "1.3.8"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/c5/38/3c70069ffa7ff869b55f7f699144da45db7b4b121821ac520a4ad9c9186d/rlottie_python-1.3.8.tar.gz", hash = "sha256:a8404bc5e8fa9b4e5c7dad2173930c11450c9a2d95091f4f6a213bc77c4d9288", size = 4164872, upload-time = "2025-08-23T20:18:43.377Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/21/9c/add6ab4b4d4f955727126a5f45a077510488de6ec368519e09b1635ba68d/rlottie_python-1.3.8-cp37-abi3-macosx_10_9_universal2.whl", hash = "sha256:00deebcd325d28fa5e610a8d74d45647055fb279db378f9e0743c972890da89f", size = 1564510, upload-time = "2025-08-23T20:17:53.393Z" },
+    { url = "https://files.pythonhosted.org/packages/b4/39/e1e5887757aa9f6f58c7090fac36a4c8df8e7425de7d446b320f7f6947d8/rlottie_python-1.3.8-cp37-abi3-macosx_10_9_x86_64.whl", hash = "sha256:b44efea6f64366ac68fd53b5029b23b131b6289f66aa40db32a5840cb6d5b884", size = 846057, upload-time = "2025-08-23T20:17:55.348Z" },
+    { url = "https://files.pythonhosted.org/packages/a0/c6/84f787fc8516acaf5d256c3934491afeb15a6799e73609169b3ffe40e5df/rlottie_python-1.3.8-cp37-abi3-macosx_11_0_arm64.whl", hash = "sha256:93ce14a420cb4ee1bf149440ae4f65a5e8b5ebcce6102d4467ab7cfa0b2f4f52", size = 752795, upload-time = "2025-08-23T20:17:56.66Z" },
+    { url = "https://files.pythonhosted.org/packages/63/db/d41f469826b5d5a0af738ff63eac938489aeb68ca7e91a3b8a41db985fc3/rlottie_python-1.3.8-cp37-abi3-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:fd9ae16eaf7e668f765db1ed366542ca5bd06932e5f20df429105b27ee721a02", size = 974054, upload-time = "2025-08-23T20:17:57.721Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/5d/17a3d10bdb601f127fc3267ca2aa27ea4097a0970d92eafa59b6f81ec2f5/rlottie_python-1.3.8-cp37-abi3-manylinux_2_17_i686.manylinux2014_i686.whl", hash = "sha256:7775f011030669549d5762cc58aac72f63addac0bf81360ddfe5ac65d3c6224a", size = 1052251, upload-time = "2025-08-23T20:17:59.142Z" },
+    { url = "https://files.pythonhosted.org/packages/7b/04/3d072260e8cd27796acb200053d4029a8af0c8c6f3e6c651d84a73026512/rlottie_python-1.3.8-cp37-abi3-manylinux_2_17_ppc64le.manylinux2014_ppc64le.whl", hash = "sha256:1768fd1d94186ac401d653b49999584d99996115e8dffc00d275844d63531225", size = 1209030, upload-time = "2025-08-23T20:18:00.455Z" },
+    { url = "https://files.pythonhosted.org/packages/d8/e8/f227e09c90d35790f0b357b0e0397cb4a5dba582475a4a45bd72ce2a0eac/rlottie_python-1.3.8-cp37-abi3-manylinux_2_17_s390x.manylinux2014_s390x.whl", hash = "sha256:eb1458f676df31f5cfd5857fbb57fd71d5023a6bdbbcf334a623028fd7516fda", size = 935838, upload-time = "2025-08-23T20:18:01.516Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/c8/914cc8032c121ea329b1331e9ef0f0de482ef6fd68bbad781f734e3d6b13/rlottie_python-1.3.8-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:14168f8448aa3af107a442d565d31a7aa62b2f578fd9b5136a5198bc3d5ce855", size = 1032901, upload-time = "2025-08-23T20:18:02.952Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/f0/a679a50a08d45c5950295428157014fa82c414c3b1719546025b3089c44a/rlottie_python-1.3.8-cp37-abi3-musllinux_1_1_aarch64.whl", hash = "sha256:c5182a9e681f5e66db4980dac125310a63b9acc92eb2a9433095e327227634fb", size = 1467490, upload-time = "2025-08-23T20:18:04.823Z" },
+    { url = "https://files.pythonhosted.org/packages/d7/fa/c6caa0ce77981c3a8cddd7c0d6c0d213d139126dd9f916a41ed200572488/rlottie_python-1.3.8-cp37-abi3-musllinux_1_1_i686.whl", hash = "sha256:7f13dc6a56420711650ff52e61ab7f6b85bbbd70ea561c75ea467111c0c3900e", size = 1503623, upload-time = "2025-08-23T20:18:05.873Z" },
+    { url = "https://files.pythonhosted.org/packages/62/dc/bcc124795c051adcfaa89e7a5c457e6a92067556ae9a8a3feea7d5e70acf/rlottie_python-1.3.8-cp37-abi3-musllinux_1_1_ppc64le.whl", hash = "sha256:f32ed872c0a9d9383a37f72b75725f381f098d099c374ca6f4095407cbce6db7", size = 1676526, upload-time = "2025-08-23T20:18:06.967Z" },
+    { url = "https://files.pythonhosted.org/packages/f5/e1/d393527c5af448e8c22fb289bbdf6c4dbdd2cd9e0cc908694fbc231f7e87/rlottie_python-1.3.8-cp37-abi3-musllinux_1_1_s390x.whl", hash = "sha256:1e47ab633775924e5ade3ab66256479142a17738101e3ad5046b9b0d55832a8c", size = 1466798, upload-time = "2025-08-23T20:18:08.581Z" },
+    { url = "https://files.pythonhosted.org/packages/23/c4/04ad236109876267982b0cb737db140bdd191333d4f62d293b1ea048127f/rlottie_python-1.3.8-cp37-abi3-musllinux_1_1_x86_64.whl", hash = "sha256:e309cde2889c360dcf7ce79cdc8a8c1a8dd6184778df8336c66a215312fd3eac", size = 1518390, upload-time = "2025-08-23T20:18:09.977Z" },
+    { url = "https://files.pythonhosted.org/packages/28/02/0d8c5602e5d497a41e11051fe00a7686bd5c589d112d34c6c88ca4e5b322/rlottie_python-1.3.8-cp37-abi3-win32.whl", hash = "sha256:c4320fd47cc8b95eb524dc91b352cfdb94b244e954b0dae40461bd4df40d816b", size = 332877, upload-time = "2025-08-23T20:18:11.443Z" },
+    { url = "https://files.pythonhosted.org/packages/f9/ca/9b47a54a0553ba4ee1eb57ad279c23ce4e01c30638da5f2a1e4bee4dc357/rlottie_python-1.3.8-cp37-abi3-win_amd64.whl", hash = "sha256:c89f0701fe207d734b6e669f9a4c8779b2d5cd6a015baa59023a66a4f3923ec1", size = 381448, upload-time = "2025-08-23T20:18:12.468Z" },
+    { url = "https://files.pythonhosted.org/packages/04/e1/5b28e37cfc4c35f41a00917a2c53b4387d9971e0ca8f463f464494964a85/rlottie_python-1.3.8-cp37-abi3-win_arm64.whl", hash = "sha256:397509e01c1210e987e1c1f69b4faf0f89f1dbb1b14f6edabd5fb661cc4ca885", size = 321269, upload-time = "2025-08-23T20:18:13.686Z" },
 ]
 
 [[package]]

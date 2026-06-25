@@ -176,6 +176,8 @@ def run() -> None:
     tts = get_tts()
     fsm = StateMachine()  # single source of truth for what Orio is doing
 
+    eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
+
     try:
         if config.INPUT_MODE == "voice":
             _run_voice(convo, tts, fsm)
@@ -183,5 +185,34 @@ def run() -> None:
             _run_text(convo, tts, fsm)
     except KeyboardInterrupt:
         pass
+    finally:
+        if eyes is not None:
+            eyes.stop()
 
     print("\nOrio: powering down. Bye!")
+
+
+def _start_eyes(fsm: StateMachine):
+    """Build and start the eyes face if enabled; return it (or None).
+
+    Kept import-local so text/headless runs never pull in pygame/rlottie, and a
+    display/clip failure only disables the face — it never breaks the loop.
+    """
+    if not config.EYES_ENABLED:
+        return None
+    try:
+        from .eyes import EyesController
+
+        eyes = EyesController(
+            fsm,
+            clips_dir=config.EYES_CLIPS_DIR,
+            size=config.EYES_SIZE,
+            fullscreen=config.EYES_FULLSCREEN,
+            fps=config.EYES_FPS,
+            debug=config.EYES_DEBUG,
+        )
+        eyes.start()
+        return eyes
+    except Exception as exc:  # missing deps, no display, etc.
+        print(f"⚠ eyes disabled: {exc}")
+        return None
