@@ -49,12 +49,35 @@ network once, offline thereafter.
 
 `ORIO_WAKE=0` still disables gating entirely (always-on), independent of engine.
 
-## Remaining work — train the "Orio" model
+## Training the "Orio" model — off-device
 
 The pretrained models don't include "Orio", so until a custom model is trained,
-`oww` can only smoke-test with a built-in keyword (e.g. `hey_jarvis`). To mint a
-real one, use openWakeWord's automatic training pipeline (synthesizes positive
-samples with TTS — Piper is already on the robot), export `hey_orio.onnx`, drop
-it in `models/`, and point `ORIO_WAKE_OWW_MODEL` at it. Then tune
-`ORIO_WAKE_OWW_THRESHOLD` against the real USB mic — far-field pickup is the
-likely weak point; revisit mic hardware if accuracy still lags.
+`oww` can only smoke-test with a built-in keyword (e.g. `hey_jarvis`).
+
+Training is done **on a separate powerful machine, not the Jetson** —
+openWakeWord's trainer pulls in **PyTorch**, which we deliberately keep off the
+robot (the GPU is reserved for the LLM + object detector). The robot only ever
+*runs* the exported model, under the torch-free onnxruntime path. Train heavy
+off-device, run lean on-device.
+
+`tools/train_orio_wakeword.py` drives openWakeWord's official pipeline. On the
+training box (see the script header for the full env + dataset setup):
+
+```bash
+# 1) scaffold a config, then fill in dataset paths
+python tools/train_orio_wakeword.py --write-config
+
+# 2) generate synthetic clips → augment → train + export
+python tools/train_orio_wakeword.py --generate --augment --train
+```
+
+Then **copy the exported `hey_orio.onnx` into `orio-jetson/models/`** (it's
+committed, so a `git clone` onto the Jetson carries it — no retraining
+on-device) and point the engine at it:
+
+```bash
+ORIO_WAKE_ENGINE=oww ORIO_WAKE_OWW_MODEL=models/hey_orio.onnx uv run main.py
+```
+
+Finally tune `ORIO_WAKE_OWW_THRESHOLD` against the real USB mic — far-field
+pickup is the likely weak point; revisit mic hardware if accuracy still lags.

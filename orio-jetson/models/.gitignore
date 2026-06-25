@@ -1,0 +1,9 @@
+# Wake-word models live here. Training happens OFF-DEVICE (see
+# tools/train_orio_wakeword.py); only the small trained model is copied here.
+# Commit the model so a `git clone` onto the Jetson carries it — no retraining
+# on-device. Everything else (synthetic clips, features, datasets, intermediate
+# training output dirs) is large/transient and stays out of git.
+*
+!.gitignore
+!*.onnx
+!*.tflite
