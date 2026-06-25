@@ -60,15 +60,17 @@ robot (the GPU is reserved for the LLM + object detector). The robot only ever
 *runs* the exported model, under the torch-free onnxruntime path. Train heavy
 off-device, run lean on-device.
 
-`tools/train_orio_wakeword.py` drives openWakeWord's official pipeline. On the
-training box (see the script header for the full env + dataset setup):
+Training lives in its own monorepo component, **`wakeword-training/`** (kept
+separate so torch never touches this package) — see its `README.md` for the full
+env + dataset setup. On the training box:
 
 ```bash
+cd ../wakeword-training
 # 1) scaffold a config, then fill in dataset paths
-python tools/train_orio_wakeword.py --write-config
+python train_orio_wakeword.py --write-config
 
 # 2) generate synthetic clips → augment → train + export
-python tools/train_orio_wakeword.py --generate --augment --train
+python train_orio_wakeword.py --generate --augment --train
 ```
 
 Then **copy the exported `hey_orio.onnx` into `orio-jetson/models/`** (it's
