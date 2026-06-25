@@ -117,6 +117,17 @@ class SpeechToText:
             proc.kill()
             proc.wait()
 
+        # A failed arecord (busy/missing device, bad format) produces no audio,
+        # which is indistinguishable from silence and would spin "listening…"
+        # forever. If we captured nothing AND arecord exited with an error,
+        # surface its stderr instead of silently looping.
+        if pcm is None and proc.returncode not in (0, -9):  # -9 = our SIGKILL
+            err = b""
+            if proc.stderr is not None:
+                err = proc.stderr.read()
+            msg = err.decode(errors="replace").strip() or f"arecord exited {proc.returncode}"
+            raise RuntimeError(f"audio capture failed (device {self._mic!r}): {msg}")
+
         if pcm is None or pcm.size < SAMPLE_RATE // 2:  # <0.5s → noise, ignore
             return None
 

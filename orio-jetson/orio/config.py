@@ -50,9 +50,13 @@ AUDIO_PLAYER = os.environ.get("ORIO_AUDIO_PLAYER", "aplay")
 # "text"  — read typed lines from the keyboard (no mic needed)
 INPUT_MODE = os.environ.get("ORIO_INPUT", "voice").lower()
 
-# USB mic, addressed by ALSA card *name* so it survives card-number reordering
-# (the C-Media "USB PnP Sound Device" enumerates as card id "Device").
-MIC_DEVICE = os.environ.get("ORIO_MIC_DEVICE", "plughw:CARD=Device,DEV=0")
+# Capture through PipeWire's ALSA bridge so we share the mic with the sound
+# server instead of grabbing the raw device. On this Jetson PipeWire holds the
+# USB mic open (NoMachine voice loopback), so a direct "plughw:CARD=Device,DEV=0"
+# path fails with "Device or resource busy". "pipewire" routes to the default
+# PipeWire source (the USB PnP Sound Device). For a headless box with no sound
+# server, override with ORIO_MIC_DEVICE=plughw:CARD=Device,DEV=0.
+MIC_DEVICE = os.environ.get("ORIO_MIC_DEVICE", "pipewire")
 
 # faster-whisper model size + CPU quantization. base/int8 is the small-budget
 # sweet spot on the Orin Nano; bump to "small" for accuracy if memory allows.
