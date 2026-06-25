@@ -104,6 +104,31 @@ WAKE_FUZZY = float(os.environ.get("ORIO_WAKE_FUZZY", "0.82"))
 # re-saying the wake word each time.
 FOLLOWUP_WINDOW_S = float(os.environ.get("ORIO_FOLLOWUP_WINDOW_S", "8.0"))
 
+# Wake-word engine — two strategies share the same wake-gate seam:
+#   "whisper" — (default) reuse the Whisper ASR: transcribe each dormant phrase
+#               and string-match it (wake.py). No extra model/dependency, but
+#               spotty on the short "Hey Orio" (Whisper is built for sentences,
+#               "Orio" is out-of-vocabulary) and pays to transcribe ambient speech.
+#   "oww"     — a dedicated openWakeWord hotword model (wake_oww.py): streams raw
+#               mic frames through a small CPU/ONNX model, far more reliable on
+#               the short phrase and runs no Whisper while asleep. Needs the
+#               `openwakeword` dependency and a keyword model (see below).
+WAKE_ENGINE = os.environ.get("ORIO_WAKE_ENGINE", "whisper").strip().lower()
+
+# openWakeWord keyword model: a path to a trained "Hey Orio" model
+# (.onnx/.tflite), or a built-in keyword name to smoke-test the pipeline before
+# the custom model is trained (e.g. "hey_jarvis", "alexa", "hey_mycroft").
+WAKE_OWW_MODEL = os.environ.get("ORIO_WAKE_OWW_MODEL", "hey_jarvis")
+
+# Detection score in [0,1] above which a frame counts as the wake word. Raise to
+# cut false wakes, lower if it misses; tune on the real mic (far-field pickup is
+# the weak point — see the audio notes).
+WAKE_OWW_THRESHOLD = float(os.environ.get("ORIO_WAKE_OWW_THRESHOLD", "0.5"))
+
+# openWakeWord inference backend. "onnx" keeps us torch-free and off the GPU
+# (reserved for the LLM + object detector); "tflite" is the lighter alternative.
+WAKE_OWW_FRAMEWORK = os.environ.get("ORIO_WAKE_OWW_FRAMEWORK", "onnx").strip().lower()
+
 
 # ── Scope / persona ──────────────────────────────────────────────────────────
 # The system prompt keeps the small local model on-task: it speaks AS Orio and
