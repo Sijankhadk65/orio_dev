@@ -68,8 +68,15 @@ class SpeechToText:
             return None  # stream ended
         return np.frombuffer(buf, dtype=np.int16)
 
-    def _capture_phrase(self, proc: subprocess.Popen[bytes]) -> np.ndarray | None:
-        """Endpoint one phrase: wait for speech, record until trailing silence."""
+    def _capture_phrase(
+        self, proc: subprocess.Popen[bytes], onset_timeout: float | None = None
+    ) -> np.ndarray | None:
+        """Endpoint one phrase: wait for speech, record until trailing silence.
+
+        If `onset_timeout` is set and no speech starts within that many seconds
+        (measured after noise calibration), return None — used for the post-reply
+        follow-up window so Orio stops waiting and goes back to sleep.
+        """
         # 1) Calibrate the noise floor from ~0.5s of ambient frames.
         ambient = [self._read_frame(proc) for _ in range(16)]
         floor = float(np.median([_rms(f) for f in ambient if f is not None]) or 0.0)
@@ -95,6 +102,8 @@ class SpeechToText:
                     speaking = True
                     voiced.extend(preroll)
                     voiced.append(frame)
+                elif onset_timeout is not None and time.monotonic() - start > onset_timeout:
+                    return None  # no one spoke within the window
                 continue
 
             voiced.append(frame)
@@ -108,11 +117,15 @@ class SpeechToText:
             return None
         return np.concatenate(voiced)
 
-    def listen(self) -> str | None:
-        """Block until a phrase is spoken; return its transcript (or None)."""
+    def listen(self, onset_timeout: float | None = None) -> str | None:
+        """Block until a phrase is spoken; return its transcript (or None).
+
+        With `onset_timeout`, give up and return None if no speech begins within
+        that many seconds (used for the follow-up window after a reply).
+        """
         proc = self._arecord()
         try:
-            pcm = self._capture_phrase(proc)
+            pcm = self._capture_phrase(proc, onset_timeout=onset_timeout)
         finally:
             proc.kill()
             proc.wait()
