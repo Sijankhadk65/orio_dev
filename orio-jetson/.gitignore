@@ -12,6 +12,9 @@ wheels/
 # Piper voice models (downloaded, ~60MB each — fetch with piper.download_voices)
 voices/
 
+# YOLO weights (downloaded by ultralytics on first run)
+models/yolo/
+
 # Secrets — copy .env.example to .env and fill in your own values.
 .env
 

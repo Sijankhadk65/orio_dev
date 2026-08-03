@@ -172,6 +172,7 @@ def run() -> None:
     fsm = StateMachine()  # single source of truth for what Orio is doing
 
     eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
+    vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
 
     try:
         if config.INPUT_MODE == "voice":
@@ -183,8 +184,36 @@ def run() -> None:
     finally:
         if eyes is not None:
             eyes.stop()
+        if vision_debug is not None:
+            vision_debug.stop()
+        from .tools import close_tools
+
+        close_tools()  # release the camera, if it was opened
 
     print("\nOrio: powering down. Bye!")
+
+
+def _start_vision_debug():
+    """Build and start the vision debug preview window if enabled; return it
+    (or None).
+
+    Kept import-local so a headless/no-camera run never pulls in cv2 unless
+    it's actually wanted, and any failure just disables the preview — it
+    never breaks the loop. Shares the same ObjectDetector as the LLM's
+    `what_do_you_see` tool calls (see tools.get_detector), not a second one.
+    """
+    if not config.VISION_DEBUG:
+        return None
+    try:
+        from .tools import get_detector
+        from .vision import VisionDebugWindow
+
+        window = VisionDebugWindow(get_detector(), fps=config.VISION_DEBUG_FPS)
+        window.start()
+        return window
+    except Exception as exc:  # missing deps, no camera, etc.
+        print(f"⚠ vision debug preview disabled: {exc}")
+        return None
 
 
 def _start_eyes(fsm: StateMachine):

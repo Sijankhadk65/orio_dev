@@ -19,6 +19,13 @@
   "ORIO_VAD_MAX_PHRASE_S": "15",
   "ORIO_VAD_THRESHOLD_FACTOR": "3.0",
 
+  "ORIO_TOOLS": "1",
+  "ORIO_CAMERA_INDEX": "0",
+  "ORIO_YOLO_MODEL": "",
+  "ORIO_YOLO_CONFIDENCE": "0.5",
+  "ORIO_VISION_DEBUG": "0",
+  "ORIO_VISION_DEBUG_FPS": "15",
+
   "ORIO_WAKE": "1",
   "ORIO_WAKE_PHRASES": "hey orio,okay orio,ok orio,hello orio,hi orio,orio",
   "ORIO_WAKE_FUZZY": "0.82",

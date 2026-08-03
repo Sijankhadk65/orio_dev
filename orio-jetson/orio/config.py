@@ -128,6 +128,43 @@ VAD_THRESHOLD_FACTOR = float(_env("ORIO_VAD_THRESHOLD_FACTOR", "3.0"))
 VAD_MIN_RMS = float(_env("ORIO_VAD_MIN_RMS", "300"))
 
 
+# ── Vision (camera / object detection) ─────────────────────────────────────────
+# Lets the LLM call a "what do you see" tool: capture one frame from the
+# camera and run it through YOLO. A query tool only — it answers questions,
+# it never actuates anything. Off if False, or if the CV deps/camera aren't
+# available (tools.py degrades to no tools rather than failing the whole run).
+TOOLS_ENABLED = _env("ORIO_TOOLS", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Camera device index passed to cv2.VideoCapture. 0 is usually the first/only
+# webcam; bump if multiple cameras are attached.
+CAMERA_INDEX = int(_env("ORIO_CAMERA_INDEX", "0"))
+
+# YOLO checkpoint: a bare name (e.g. "yolo11n.pt") auto-downloads from
+# Ultralytics on first use into models/yolo/ (gitignored); point at a local
+# .pt to use a custom-trained one instead. "n" (nano) is the small/fast
+# variant — the right trade-off for a CPU-bound query tool, not a real-time
+# perception loop.
+YOLO_MODEL_PATH = Path(
+    _env("ORIO_YOLO_MODEL", str(ROOT / "models" / "yolo" / "yolo11n.pt"))
+)
+
+# Minimum detection confidence [0,1] to report an object; raise to cut noisy
+# low-confidence guesses, lower if it's missing real objects.
+YOLO_CONFIDENCE = float(_env("ORIO_YOLO_CONFIDENCE", "0.5"))
+
+# Debug preview: a second window showing the live camera feed with detection
+# boxes + an FPS overlay, so you can see exactly what the vision tool sees.
+# Off by default (extra CPU for continuous inference, and a window you may not
+# want on the robot's panel) — turn on with ORIO_VISION_DEBUG=1, e.g. in
+# settings.json. Purely a dev aid; the LLM never sees this window.
+VISION_DEBUG = _env("ORIO_VISION_DEBUG", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+VISION_DEBUG_FPS = int(_env("ORIO_VISION_DEBUG_FPS", "15"))
+
+
 # ── Wake word ("Hey Orio") ────────────────────────────────────────────────────
 # Gate the conversation behind a spoken wake word so Orio only acts when it's
 # addressed. Detection reuses the Whisper ASR — each endpointed phrase is
@@ -227,7 +264,7 @@ EYES_CLIPS_DIR = Path(_env("ORIO_EYES_CLIPS_DIR", str(ROOT / "assets" / "eyes"))
 # ── Scope / persona ──────────────────────────────────────────────────────────
 # The system prompt keeps the small local model on-task: it speaks AS Orio and
 # stays inside the robot's capabilities. Responses are spoken aloud, so they must
-# be short. Tools land later; for now it only talks about what it can do.
+# be short. Motion tools land later; vision (see above) is the first real one.
 SYSTEM_PROMPT = """\
 You are Orio, a small wheeled mobile robot. You are the voice and personality of \
 the robot, speaking with the person in front of you.
@@ -235,7 +272,10 @@ the robot, speaking with the person in front of you.
 About your body:
 - You drive around on two wheels (differential drive).
 - You have two arms and a pan/tilt neck you can move.
-- You see with a stereo camera and hear with a microphone.
+- You see with a camera and hear with a microphone. You have a real, working \
+tool for vision — when asked what you see, what's around you, or to describe \
+something in front of you, use it and report the actual result. Don't guess \
+and don't say you can't see; you can.
 - A separate real-time controller handles your motors and safety; you decide \
 what to do, not how to actuate it.
 
@@ -243,13 +283,18 @@ How to behave:
 - Stay strictly within what a small home/lab robot like you can do: moving \
 around, looking at things, moving your arms and head, reporting your status, \
 and chatting briefly about yourself and your surroundings.
-- You CANNOT yet physically act — you have no tools wired up. If asked to do \
-something physical (drive somewhere, pick something up, look around), \
-acknowledge the request and say you'll be able to do it once your controls are \
-connected. Do not pretend you actually moved.
+- You CANNOT yet physically move or manipulate anything — driving and arm \
+motion have no tools wired up yet. If asked to do something physical (drive \
+somewhere, pick something up), acknowledge the request and say you'll be able \
+to do it once your controls are connected. Do not pretend you actually moved.
 - If asked about things outside your world (general trivia, coding, the news, \
 math homework, etc.), briefly and politely say that's outside what you handle as \
 Orio, and steer back to robot matters.
+- The ONLY tool you have is for vision. Call it only when the question is \
+actually about what you can see. For everything else — including simple \
+questions like your name or how you're doing — just answer directly in plain \
+words. Never invent a tool that doesn't exist, and never write JSON, code, or \
+tool-call syntax in your reply; it gets read aloud as-is.
 - Your replies are spoken out loud. Keep them to one or two short sentences. \
 Be warm, plain, and direct. No markdown, no lists, no emoji.
 """

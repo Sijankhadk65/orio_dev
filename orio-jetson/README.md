@@ -7,14 +7,17 @@ cloud TTS. (A keyboard mode is available too.) Runs on Windows, Linux (Jetson),
 and macOS — mic/speaker I/O goes through `sounddevice` (PortAudio), not any
 OS-specific CLI tool.
 
-This is the top of the stack — it produces words now and, later, *semantic tool
-calls* (`drive_to`, `move_arm_to`, `stop`, `get_status`) handed to the
-deterministic mediator. **The LLM never talks to hardware directly and is never
-in the control loop.**
+The LLM can also call **tools** ([LangChain](https://python.langchain.com/) +
+Ollama's native tool-calling) to answer questions it can't just make up — right
+now, a vision tool: ask "what do you see" and it captures a camera frame, runs
+it through a YOLO object detector, and answers from the real result. Tools here
+are query-only. Motion (`drive_to`, `move_arm_to`, `stop`, `get_status`) will
+be a separate, deterministic-mediator-routed layer later. **The LLM never talks
+to hardware directly and is never in the control loop.**
 
 ```
-mic → ASR (Whisper) → LLM (Ollama) → TTS (ElevenLabs) → speaker
-                          │  later: semantic tool calls
+mic → ASR (Whisper) → LLM (Ollama) ⇄ tools (vision: camera → YOLO) → TTS (ElevenLabs) → speaker
+                          │  later: motion tool calls
                      deterministic mediator → STM32 → motors/servos
 ```
 
@@ -26,7 +29,9 @@ mic → ASR (Whisper) → LLM (Ollama) → TTS (ElevenLabs) → speaker
 | `orio/config.py` | All tunables (model, mic, voice, scope prompt) — env-overridable |
 | `orio/audio_input.py` | Cross-platform mic capture (`sounddevice`) shared by ASR + wake word |
 | `orio/asr.py` | RMS voice-activity gate + Whisper transcription |
-| `orio/llm.py` | Ollama chat wrapper + rolling history + preflight checks |
+| `orio/llm.py` | `ChatOllama` (LangChain) chat wrapper: history, streaming, tool-call loop |
+| `orio/tools.py` | LLM-callable tools (currently: vision) — degrades to none on missing deps |
+| `orio/vision.py` | Camera capture (OpenCV) + YOLO (`ultralytics`) object detection |
 | `orio/tts.py` | Pluggable TTS (`elevenlabs` engine, `console` fallback) |
 | `orio/conversation.py` | The interactive talk loop (voice or keyboard) |
 | `orio/eyes.py` | Animated face (`EyesController`), subscribes to FSM state changes |
@@ -58,7 +63,13 @@ with `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE` (index or name substring — see
 Configuration below). The Whisper model (`base`, ~140 MB) downloads from
 Hugging Face on first run and is cached under `~/.cache/huggingface`.
 
-**4. Local settings (optional)** — for anything you want to keep set across
+**4. Camera (for the vision tool)** — needs a webcam at `ORIO_CAMERA_INDEX`
+(default `0`, the first/only camera). The YOLO nano checkpoint (~6 MB)
+auto-downloads into `models/yolo/` (gitignored) the first time the vision tool
+actually runs. No camera, or want the LLM to run with no tools at all? Set
+`ORIO_TOOLS=0` — Orio still runs fine, it just can't answer "what do you see".
+
+**5. Local settings (optional)** — for anything you want to keep set across
 runs (device pins, `ORIO_EYES`, etc.), copy `settings.example.json` to
 `settings.json` and edit it, instead of setting env vars every time:
 
@@ -114,6 +125,8 @@ orio" or press Ctrl-C to stop.
 | Pin a specific mic / speaker | `ORIO_MIC_DEVICE=1 ORIO_SPEAKER_DEVICE=4 uv run main.py` | `$env:ORIO_MIC_DEVICE="1"; $env:ORIO_SPEAKER_DEVICE="4"; uv run main.py` |
 | Dedicated wake-word model (openWakeWord) | `ORIO_WAKE_ENGINE=oww uv run main.py` | `$env:ORIO_WAKE_ENGINE="oww"; uv run main.py` |
 | Always-on listening, no wake word | `ORIO_WAKE=0 uv run main.py` | `$env:ORIO_WAKE="0"; uv run main.py` |
+| No tools (no camera, or don't want vision) | `ORIO_TOOLS=0 uv run main.py` | `$env:ORIO_TOOLS="0"; uv run main.py` |
+| Pin a specific camera | `ORIO_CAMERA_INDEX=1 uv run main.py` | `$env:ORIO_CAMERA_INDEX="1"; uv run main.py` |
 
 PowerShell env vars set with `$env:` persist for the rest of that terminal
 session (until you close it or explicitly clear them), so once set they apply
@@ -140,6 +153,12 @@ way.
 | `ORIO_VAD_SILENCE_MS` | `800` | Trailing silence that ends a phrase |
 | `ORIO_VAD_MAX_PHRASE_S` | `15` | Hard cap on a single phrase's length |
 | `ORIO_VAD_THRESHOLD_FACTOR` | `3.0` | Speech threshold as a multiple of the ambient noise floor |
+| `ORIO_TOOLS` | `1` | `0` to disable all LLM tool-calling (e.g. no camera) |
+| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index |
+| `ORIO_YOLO_MODEL` | `models/yolo/yolo11n.pt` | Ultralytics checkpoint name or path; auto-downloads if missing |
+| `ORIO_YOLO_CONFIDENCE` | `0.5` | Minimum detection confidence [0,1] to report an object |
+| `ORIO_VISION_DEBUG` | `0` | `1` for a live camera + detection-box preview window |
+| `ORIO_VISION_DEBUG_FPS` | `15` | Preview window's target refresh rate |
 | `ORIO_TTS` | `elevenlabs` | `elevenlabs` or `console` (no audio) |
 | `ELEVENLABS_API_KEY` | _(required)_ | Set in `.env` — see `.env.example` |
 | `ORIO_ELEVENLABS_VOICE_ID` | Rachel | Any ElevenLabs voice ID |
@@ -160,6 +179,38 @@ way.
 | `ORIO_WAKE_OWW_MODEL` | `hey_jarvis` | openWakeWord model path or built-in name |
 | `ORIO_WAKE_OWW_THRESHOLD` | `0.5` | Detection score above which a frame counts as the wake word |
 | `ORIO_WAKE_OWW_FRAMEWORK` | `onnx` | `onnx` or `tflite` inference backend |
+
+## Vision (object detection)
+
+Orio's first real tool: ask "what do you see" (or similar) and the LLM calls
+`what_do_you_see`, which grabs one frame from the camera, runs it through a
+YOLO nano model, and gets back the actual objects, their rough position
+(left/center/right, close/far), and confidence — the model answers from that,
+not a guess. It's read-only: the tool only reports what's visible, it never
+drives or moves anything.
+
+Missing camera, opencv, or ultralytics? `get_tools()` in `orio/tools.py`
+catches it and Orio just runs with no tools, same as any other optional piece
+in this app — nothing else breaks. Force that off explicitly with
+`ORIO_TOOLS=0`.
+
+**Debug preview** — set `ORIO_VISION_DEBUG=1` (handy in `settings.json`, see
+One-time setup) for a second window showing the live camera feed with
+detection boxes and an FPS counter drawn on it, so you can see exactly what
+the vision tool sees, continuously, not just at the moment it's asked. It
+shares the same camera/model as the LLM's tool calls (via a lock — the two
+never fight over the camera), refreshes at `ORIO_VISION_DEBUG_FPS`, and closes
+with Esc or on shutdown. Off by default — it's a dev aid the LLM never sees,
+not something to leave on for the robot's normal operation.
+
+To sanity-check the camera + model directly, without the LLM in the loop:
+
+```bash
+uv run python -c "from orio.vision import ObjectDetector; print(ObjectDetector().detect_once())"
+```
+
+The first run downloads the YOLO nano checkpoint (~6 MB) into `models/yolo/`
+(gitignored, like `voices/`).
 
 ## Eyes / face display
 
@@ -190,11 +241,23 @@ placeholder art (`tools/make_placeholder_eyes.py`), not the final designs.
 
 The system prompt in `config.py` keeps the small local model on-task: it talks
 only about what Orio can do (driving, looking, moving arms/head, status) and
-declines off-topic requests. Since no tools are wired yet, it won't pretend to
-physically act — it says it'll be able to once its controls are connected.
+declines off-topic requests. Vision is real (see above) — it uses the tool and
+reports the actual result instead of guessing. Motion still isn't wired up: it
+won't pretend to physically drive or move its arms, and says it'll be able to
+once its controls are connected.
+
+Small local models (llama3.2:3b) are occasionally over-eager about invoking
+the tool, or invoke one that doesn't exist, on questions that have nothing to
+do with vision. The system prompt explicitly guards against this ("only call
+it when actually asked about what you can see... never invent a tool... never
+write JSON in your reply"), which fixed the worst cases in testing, but it's
+worth knowing this is a small-model quirk, not a bug in the tool-calling code,
+if you see it recur — tune the prompt further or try a larger model.
 
 ## Next
 
-Add the tool layer: define semantic tools with a strict schema, use constrained
-decoding for valid tool-call JSON, and route calls through the deterministic
-mediator. See the `orio_kb` notes (`orio_llm_command_layer.md`).
+Motion tools: define `drive_to`/`move_arm_to`/`stop`/`get_status` the same way
+vision was added (a LangChain `@tool` in `orio/tools.py`), but route their
+execution through the deterministic mediator over the STM32 serial link
+instead of running locally like vision does — the LLM must stay out of the
+control loop. See the `orio_kb` notes (`orio_llm_command_layer.md`).
