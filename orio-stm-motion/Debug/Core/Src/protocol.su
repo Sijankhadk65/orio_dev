@@ -1,0 +1,11 @@
+../Core/Src/protocol.c:43:17:crc16_ccitt	24	static
+../Core/Src/protocol.c:65:13:send_frame	64	static
+../Core/Src/protocol.c:90:13:send_ack	16	static
+../Core/Src/protocol.c:101:13:send_nack	24	static
+../Core/Src/protocol.c:112:13:send_status	24	static
+../Core/Src/protocol.c:134:13:handle_move_arm_to	24	static
+../Core/Src/protocol.c:175:13:handle_frame	16	static
+../Core/Src/protocol.c:214:13:on_byte_received	48	static
+../Core/Src/protocol.c:279:6:Protocol_Init	16	static
+../Core/Src/protocol.c:296:6:Protocol_UART_RxCpltCallback	16	static
+../Core/Src/protocol.c:310:6:Protocol_Process	8	static

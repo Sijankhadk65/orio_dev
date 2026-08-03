@@ -1,0 +1,10 @@
+00:44:11 **** Incremental Build of configuration Debug for project orio-stm-motion ****
+make -j16 all 
+arm-none-eabi-size  orio-stm-motion.elf 
+   text	   data	    bss	    dec	    hex	filename
+  14384	     12	   1788	  16184	   3f38	orio-stm-motion.elf
+Finished building: default.size.stdout
+ 
+
+00:44:12 Build Finished. 0 errors, 0 warnings. (took 253ms)
+
