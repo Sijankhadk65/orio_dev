@@ -151,6 +151,40 @@ WAKE_OWW_THRESHOLD = float(os.environ.get("ORIO_WAKE_OWW_THRESHOLD", "0.5"))
 WAKE_OWW_FRAMEWORK = os.environ.get("ORIO_WAKE_OWW_FRAMEWORK", "onnx").strip().lower()
 
 
+# ── Eyes / face display ───────────────────────────────────────────────────────
+# Animated eyes on the HDMI panel (Elecrow RC070N 7", 1024x600). The eyes are a
+# subscriber to the FSM — they react to state changes, the loop never calls them.
+# Off by default so headless/text/CI runs don't try to open a display; turn on
+# with ORIO_EYES=1 on the robot (or a dev box with a screen).
+EYES_ENABLED = os.environ.get("ORIO_EYES", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Fullscreen kiosk on the panel by default; set ORIO_EYES_FULLSCREEN=0 to run in
+# a window (handy over a remote desktop / NoMachine session while iterating).
+EYES_FULLSCREEN = os.environ.get("ORIO_EYES_FULLSCREEN", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Render size (must match the panel) and frame rate. 24-30 fps is plenty for the
+# CPU-rasterized clips.
+_eyes_size = os.environ.get("ORIO_EYES_SIZE", "1024x600").lower().split("x")
+EYES_SIZE = (int(_eyes_size[0]), int(_eyes_size[1]))
+EYES_FPS = int(os.environ.get("ORIO_EYES_FPS", "30"))
+
+# Debug overlay: draw the current FSM state name + live render FPS in a corner of
+# the face. Off by default so the kiosk panel stays clean; set ORIO_EYES_DEBUG=1
+# while iterating (especially windowed over NoMachine) to eyeball state changes.
+EYES_DEBUG = os.environ.get("ORIO_EYES_DEBUG", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Where the per-state Lottie clips live (one "<state>.json" each). Generate
+# placeholder art with tools/make_placeholder_eyes.py; swap in designer clips by
+# overwriting these files.
+EYES_CLIPS_DIR = Path(os.environ.get("ORIO_EYES_CLIPS_DIR", str(ROOT / "assets" / "eyes")))
+
+
 # ── Scope / persona ──────────────────────────────────────────────────────────
 # The system prompt keeps the small local model on-task: it speaks AS Orio and
 # stays inside the robot's capabilities. Responses are spoken aloud, so they must
