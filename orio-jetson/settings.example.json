@@ -1,0 +1,36 @@
+{
+  "ORIO_LLM_MODEL": "llama3.2:3b",
+  "OLLAMA_HOST": "",
+  "ORIO_LLM_TEMPERATURE": "0.3",
+  "ORIO_MAX_HISTORY_TURNS": "12",
+
+  "ORIO_TTS": "elevenlabs",
+  "ORIO_ELEVENLABS_VOICE_ID": "21m00Tcm4TlvDq8ikWAM",
+  "ORIO_ELEVENLABS_MODEL": "eleven_turbo_v2_5",
+  "ORIO_SPEAKER_DEVICE": "",
+
+  "ORIO_INPUT": "voice",
+  "ORIO_MIC_DEVICE": "",
+  "ORIO_ASR_MODEL": "base",
+  "ORIO_ASR_COMPUTE_TYPE": "int8",
+  "ORIO_ASR_LANGUAGE": "en",
+  "ORIO_VAD_MIN_RMS": "300",
+  "ORIO_VAD_SILENCE_MS": "800",
+  "ORIO_VAD_MAX_PHRASE_S": "15",
+  "ORIO_VAD_THRESHOLD_FACTOR": "3.0",
+
+  "ORIO_WAKE": "1",
+  "ORIO_WAKE_PHRASES": "hey orio,okay orio,ok orio,hello orio,hi orio,orio",
+  "ORIO_WAKE_FUZZY": "0.82",
+  "ORIO_FOLLOWUP_WINDOW_S": "8.0",
+  "ORIO_WAKE_ENGINE": "whisper",
+  "ORIO_WAKE_OWW_MODEL": "hey_jarvis",
+  "ORIO_WAKE_OWW_THRESHOLD": "0.5",
+  "ORIO_WAKE_OWW_FRAMEWORK": "onnx",
+
+  "ORIO_EYES": "0",
+  "ORIO_EYES_FULLSCREEN": "1",
+  "ORIO_EYES_SIZE": "1024x600",
+  "ORIO_EYES_FPS": "30",
+  "ORIO_EYES_DEBUG": "0"
+}

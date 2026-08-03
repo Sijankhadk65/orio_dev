@@ -14,3 +14,6 @@ voices/
 
 # Secrets — copy .env.example to .env and fill in your own values.
 .env
+
+# Local machine settings — copy settings.example.json to settings.json and edit.
+settings.json
