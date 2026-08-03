@@ -212,6 +212,12 @@ EYES_DEBUG = _env("ORIO_EYES_DEBUG", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
+# Blink duration (ms) when the FSM switches clips: eyelids sweep shut (half
+# this time), the clip swaps while hidden, then they sweep back open (the
+# other half) — masks the hard cut rlottie can't blend away on its own. 0
+# disables it and reverts to an instant cut.
+EYES_TRANSITION_MS = int(_env("ORIO_EYES_TRANSITION_MS", "400"))
+
 # Where the per-state Lottie clips live (one "<state>.json" each). Generate
 # placeholder art with tools/make_placeholder_eyes.py; swap in designer clips by
 # overwriting these files.

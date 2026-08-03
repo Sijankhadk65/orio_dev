@@ -6,9 +6,13 @@ this controller maps the new `State` to a pre-baked **Lottie clip** and plays it
 
 Why pre-baked clips (not procedural): the expressions are a small fixed set, and
 `rlottie` rasterizes them on the **CPU**, so the always-on face never contends
-with the GPU running the LLM / object detector. There is no live blending
-between clips (rlottie limitation) — a state change is a hard cut to the new
-clip. See docs/eyes_animation_plan.md.
+with the GPU running the LLM / object detector. rlottie itself has no live
+blending between clips, so a state change is masked with a **blink** instead —
+eyelids sweep shut, the clip swaps while hidden, then they sweep back open —
+the same trick most robot faces use to hide a hard cut behind natural eye
+behavior. Drawn as a pygame overlay over whatever the clip renders, so it
+works unmodified once designer art replaces the placeholders. See
+docs/eyes_animation_plan.md.
 
 Concurrency: a background thread owns the pygame window and renders continuously
 (~`fps`), because every operator call (`stt.listen`, `convo.send`, `tts.speak`)
@@ -77,6 +81,7 @@ class EyesController:
         fullscreen: bool = True,
         fps: int = 30,
         debug: bool = False,
+        transition_ms: int = 250,
     ) -> None:
         self._fsm = fsm
         self._clips_dir = clips_dir
@@ -84,6 +89,7 @@ class EyesController:
         self._fullscreen = fullscreen
         self._fps = fps
         self._debug = debug
+        self._transition_ms = transition_ms
 
         self._lock = threading.Lock()
         self._pending = fsm.state  # latest state the render thread should show
@@ -147,6 +153,27 @@ class EyesController:
         screen.blit(shadow, (9, 9))
         screen.blit(label, (8, 8))
 
+    # Near-black, matching the placeholder clips' own backdrop (see
+    # tools/make_placeholder_eyes.py's `_bg()`) so the sweep reads as the
+    # face's own eyelids closing, not a foreign color bar. Fine as a default
+    # for designer art too, since almost every robot-face design is dark-bg.
+    _LID_COLOR = (10, 10, 13)
+
+    def _draw_lids(self, screen: pygame.Surface, closed: float) -> None:
+        """Draw eyelids converging from the top/bottom edges.
+
+        `closed` in [0, 1]: 0 is fully open (no-op), 1 is fully shut (the
+        whole screen covered, top and bottom bars meeting at the centre).
+        """
+        if closed <= 0:
+            return
+        h = round(closed * self._size[1] / 2)
+        if h <= 0:
+            return
+        w = self._size[0]
+        pygame.draw.rect(screen, self._LID_COLOR, (0, 0, w, h))
+        pygame.draw.rect(screen, self._LID_COLOR, (0, self._size[1] - h, w, h))
+
     def _run(self) -> None:
         try:
             os.environ.setdefault("PYGAME_HIDE_SUPPORT_PROMPT", "1")
@@ -166,10 +193,18 @@ class EyesController:
             pygame.quit()
             return
 
+        # Split the configured duration into a close half and an open half —
+        # each at least 1 frame so a very short transition_ms still blinks.
+        half_frames = max(1, round(self._transition_ms / 1000 * self._fps / 2))
+
         clock = pygame.time.Clock()
         shown = self._take_pending()
         clip = self._clip_for(shown)
         frame = 0
+        # While blinking: "phase" is "close" (sweeping shut over the outgoing
+        # clip) or "open" (sweeping back over the already-swapped-in clip);
+        # "step" counts frames within the current phase.
+        blink: dict | None = None
 
         while not self._stop.is_set():
             # Draining the event queue keeps the window responsive (and lets a
@@ -180,12 +215,38 @@ class EyesController:
 
             target = self._take_pending()
             if target is not shown:
-                # Hard cut to the new clip (no live blending in rlottie).
+                new_clip = self._clip_for(target)
                 shown = target
-                clip = self._clip_for(shown)
-                frame = 0
+                if half_frames > 0 and new_clip is not None:
+                    if blink is not None and blink["phase"] == "close":
+                        # Still sweeping shut — just open into the newer
+                        # target instead of restarting the close.
+                        blink["to_clip"] = new_clip
+                    else:
+                        # Idle, or already opening into a now-stale target:
+                        # (re)start a fresh blink.
+                        blink = {"to_clip": new_clip, "phase": "close", "step": 0}
+                else:
+                    clip = new_clip
+                    frame = 0
+                    blink = None
 
-            if clip is not None:
+            if blink is not None:
+                if clip is not None:
+                    screen.blit(clip.surface(frame), (0, 0))
+                    frame += 1
+                closing = blink["phase"] == "close"
+                p = (blink["step"] + 1) / half_frames
+                eased = p * p * (3 - 2 * p)  # smoothstep: eases in/out instead of a constant-speed sweep
+                self._draw_lids(screen, eased if closing else 1.0 - eased)
+                blink["step"] += 1
+                if blink["step"] >= half_frames:
+                    if closing:
+                        clip, frame = blink["to_clip"], 0
+                        blink["phase"], blink["step"] = "open", 0
+                    else:
+                        blink = None
+            elif clip is not None:
                 screen.blit(clip.surface(frame), (0, 0))
                 frame = (frame + 1) % clip.total
 

@@ -150,6 +150,7 @@ way.
 | `ORIO_EYES_SIZE` | `1024x600` | Render size — match your panel |
 | `ORIO_EYES_FPS` | `30` | Render frame rate |
 | `ORIO_EYES_DEBUG` | `0` | `1` to overlay the FSM state name + FPS |
+| `ORIO_EYES_TRANSITION_MS` | `400` | Blink duration masking a state's clip swap; `0` for an instant cut |
 | `ORIO_EYES_CLIPS_DIR` | `assets/eyes` | Per-state Lottie clip directory |
 | `ORIO_WAKE` | `1` | `0` to disable wake-word gating (always listening) |
 | `ORIO_WAKE_ENGINE` | `whisper` | `whisper` (reuse ASR) or `oww` (dedicated openWakeWord model) |
