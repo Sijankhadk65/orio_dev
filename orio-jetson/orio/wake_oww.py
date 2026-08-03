@@ -20,16 +20,13 @@ command next (returns "" rather than a trailing command).
 
 from __future__ import annotations
 
-import subprocess
-from pathlib import Path
-
 import numpy as np
 
 from . import config
+from .audio_input import MicStream
 
 SAMPLE_RATE = 16000
-CHUNK_SAMPLES = 1280             # 80 ms — openWakeWord's expected frame size
-CHUNK_BYTES = CHUNK_SAMPLES * 2  # int16
+CHUNK_SAMPLES = 1280  # 80 ms — openWakeWord's expected frame size
 
 
 class OpenWakeWord:
@@ -44,7 +41,7 @@ class OpenWakeWord:
         model: str = config.WAKE_OWW_MODEL,
         threshold: float = config.WAKE_OWW_THRESHOLD,
         framework: str = config.WAKE_OWW_FRAMEWORK,
-        mic_device: str = config.MIC_DEVICE,
+        mic_device: str | int | None = config.MIC_DEVICE,
     ) -> None:
         self._threshold = threshold
         self._mic = mic_device
@@ -77,28 +74,6 @@ class OpenWakeWord:
         """Human-readable wake phrase for prompts, e.g. 'Hey Orio'."""
         return config.WAKE_PHRASES[0].title() if config.WAKE_PHRASES else "Orio"
 
-    def _arecord(self) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            [
-                "arecord", "-q",
-                "-D", self._mic,
-                "-f", "S16_LE",
-                "-r", str(SAMPLE_RATE),
-                "-c", "1",
-                "-t", "raw",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-    @staticmethod
-    def _read_chunk(proc: subprocess.Popen[bytes]) -> np.ndarray | None:
-        assert proc.stdout is not None
-        buf = proc.stdout.read(CHUNK_BYTES)
-        if len(buf) < CHUNK_BYTES:
-            return None  # stream ended
-        return np.frombuffer(buf, dtype=np.int16)
-
     def await_wake(self) -> str | None:
         """Block until the wake word is heard.
 
@@ -107,33 +82,23 @@ class OpenWakeWord:
         `WhisperWaker.await_wake()` so the loop treats the engines alike.
         """
         self._model.reset()  # clear buffered audio so we don't re-fire on entry
-        proc = self._arecord()
         woke = False
         try:
-            while True:
-                chunk = self._read_chunk(proc)
-                if chunk is None:
-                    break  # stream ended — likely an arecord failure (see below)
-                scores = self._model.predict(chunk)
-                if scores and max(scores.values()) >= self._threshold:
-                    woke = True
-                    break
+            with MicStream(self._mic) as mic:
+                while True:
+                    chunk = mic.read_frame(CHUNK_SAMPLES)
+                    if chunk is None:
+                        break  # stream ended
+                    scores = self._model.predict(chunk)
+                    if scores and max(scores.values()) >= self._threshold:
+                        woke = True
+                        break
         except KeyboardInterrupt:
             return None
-        finally:
-            proc.kill()
-            proc.wait()
+        except Exception as exc:
+            # A bad/missing device raises from sounddevice/PortAudio directly;
+            # surface it like asr.listen() does instead of silently looping.
+            print(f"\n✗ audio capture failed (device {self._mic!r}): {exc}")
+            return None
 
-        if woke:
-            return ""
-
-        # No wake and the stream ended: a failed arecord (busy/missing device)
-        # is indistinguishable from silence and would otherwise spin forever, so
-        # surface it like asr.listen() does instead of looping.
-        if proc.returncode not in (0, -9):  # -9 = our SIGKILL
-            err = b""
-            if proc.stderr is not None:
-                err = proc.stderr.read()
-            msg = err.decode(errors="replace").strip() or f"arecord exited {proc.returncode}"
-            print(f"\n✗ audio capture failed (device {self._mic!r}): {msg}")
-        return None
+        return "" if woke else None

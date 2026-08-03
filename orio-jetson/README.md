@@ -1,9 +1,11 @@
 # Orio — LLM operator layer
 
-The on-Jetson conversational brain for Orio, the wheeled mobile robot. It speaks
-*as* the robot: you talk to it through the **USB mic**, a local LLM (via
-**Ollama**) replies within the robot's scope, and the reply is spoken aloud with
-**Piper** TTS. (A keyboard mode is available too.)
+The conversational brain for Orio, the wheeled mobile robot. It speaks *as* the
+robot: you talk to it through the **mic**, a local LLM (via **Ollama**) replies
+within the robot's scope, and the reply is spoken aloud with **ElevenLabs**
+cloud TTS. (A keyboard mode is available too.) Runs on Windows, Linux (Jetson),
+and macOS — mic/speaker I/O goes through `sounddevice` (PortAudio), not any
+OS-specific CLI tool.
 
 This is the top of the stack — it produces words now and, later, *semantic tool
 calls* (`drive_to`, `move_arm_to`, `stop`, `get_status`) handed to the
@@ -11,7 +13,7 @@ deterministic mediator. **The LLM never talks to hardware directly and is never
 in the control loop.**
 
 ```
-mic → ASR (Whisper) → LLM (Ollama) → TTS (Piper) → speaker
+mic → ASR (Whisper) → LLM (Ollama) → TTS (ElevenLabs) → speaker
                           │  later: semantic tool calls
                      deterministic mediator → STM32 → motors/servos
 ```
@@ -22,15 +24,16 @@ mic → ASR (Whisper) → LLM (Ollama) → TTS (Piper) → speaker
 |---|---|
 | `main.py` | Entry point (`uv run main.py`) |
 | `orio/config.py` | All tunables (model, mic, voice, scope prompt) — env-overridable |
-| `orio/asr.py` | Mic capture (`arecord`) + RMS voice-activity gate + Whisper |
+| `orio/audio_input.py` | Cross-platform mic capture (`sounddevice`) shared by ASR + wake word |
+| `orio/asr.py` | RMS voice-activity gate + Whisper transcription |
 | `orio/llm.py` | Ollama chat wrapper + rolling history + preflight checks |
-| `orio/tts.py` | Pluggable TTS (`piper` engine, `console` fallback) |
+| `orio/tts.py` | Pluggable TTS (`elevenlabs` engine, `console` fallback) |
 | `orio/conversation.py` | The interactive talk loop (voice or keyboard) |
 
 ## One-time setup
 
-Python deps are already managed by `uv` (`ollama`, `piper-tts`,
-`faster-whisper`). Two things live outside Python:
+Python deps are already managed by `uv` (`ollama`, `elevenlabs`, `faster-whisper`,
+`sounddevice`). Three things live outside Python:
 
 **1. Install + start the Ollama daemon** (not a pip package):
 
@@ -40,21 +43,17 @@ ollama pull llama3.2:3b                          # ~2 GB, fits the Orin Nano bud
 ```
 
 If the service isn't running, start it with `ollama serve` (or
-`systemctl start ollama`).
+`systemctl start ollama` / the Ollama app on Windows).
 
-**2. Piper voice** — the default `en_US-lessac-medium` voice is already in
-`voices/`. To fetch another:
+**2. ElevenLabs API key** — copy `.env.example` to `.env` and fill in
+`ELEVENLABS_API_KEY` (get one at https://elevenlabs.io). `config.py` loads
+`.env` automatically; real environment variables still take precedence over it.
 
-```bash
-uv run python -m piper.download_voices <voice-name> --download-dir voices
-```
-
-Audio plays through `aplay` (alsa-utils, preinstalled on the Jetson).
-
-**3. Mic + speech recognizer** — the USB mic is addressed by ALSA card *name*
-(`plughw:CARD=Device,DEV=0`), which survives card-number reordering. The Whisper
-model (`base`, ~140 MB) downloads from Hugging Face on first run and is cached
-under `~/.cache/huggingface`. List capture devices with `arecord -l`.
+**3. Mic + speech recognizer** — list input/output devices with
+`uv run python -m sounddevice`; if the wrong one is picked by default, pin it
+with `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE` (index or name substring — see
+Configuration below). The Whisper model (`base`, ~140 MB) downloads from
+Hugging Face on first run and is cached under `~/.cache/huggingface`.
 
 ## Run
 
@@ -75,13 +74,15 @@ Prefer the keyboard? `ORIO_INPUT=text uv run main.py`.
 | `OLLAMA_HOST` | _(localhost)_ | Point at a remote daemon |
 | `ORIO_LLM_TEMPERATURE` | `0.3` | Low — Orio has a narrow job |
 | `ORIO_INPUT` | `voice` | `voice` (mic) or `text` (keyboard) |
-| `ORIO_MIC_DEVICE` | `plughw:CARD=Device,DEV=0` | ALSA capture device |
+| `ORIO_MIC_DEVICE` | _(system default)_ | `sounddevice` input device: index or name substring |
 | `ORIO_ASR_MODEL` | `base` | Whisper size: `tiny`/`base`/`small`… |
 | `ORIO_VAD_MIN_RMS` | `300` | Speech-gate floor (raise in a noisy room) |
 | `ORIO_VAD_SILENCE_MS` | `800` | Trailing silence that ends a phrase |
-| `ORIO_TTS` | `piper` | `piper` or `console` (no audio) |
-| `ORIO_PIPER_VOICE` | `voices/en_US-lessac-medium.onnx` | Voice model path |
-| `ORIO_AUDIO_PLAYER` | `aplay` | e.g. `paplay` for PulseAudio |
+| `ORIO_TTS` | `elevenlabs` | `elevenlabs` or `console` (no audio) |
+| `ELEVENLABS_API_KEY` | _(required)_ | Set in `.env` — see `.env.example` |
+| `ORIO_ELEVENLABS_VOICE_ID` | Rachel | Any ElevenLabs voice ID |
+| `ORIO_ELEVENLABS_MODEL` | `eleven_turbo_v2_5` | ElevenLabs model ID |
+| `ORIO_SPEAKER_DEVICE` | _(system default)_ | `sounddevice` output device: index or name substring |
 
 No mic/speaker handy? Run keyboard + text-only:
 

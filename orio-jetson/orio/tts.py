@@ -1,20 +1,15 @@
 """Text-to-speech for the operator layer.
 
 Pluggable behind a tiny `TTS` interface so the engine can be swapped without
-touching the conversation loop. Piper is the on-robot engine (KB-recommended);
-the console engine is a no-audio fallback so the program always runs even before
-a voice model or audio device is set up.
+touching the conversation loop. ElevenLabs is the cloud TTS engine; the console
+engine is a no-audio fallback so the program always runs even before an API key
+or audio device is set up.
 
 This layer is out of the real-time/safety path, like the LLM itself.
 """
 
 from __future__ import annotations
 
-import shutil
-import subprocess
-import tempfile
-import wave
-from pathlib import Path
 from typing import Protocol
 
 from . import config
@@ -31,50 +26,61 @@ class ConsoleTTS:
         print(f"  🔇 (tts disabled) {text}")
 
 
-class PiperTTS:
-    """Piper neural TTS → WAV → system audio player (aplay/paplay)."""
+class ElevenLabsTTS:
+    """ElevenLabs cloud TTS → sounddevice playback. Needs an API key + internet."""
+
+    _SAMPLE_RATE = 24000  # matches the pcm_24000 output_format requested below
 
     def __init__(
         self,
-        voice_path: Path = config.PIPER_VOICE,
-        player: str = config.AUDIO_PLAYER,
+        api_key: str | None = config.ELEVENLABS_API_KEY,
+        voice_id: str = config.ELEVENLABS_VOICE_ID,
+        model_id: str = config.ELEVENLABS_MODEL,
+        device: str | int | None = config.SPEAKER_DEVICE,
     ) -> None:
-        from piper.voice import PiperVoice  # imported lazily; heavy + optional
+        if not api_key:
+            raise RuntimeError(
+                "ELEVENLABS_API_KEY is not set. Get a key from elevenlabs.io and "
+                "set it in your environment."
+            )
+        from elevenlabs.client import ElevenLabs  # imported lazily; heavy + optional
 
-        if not voice_path.exists():
-            raise FileNotFoundError(
-                f"Piper voice not found at {voice_path}. Download one with "
-                f"`uv run python -m piper.download_voices en_US-lessac-medium "
-                f"--download-dir voices`."
-            )
-        if shutil.which(player) is None:
-            raise FileNotFoundError(
-                f"Audio player '{player}' not found. Install alsa-utils (aplay) "
-                f"or set ORIO_AUDIO_PLAYER."
-            )
-        self._voice = PiperVoice.load(str(voice_path))
-        self._player = player
+        self._client = ElevenLabs(api_key=api_key)
+        self._voice_id = voice_id
+        self._model_id = model_id
+        self._device = device
 
     def speak(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
-        # Synthesize to a temp WAV (header carries the sample rate) and play it.
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=True) as tmp:
-            with wave.open(tmp.name, "wb") as wav_file:
-                self._voice.synthesize_wav(text, wav_file)
-            subprocess.run([self._player, "-q", tmp.name], check=False)
+        import numpy as np
+        import sounddevice as sd
+
+        try:
+            chunks = self._client.text_to_speech.convert(
+                voice_id=self._voice_id,
+                model_id=self._model_id,
+                text=text,
+                output_format=f"pcm_{self._SAMPLE_RATE}",
+            )
+            pcm = b"".join(chunks)
+            audio = np.frombuffer(pcm, dtype=np.int16)
+            sd.play(audio, samplerate=self._SAMPLE_RATE, device=self._device)
+            sd.wait()
+        except Exception as exc:  # network error, bad key, bad output device, etc.
+            print(f"\n✗ ElevenLabs playback failed (device {self._device!r}): {exc}")
 
 
 def get_tts(engine: str = config.TTS_ENGINE) -> TTS:
     """Build the configured TTS engine, falling back to console on any failure."""
     if engine == "console":
         return ConsoleTTS()
-    if engine == "piper":
+    if engine == "elevenlabs":
         try:
-            return PiperTTS()
-        except Exception as exc:  # missing voice/player/deps → degrade gracefully
-            print(f"  ⚠️  Piper TTS unavailable ({exc}); falling back to text only.")
+            return ElevenLabsTTS()
+        except Exception as exc:  # missing key/deps/network → degrade gracefully
+            print(f"  ⚠️  ElevenLabs TTS unavailable ({exc}); falling back to text only.")
             return ConsoleTTS()
     print(f"  ⚠️  Unknown TTS engine '{engine}'; using text only.")
     return ConsoleTTS()
