@@ -61,40 +61,35 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
     tts.speak("".join(reply_parts))
 
 
-def _await_wake(stt, wake) -> str | None:
-    """Block (ASLEEP) until the wake word is heard.
+def _make_waker(stt):
+    """Build the wake-gate engine selected by `config.WAKE_ENGINE`.
 
-    Returns whatever followed the wake word in the same utterance ('' if
-    nothing), or None if interrupted / the mic failed.
+    "oww"  → dedicated openWakeWord hotword model (`orio/wake_oww.py`).
+    other  → Whisper ASR + string match (`orio/wake.py`), the default.
+
+    Both expose `.label` and `.await_wake()`, so the loop stays engine-agnostic.
+    Imports are local so selecting one engine never pulls in the other's deps.
     """
-    while True:
-        try:
-            text = stt.listen()  # wait indefinitely for a phrase
-        except KeyboardInterrupt:
-            return None
-        except RuntimeError as exc:  # audio capture failed (see asr.listen)
-            print(f"\n✗ {exc}")
-            return None
-        if not text:
-            continue
-        woke, command = wake.split(text)
-        if woke:
-            return command
-        # Heard speech, but Orio wasn't addressed — keep sleeping.
+    if config.WAKE_ENGINE == "oww":
+        from .wake_oww import OpenWakeWord
+
+        return OpenWakeWord()
+    from .wake import WhisperWaker
+
+    return WhisperWaker(stt)
 
 
 def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
     """Voice loop. Wake-word gated unless config.WAKE_ENABLED is off."""
     from .asr import SpeechToText
-    from .wake import WakeWord
 
     print("Loading speech recognizer…")
     stt = SpeechToText()
-    wake = WakeWord()
     gated = config.WAKE_ENABLED
+    waker = _make_waker(stt) if gated else None
 
     if gated:
-        print(f'Ready. Say "{wake.label}" to wake Orio (Ctrl-C to stop).')
+        print(f'Ready. Say "{waker.label}" to wake Orio (Ctrl-C to stop).')
     else:
         print("Ready. Speak to Orio (Ctrl-C to stop).")
 
@@ -102,8 +97,8 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
         pending = ""  # command carried over from the wake utterance, if any
         if gated:
             fsm.to(State.ASLEEP)
-            print(f'\n😴 asleep — say "{wake.label}"…', end="", flush=True)
-            woke = _await_wake(stt, wake)
+            print(f'\n😴 asleep — say "{waker.label}"…', end="", flush=True)
+            woke = waker.await_wake()
             if woke is None:
                 return  # Ctrl-C or capture failure
             pending = woke

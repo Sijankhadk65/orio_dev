@@ -96,3 +96,44 @@ class WakeWord:
     def matches(self, transcript: str) -> bool:
         """True if the transcript contains the wake word."""
         return self.split(transcript)[0]
+
+
+class WhisperWaker:
+    """Wake gate using the Whisper ASR + the `WakeWord` matcher (the default).
+
+    Endpoints and transcribes each dormant phrase via `stt`, then checks it for
+    the wake word. Exposes the same `label` / `await_wake()` interface as the
+    dedicated openWakeWord engine (`wake_oww.OpenWakeWord`), so the conversation
+    loop can use either interchangeably. The matcher itself (`WakeWord`) stays a
+    pure, dependency-free string brain; this just drives it with live audio.
+    """
+
+    def __init__(self, stt, matcher: WakeWord | None = None) -> None:
+        self._stt = stt
+        self._wake = matcher or WakeWord()
+
+    @property
+    def label(self) -> str:
+        return self._wake.label
+
+    def await_wake(self) -> str | None:
+        """Block until the wake word is heard.
+
+        Returns whatever followed the wake word in the same utterance ('' if
+        nothing) so it can be run immediately, or None if interrupted / the mic
+        failed.
+        """
+        while True:
+            try:
+                text = self._stt.listen()  # wait indefinitely for a phrase
+            except KeyboardInterrupt:
+                return None
+            except RuntimeError as exc:  # audio capture failed (see asr.listen)
+                print(f"\n✗ {exc}")
+                return None
+            if not text:
+                continue
+            woke, command = self._wake.split(text)
+            if woke:
+                return command
+            # Heard speech, but Orio wasn't addressed — keep sleeping.
