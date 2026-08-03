@@ -45,6 +45,7 @@ class OpenWakeWord:
     ) -> None:
         self._threshold = threshold
         self._mic = mic_device
+        self._model_name = model
 
         # Heavy imports kept local so text/headless runs never pull openWakeWord
         # (and onnxruntime) in, and the dep is only required when oww is selected.
@@ -71,7 +72,18 @@ class OpenWakeWord:
 
     @property
     def label(self) -> str:
-        """Human-readable wake phrase for prompts, e.g. 'Hey Orio'."""
+        """Human-readable wake phrase for prompts, derived from the loaded model.
+
+        A bare keyword name (no path separators/extension) is a built-in
+        openWakeWord model, whose name doubles as the phrase it listens for
+        ("hey_jarvis" -> "Hey Jarvis") — WAKE_PHRASES plays no part in what
+        this engine actually reacts to, so it'd be misleading to prompt with
+        it. A custom trained model's filename isn't a readable phrase, so
+        that case falls back to WAKE_PHRASES as a best-effort label.
+        """
+        name = self._model_name
+        if "/" not in name and "\\" not in name and "." not in name:
+            return name.replace("_", " ").title()
         return config.WAKE_PHRASES[0].title() if config.WAKE_PHRASES else "Orio"
 
     def await_wake(self) -> str | None:
