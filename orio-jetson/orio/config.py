@@ -92,7 +92,8 @@ ELEVENLABS_MODEL = _env("ORIO_ELEVENLABS_MODEL", "eleven_turbo_v2_5")
 # unset to use the OS's default output device, or set it to a device index
 # (e.g. "4") or a substring of the device name (e.g. "USB Speaker") to pick a
 # specific one. Run `python -m sounddevice` to list available devices and
-# indices.
+# indices. On Linux, "unset" doesn't take PortAudio's raw default at face
+# value — see audio_input.resolve_device() for why.
 _speaker_env = _env("ORIO_SPEAKER_DEVICE", "").strip()
 SPEAKER_DEVICE: str | int | None = int(_speaker_env) if _speaker_env.isdigit() else (
     _speaker_env or None
@@ -109,6 +110,10 @@ INPUT_MODE = _env("ORIO_INPUT", "voice").lower()
 # substring of the device name (e.g. "USB PnP") to pick a specific mic — handy
 # when multiple input devices are present or the wrong one is picked by
 # default. Run `python -m sounddevice` to list available devices and indices.
+# On Linux, "unset" prefers a device literally named "pipewire" over
+# PortAudio's raw default if one exists — see audio_input.resolve_device():
+# on a Jetson, the raw "default" ALSA device silently captured pure silence
+# while "pipewire" correctly reached the USB mic PipeWire held open.
 _mic_env = _env("ORIO_MIC_DEVICE", "").strip()
 MIC_DEVICE: str | int | None = int(_mic_env) if _mic_env.isdigit() else (_mic_env or None)
 

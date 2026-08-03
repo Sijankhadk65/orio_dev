@@ -57,6 +57,9 @@ class ElevenLabsTTS:
         import numpy as np
         import sounddevice as sd
 
+        from .audio_input import resolve_device
+
+        device = resolve_device(self._device, "output")
         try:
             chunks = self._client.text_to_speech.convert(
                 voice_id=self._voice_id,
@@ -66,10 +69,10 @@ class ElevenLabsTTS:
             )
             pcm = b"".join(chunks)
             audio = np.frombuffer(pcm, dtype=np.int16)
-            sd.play(audio, samplerate=self._SAMPLE_RATE, device=self._device)
+            sd.play(audio, samplerate=self._SAMPLE_RATE, device=device)
             sd.wait()
         except Exception as exc:  # network error, bad key, bad output device, etc.
-            print(f"\n✗ ElevenLabs playback failed (device {self._device!r}): {exc}")
+            print(f"\n✗ ElevenLabs playback failed (device {device!r}): {exc}")
 
 
 def get_tts(engine: str = config.TTS_ENGINE) -> TTS:

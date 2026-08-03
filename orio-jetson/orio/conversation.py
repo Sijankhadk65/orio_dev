@@ -12,6 +12,8 @@ prompt.
 
 from __future__ import annotations
 
+import sys
+
 from . import config
 from .fsm import State, StateMachine
 from .llm import Conversation, OllamaUnavailable
@@ -81,7 +83,13 @@ def _make_waker(stt):
 
 def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
     """Voice loop. Wake-word gated unless config.WAKE_ENABLED is off."""
-    from .asr import SpeechToText
+    try:
+        from .asr import SpeechToText
+    except OSError as exc:  # sounddevice import failed — no PortAudio on this system
+        print(f"✗ Audio input unavailable: {exc}")
+        if sys.platform.startswith("linux"):
+            print("  Install the system PortAudio library: sudo apt install -y libportaudio2")
+        return
 
     print("Loading speech recognizer…")
     stt = SpeechToText()

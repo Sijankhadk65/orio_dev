@@ -41,7 +41,7 @@ mic → ASR (Whisper) → LLM (Ollama) ⇄ tools (vision: camera → YOLO) → T
 ## One-time setup
 
 Python deps are already managed by `uv` (`ollama`, `elevenlabs`, `faster-whisper`,
-`sounddevice`). Three things live outside Python:
+`sounddevice`). A few things live outside Python:
 
 **1. Install + start the Ollama daemon** (not a pip package):
 
@@ -57,19 +57,39 @@ If the service isn't running, start it with `ollama serve` (or
 `ELEVENLABS_API_KEY` (get one at https://elevenlabs.io). `config.py` loads
 `.env` automatically; real environment variables still take precedence over it.
 
-**3. Mic + speech recognizer** — list input/output devices with
+**3. PortAudio (Linux/Jetson only)** — `sounddevice`'s wheel bundles PortAudio
+for Windows/macOS, but on Linux it dynamically loads the system library,
+which isn't installed by default:
+
+```bash
+sudo apt install -y libportaudio2
+```
+
+Without it, voice mode fails at startup with `OSError: PortAudio library not
+found` (text mode is unaffected — it never imports `sounddevice`).
+
+**4. Mic + speech recognizer** — list input/output devices with
 `uv run python -m sounddevice`; if the wrong one is picked by default, pin it
 with `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE` (index or name substring — see
 Configuration below). The Whisper model (`base`, ~140 MB) downloads from
 Hugging Face on first run and is cached under `~/.cache/huggingface`.
 
-**4. Camera (for the vision tool)** — needs a webcam at `ORIO_CAMERA_INDEX`
+On Linux, leaving the device unset doesn't just take PortAudio's raw
+"default" at face value: if a device literally named `pipewire` exists,
+that's preferred instead (`orio/audio_input.py`'s `resolve_device()`). This
+matters because PortAudio's "default" ALSA device can silently resolve to a
+dead stream when PipeWire is holding the real mic open elsewhere — observed
+on a Jetson, where "default" captured pure silence but "pipewire" correctly
+reached the USB mic. An explicit `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE`
+always overrides this.
+
+**5. Camera (for the vision tool)** — needs a webcam at `ORIO_CAMERA_INDEX`
 (default `0`, the first/only camera). The YOLO nano checkpoint (~6 MB)
 auto-downloads into `models/yolo/` (gitignored) the first time the vision tool
 actually runs. No camera, or want the LLM to run with no tools at all? Set
 `ORIO_TOOLS=0` — Orio still runs fine, it just can't answer "what do you see".
 
-**5. Local settings (optional)** — for anything you want to keep set across
+**6. Local settings (optional)** — for anything you want to keep set across
 runs (device pins, `ORIO_EYES`, etc.), copy `settings.example.json` to
 `settings.json` and edit it, instead of setting env vars every time:
 
