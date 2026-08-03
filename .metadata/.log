@@ -1,0 +1,89 @@
+!SESSION 2026-08-03 00:05:31.743 -----------------------------------------------
+eclipse.buildId=Version 2.1.1
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_GB
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-08-03 00:05:48.106
+!MESSAGE Log4j2 initialized with config file E:\cozmobot\orio_dev\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-08-03 00:05:52.649
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:05:53.331
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM3
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:05:53.341
+!MESSAGE port: COM3
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-08-03 00:06:11.102
+!MESSAGE Indexed 'orio-stm-motion' (20 sources, 118 headers) in 3.4 sec: 10,759 declarations; 40,928 references; 1 unresolved inclusions; 66 syntax errors; 238 unresolved names (0.46%)
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:14:36.196
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM3
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:14:36.196
+!MESSAGE port: COM3
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:14:38.121
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM3
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:14:38.123
+!MESSAGE port: COM3
+!SESSION 2026-08-03 00:18:56.450 -----------------------------------------------
+eclipse.buildId=Version 2.1.1
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_GB
+Framework arguments:  E:\cozmobot\orio_dev\orio-stm-motion\.project
+Command-line arguments:  -os win32 -ws win32 -arch x86_64 E:\cozmobot\orio_dev\orio-stm-motion\.project
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-08-03 00:19:23.363
+!MESSAGE Log4j2 initialized with config file E:\cozmobot\orio_dev\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-08-03 00:19:31.651
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:19:32.555
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+COM3
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:19:32.555
+!MESSAGE port: COM3
+
+!ENTRY org.eclipse.cdt.core 1 0 2026-08-03 00:19:34.719
+!MESSAGE Indexed 'orio-stm-motion' (20 sources, 118 headers) in 2.99 sec: 10,760 declarations; 40,929 references; 1 unresolved inclusions; 66 syntax errors; 238 unresolved names (0.46%)
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:56:36.348
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 00:56:36.348
+!MESSAGE port: 
+!SESSION 2026-08-03 14:40:45.996 -----------------------------------------------
+eclipse.buildId=Version 2.1.1
+java.version=21.0.9
+java.vendor=Eclipse Adoptium
+BootLoader constants: OS=win32, ARCH=x86_64, WS=win32, NL=en_GB
+Command-line arguments:  -os win32 -ws win32 -arch x86_64
+
+!ENTRY com.st.stm32cube.ide.mcu.informationcenter 1 1 2026-08-03 14:41:13.957
+!MESSAGE Log4j2 initialized with config file E:\cozmobot\orio_dev\.metadata\.log4j2.xml
+
+!ENTRY com.st.stm32cube.ide.mcu.ide 1 1 2026-08-03 14:41:28.902
+!MESSAGE Started RMI Server, listening on port 41337
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 14:41:29.951
+!MESSAGE Executed PowerShell command powershell.exe -Command "Get-CimInstance -ClassName Win32_SerialPort | Select-Object -ExpandProperty DeviceID":
+
+
+!ENTRY com.st.stm32cube.ide.mpu.remote.serial 1 1 2026-08-03 14:41:29.953
+!MESSAGE port: 

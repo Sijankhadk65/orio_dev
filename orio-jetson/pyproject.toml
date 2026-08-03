@@ -1,0 +1,14 @@
+[project]
+name = "orio"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "elevenlabs>=2.60.0",
+    "faster-whisper>=1.2.1",
+    "ollama>=0.6.2",
+    "openwakeword>=0.6.0",
+    "python-dotenv>=1.2.2",
+    "sounddevice>=0.5.5",
+]
