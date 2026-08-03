@@ -11,6 +11,7 @@ brain and the real-time controller.
 |---|---|---|
 | `orio-jetson/` | High-level brain: voice → LLM → speech operator layer (perception/planning land here too). | Python · uv |
 | `orio-stm32/` | Real-time controller firmware: motor/servo control loops + safety. _(not added yet)_ | C/C++ · bare-metal/RTOS |
+| `wakeword-training/` | Off-device training for the "Hey Orio" wake word; exports an `.onnx` the Jetson runs torch-free. Kept separate so PyTorch never touches the robot install. | Python · torch _(off-device)_ |
 
 See each subproject's own `README.md` for setup and run instructions.
 

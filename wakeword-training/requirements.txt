@@ -1,0 +1,24 @@
+# Environment for training Orio's "Hey Orio" openWakeWord model — OFF-DEVICE only
+# (laptop / GPU box). This is deliberately separate from orio-jetson/ so PyTorch
+# and the rest of the training stack never land on the Jetson, which stays
+# torch-free (its GPU is reserved for the LLM + object detector).
+#
+# Install torch to match your machine's CUDA — see https://pytorch.org for the
+# right index URL; the bare "torch" below pulls the default build.
+openwakeword>=0.6.0
+torch
+torchaudio
+torchinfo
+speechbrain
+audiomentations
+acoustics
+mutagen
+datasets
+scipy
+scikit-learn
+numpy
+pyyaml
+tqdm
+
+# Synthetic positive-sample generation is a separate repo (clone it, not pip):
+#   git clone https://github.com/rhasspy/piper-sample-generator

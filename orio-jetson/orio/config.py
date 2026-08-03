@@ -9,8 +9,15 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 # Repo root (…/orio), used to resolve the bundled voice model.
 ROOT = Path(__file__).resolve().parent.parent
+
+# Load secrets/overrides from a local .env (see .env.example) before reading
+# any os.environ.get() below. Real env vars already set still take precedence
+# — load_dotenv() defaults to not overriding existing ones.
+load_dotenv(ROOT / ".env")
 
 
 # ── LLM (Ollama) ──────────────────────────────────────────────────────────────
@@ -31,18 +38,32 @@ MAX_HISTORY_TURNS = int(os.environ.get("ORIO_MAX_HISTORY_TURNS", "12"))
 
 
 # ── TTS ──────────────────────────────────────────────────────────────────────
-# "piper"   — Piper neural TTS (KB-recommended, used on the robot)
-# "console" — no audio, just print [no LLM/audio deps needed]; auto-fallback
-TTS_ENGINE = os.environ.get("ORIO_TTS", "piper").lower()
+# "elevenlabs" — ElevenLabs cloud TTS (needs internet + a paid API key in
+#                ELEVENLABS_API_KEY, see .env.example)
+# "console"    — no audio, just print [no deps needed]; auto-fallback
+TTS_ENGINE = os.environ.get("ORIO_TTS", "elevenlabs").lower()
 
-# Piper voice model (.onnx); its .json sidecar is found automatically.
-PIPER_VOICE = Path(
-    os.environ.get("ORIO_PIPER_VOICE", str(ROOT / "voices" / "en_US-lessac-medium.onnx"))
+# ElevenLabs API key — standard env var name used by the elevenlabs SDK, get
+# one at https://elevenlabs.io. Only needed when ORIO_TTS=elevenlabs.
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+
+# Voice to speak with; defaults to "Rachel", a stock ElevenLabs voice. Override
+# with ORIO_ELEVENLABS_VOICE_ID once you've picked/cloned a voice.
+ELEVENLABS_VOICE_ID = os.environ.get("ORIO_ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
+
+# eleven_turbo_v2_5 is ElevenLabs' low-latency model — the right trade-off for
+# a conversational loop where replies need to be spoken back promptly.
+ELEVENLABS_MODEL = os.environ.get("ORIO_ELEVENLABS_MODEL", "eleven_turbo_v2_5")
+
+# Output device for sounddevice/PortAudio playback: leave ORIO_SPEAKER_DEVICE
+# unset to use the OS's default output device, or set it to a device index
+# (e.g. "4") or a substring of the device name (e.g. "USB Speaker") to pick a
+# specific one. Run `python -m sounddevice` to list available devices and
+# indices.
+_speaker_env = os.environ.get("ORIO_SPEAKER_DEVICE", "").strip()
+SPEAKER_DEVICE: str | int | None = int(_speaker_env) if _speaker_env.isdigit() else (
+    _speaker_env or None
 )
-
-# Command used to play synthesized WAV audio. aplay (alsa-utils) is preinstalled
-# on the Jetson; swap to "paplay" for PulseAudio.
-AUDIO_PLAYER = os.environ.get("ORIO_AUDIO_PLAYER", "aplay")
 
 
 # ── Input / ASR ───────────────────────────────────────────────────────────────
@@ -50,13 +71,13 @@ AUDIO_PLAYER = os.environ.get("ORIO_AUDIO_PLAYER", "aplay")
 # "text"  — read typed lines from the keyboard (no mic needed)
 INPUT_MODE = os.environ.get("ORIO_INPUT", "voice").lower()
 
-# Capture through PipeWire's ALSA bridge so we share the mic with the sound
-# server instead of grabbing the raw device. On this Jetson PipeWire holds the
-# USB mic open (NoMachine voice loopback), so a direct "plughw:CARD=Device,DEV=0"
-# path fails with "Device or resource busy". "pipewire" routes to the default
-# PipeWire source (the USB PnP Sound Device). For a headless box with no sound
-# server, override with ORIO_MIC_DEVICE=plughw:CARD=Device,DEV=0.
-MIC_DEVICE = os.environ.get("ORIO_MIC_DEVICE", "pipewire")
+# Input device for sounddevice/PortAudio: leave ORIO_MIC_DEVICE unset to use
+# the OS's default input device, or set it to a device index (e.g. "1") or a
+# substring of the device name (e.g. "USB PnP") to pick a specific mic — handy
+# when multiple input devices are present or the wrong one is picked by
+# default. Run `python -m sounddevice` to list available devices and indices.
+_mic_env = os.environ.get("ORIO_MIC_DEVICE", "").strip()
+MIC_DEVICE: str | int | None = int(_mic_env) if _mic_env.isdigit() else (_mic_env or None)
 
 # faster-whisper model size + CPU quantization. base/int8 is the small-budget
 # sweet spot on the Orin Nano; bump to "small" for accuracy if memory allows.
@@ -103,6 +124,31 @@ WAKE_FUZZY = float(os.environ.get("ORIO_WAKE_FUZZY", "0.82"))
 # (seconds) before going back to sleep — so you can chain commands without
 # re-saying the wake word each time.
 FOLLOWUP_WINDOW_S = float(os.environ.get("ORIO_FOLLOWUP_WINDOW_S", "8.0"))
+
+# Wake-word engine — two strategies share the same wake-gate seam:
+#   "whisper" — (default) reuse the Whisper ASR: transcribe each dormant phrase
+#               and string-match it (wake.py). No extra model/dependency, but
+#               spotty on the short "Hey Orio" (Whisper is built for sentences,
+#               "Orio" is out-of-vocabulary) and pays to transcribe ambient speech.
+#   "oww"     — a dedicated openWakeWord hotword model (wake_oww.py): streams raw
+#               mic frames through a small CPU/ONNX model, far more reliable on
+#               the short phrase and runs no Whisper while asleep. Needs the
+#               `openwakeword` dependency and a keyword model (see below).
+WAKE_ENGINE = os.environ.get("ORIO_WAKE_ENGINE", "whisper").strip().lower()
+
+# openWakeWord keyword model: a path to a trained "Hey Orio" model
+# (.onnx/.tflite), or a built-in keyword name to smoke-test the pipeline before
+# the custom model is trained (e.g. "hey_jarvis", "alexa", "hey_mycroft").
+WAKE_OWW_MODEL = os.environ.get("ORIO_WAKE_OWW_MODEL", "hey_jarvis")
+
+# Detection score in [0,1] above which a frame counts as the wake word. Raise to
+# cut false wakes, lower if it misses; tune on the real mic (far-field pickup is
+# the weak point — see the audio notes).
+WAKE_OWW_THRESHOLD = float(os.environ.get("ORIO_WAKE_OWW_THRESHOLD", "0.5"))
+
+# openWakeWord inference backend. "onnx" keeps us torch-free and off the GPU
+# (reserved for the LLM + object detector); "tflite" is the lighter alternative.
+WAKE_OWW_FRAMEWORK = os.environ.get("ORIO_WAKE_OWW_FRAMEWORK", "onnx").strip().lower()
 
 
 # ── Eyes / face display ───────────────────────────────────────────────────────

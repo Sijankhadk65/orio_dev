@@ -1,0 +1,18 @@
+# Training is heavy + transient — only the code (script, requirements, README)
+# is tracked. The exported model is committed on the robot side
+# (orio-jetson/models/), not here.
+.venv/
+__pycache__/
+*.pyc
+
+# Cloned synthetic-sample generator
+piper-sample-generator/
+
+# Generated configs, synthetic clips, features, datasets, and exported models
+*.train.yaml
+*.onnx
+*.tflite
+models/
+data/
+clips/
+features/
