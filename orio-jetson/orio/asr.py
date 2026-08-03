@@ -55,12 +55,16 @@ class SpeechToText:
         (measured after noise calibration), return None — used for the post-reply
         follow-up window so Orio stops waiting and goes back to sleep.
         """
-        # 1) Calibrate the noise floor from ~0.5s of ambient frames.
+        # 1) Calibrate the noise floor from ~0.5s of ambient frames. Seed the
+        # pre-roll with them (trimmed to the usual window) rather than
+        # discarding them outright — if speech starts *during* calibration
+        # (e.g. the command runs straight on from the wake word, no pause),
+        # those frames are still the only record of it and shouldn't be lost.
         ambient = [mic.read_frame(FRAME_SAMPLES) for _ in range(16)]
         floor = float(np.median([_rms(f) for f in ambient if f is not None]) or 0.0)
         threshold = max(floor * config.VAD_THRESHOLD_FACTOR, config.VAD_MIN_RMS)
 
-        preroll: list[np.ndarray] = []  # ~300ms kept so onset isn't clipped
+        preroll: list[np.ndarray] = [f for f in ambient if f is not None][-10:]
         voiced: list[np.ndarray] = []
         speaking = False
         silence_ms = 0.0

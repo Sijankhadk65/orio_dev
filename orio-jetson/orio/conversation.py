@@ -131,7 +131,12 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
                     if gated:
                         break  # follow-up window lapsed → back to sleep
                     continue  # always-on → keep listening
-                print(f"\ryou › {text}")
+                # Clear "🎤 listening…" before printing — a plain "\r" alone
+                # only overwrites the start of the line, leaving its tail
+                # visible whenever the new text is shorter (e.g. "\ryou › Bye."
+                # left a stray "ng…" from the old line dangling after it).
+                print("\r" + " " * 20 + "\r", end="")
+                print(f"you › {text}")
 
             if _is_stop(text):
                 return
