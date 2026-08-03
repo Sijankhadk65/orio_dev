@@ -5,8 +5,10 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "elevenlabs>=2.60.0",
     "faster-whisper>=1.2.1",
     "ollama>=0.6.2",
     "openwakeword>=0.6.0",
-    "piper-tts>=1.4.2",
+    "python-dotenv>=1.2.2",
+    "sounddevice>=0.5.5",
 ]

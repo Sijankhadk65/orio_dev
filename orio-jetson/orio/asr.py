@@ -1,8 +1,9 @@
 """Speech-to-text input from the USB mic.
 
-Captures audio from the mic via `arecord` (no PortAudio dependency), endpoints a
-single spoken phrase with a simple RMS voice-activity gate, and transcribes it
-with faster-whisper. Like the LLM and TTS, this is out of the real-time path.
+Captures audio from the mic via `sounddevice` (cross-platform, PortAudio-backed),
+endpoints a single spoken phrase with a simple RMS voice-activity gate, and
+transcribes it with faster-whisper. Like the LLM and TTS, this is out of the
+real-time path.
 
 Design notes:
 - 16 kHz mono S16_LE is what Whisper wants, so we capture it natively.
@@ -13,17 +14,16 @@ Design notes:
 
 from __future__ import annotations
 
-import subprocess
 import time
 
 import numpy as np
 
 from . import config
+from .audio_input import MicStream
 
 SAMPLE_RATE = 16000
 FRAME_MS = 30
 FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS // 1000  # 480 samples
-FRAME_BYTES = FRAME_SAMPLES * 2  # int16
 
 
 def _rms(frame: np.ndarray) -> float:
@@ -37,7 +37,7 @@ class SpeechToText:
         self,
         model_name: str = config.ASR_MODEL,
         compute_type: str = config.ASR_COMPUTE_TYPE,
-        mic_device: str = config.MIC_DEVICE,
+        mic_device: str | int | None = config.MIC_DEVICE,
         language: str = config.ASR_LANGUAGE,
     ) -> None:
         from faster_whisper import WhisperModel  # heavy import, kept lazy
@@ -46,30 +46,8 @@ class SpeechToText:
         self._mic = mic_device
         self._language = language
 
-    def _arecord(self) -> subprocess.Popen[bytes]:
-        return subprocess.Popen(
-            [
-                "arecord", "-q",
-                "-D", self._mic,
-                "-f", "S16_LE",
-                "-r", str(SAMPLE_RATE),
-                "-c", "1",
-                "-t", "raw",
-            ],
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-
-    @staticmethod
-    def _read_frame(proc: subprocess.Popen[bytes]) -> np.ndarray | None:
-        assert proc.stdout is not None
-        buf = proc.stdout.read(FRAME_BYTES)
-        if len(buf) < FRAME_BYTES:
-            return None  # stream ended
-        return np.frombuffer(buf, dtype=np.int16)
-
     def _capture_phrase(
-        self, proc: subprocess.Popen[bytes], onset_timeout: float | None = None
+        self, mic: MicStream, onset_timeout: float | None = None
     ) -> np.ndarray | None:
         """Endpoint one phrase: wait for speech, record until trailing silence.
 
@@ -78,7 +56,7 @@ class SpeechToText:
         follow-up window so Orio stops waiting and goes back to sleep.
         """
         # 1) Calibrate the noise floor from ~0.5s of ambient frames.
-        ambient = [self._read_frame(proc) for _ in range(16)]
+        ambient = [mic.read_frame(FRAME_SAMPLES) for _ in range(16)]
         floor = float(np.median([_rms(f) for f in ambient if f is not None]) or 0.0)
         threshold = max(floor * config.VAD_THRESHOLD_FACTOR, config.VAD_MIN_RMS)
 
@@ -89,7 +67,7 @@ class SpeechToText:
         start = time.monotonic()
 
         while True:
-            frame = self._read_frame(proc)
+            frame = mic.read_frame(FRAME_SAMPLES)
             if frame is None:
                 break
             loud = _rms(frame) >= threshold
@@ -123,23 +101,13 @@ class SpeechToText:
         With `onset_timeout`, give up and return None if no speech begins within
         that many seconds (used for the follow-up window after a reply).
         """
-        proc = self._arecord()
         try:
-            pcm = self._capture_phrase(proc, onset_timeout=onset_timeout)
-        finally:
-            proc.kill()
-            proc.wait()
-
-        # A failed arecord (busy/missing device, bad format) produces no audio,
-        # which is indistinguishable from silence and would spin "listening…"
-        # forever. If we captured nothing AND arecord exited with an error,
-        # surface its stderr instead of silently looping.
-        if pcm is None and proc.returncode not in (0, -9):  # -9 = our SIGKILL
-            err = b""
-            if proc.stderr is not None:
-                err = proc.stderr.read()
-            msg = err.decode(errors="replace").strip() or f"arecord exited {proc.returncode}"
-            raise RuntimeError(f"audio capture failed (device {self._mic!r}): {msg}")
+            with MicStream(self._mic) as mic:
+                pcm = self._capture_phrase(mic, onset_timeout=onset_timeout)
+        except Exception as exc:
+            # A bad/missing device raises from sounddevice/PortAudio directly;
+            # surface it instead of letting the caller mistake it for silence.
+            raise RuntimeError(f"audio capture failed (device {self._mic!r}): {exc}") from exc
 
         if pcm is None or pcm.size < SAMPLE_RATE // 2:  # <0.5s → noise, ignore
             return None
