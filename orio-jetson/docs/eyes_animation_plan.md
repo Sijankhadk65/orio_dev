@@ -123,6 +123,8 @@ keep the face the only thing on the panel for the first cut.
 Phoneme/RMS-driven mouth-sync for `SPEAKING`, camera look-at gaze tracking (eye
 position is already a plain per-frame (x, y), so continuous parametric gaze is
 a straightforward extension), a real round-panel driver (GC9A01, etc.), and
-the reference's CRT chrome (scanline drift, vignette, flicker — currently only
-in `orio-eyes-standalone.html`, not ported into `orio/eyes.py`). The
+the rest of the reference's CRT chrome — the drifting scanlines
+(`_build_scanlines`/`_draw_scanlines`) and the vertical RGB fringe
+(`_build_fringe`) are ported, but the vignette and flicker overlays are still
+only in `orio-eyes-standalone.html`. The
 `EyesController` interface is the swap point for all of these.

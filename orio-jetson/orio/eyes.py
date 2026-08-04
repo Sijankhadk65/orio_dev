@@ -75,6 +75,56 @@ def _hash01(n: float) -> float:
     return abs(math.fmod(x, 1.0))
 
 
+# CRT scanline overlay: matches the reference's `repeating-linear-gradient(to
+# bottom, rgba(0,0,0,.30) 0px, rgba(0,0,0,.30) 2px, transparent 2px, transparent
+# 6px)` drifting overlay div (`scanDrift`, 1.6s linear infinite). Drawn over the
+# upscaled face at display resolution — not the tiny native canvas — so the
+# bands stay crisp 2px lines regardless of `_size`.
+_SCANLINE_PERIOD = 6
+_SCANLINE_BAND = 2
+_SCANLINE_ALPHA = round(0.30 * 255)
+_SCANLINE_DRIFT_S = 1.6  # seconds per full period of downward drift
+
+
+def _build_scanlines(size: tuple[int, int]) -> pygame.Surface:
+    """Precompute one tileable drift-cycle's worth of scanline texture, tall
+    enough that shifting it down by up to one period never exposes a gap at
+    the top (the second blit in the render loop covers that by re-wrapping)."""
+    w, h = size
+    tile_h = h + _SCANLINE_PERIOD
+    surf = pygame.Surface((w, tile_h), pygame.SRCALPHA)
+    dark = (0, 0, 0, _SCANLINE_ALPHA)
+    for y in range(0, tile_h, _SCANLINE_PERIOD):
+        surf.fill(dark, (0, y, w, _SCANLINE_BAND))
+    return surf
+
+
+def _draw_scanlines(screen: pygame.Surface, scanlines: pygame.Surface, t: float) -> None:
+    drift = round((t % _SCANLINE_DRIFT_S) / _SCANLINE_DRIFT_S * _SCANLINE_PERIOD)
+    screen.blit(scanlines, (0, drift))
+    screen.blit(scanlines, (0, drift - _SCANLINE_PERIOD))
+
+
+# Vertical RGB fringe overlay: matches the reference's other repeating-linear-
+# gradient div (`to right`, three 2px bands per 6px period, static — no
+# animation on this one in the reference either).
+_FRINGE_ALPHA = round(0.03 * 255)
+_FRINGE_COLORS = (
+    (255, 0, 80, _FRINGE_ALPHA),
+    (0, 255, 160, _FRINGE_ALPHA),
+    (60, 120, 255, _FRINGE_ALPHA),
+)
+
+
+def _build_fringe(size: tuple[int, int]) -> pygame.Surface:
+    w, h = size
+    surf = pygame.Surface(size, pygame.SRCALPHA)
+    for x in range(0, w, _SCANLINE_PERIOD):
+        for i, color in enumerate(_FRINGE_COLORS):
+            surf.fill(color, (x + i * _SCANLINE_BAND, 0, _SCANLINE_BAND, h))
+    return surf
+
+
 class _Face:
     """Direct port of `OrioEyes` from orio-eyes-standalone.html: procedural
     per-state target geometry, exponentially eased toward every frame, drawn
@@ -306,6 +356,8 @@ class EyesController:
 
         native = pygame.Surface((_NATIVE_W, _NATIVE_H))
         face = _Face(self._take_pending().name)
+        scanlines = _build_scanlines(self._size)
+        fringe = _build_fringe(self._size)
         clock = pygame.time.Clock()
 
         while not self._stop.is_set():
@@ -321,6 +373,8 @@ class EyesController:
             # Nearest-neighbor upscale from the tiny native canvas — this is
             # what makes the blocky pixel edges instead of a blur.
             pygame.transform.scale(native, self._size, screen)
+            _draw_scanlines(screen, scanlines, face.now())
+            screen.blit(fringe, (0, 0))
 
             if overlay_font is not None:
                 self._draw_overlay(screen, overlay_font, self._take_pending(), clock.get_fps())
