@@ -35,12 +35,10 @@ def main() -> None:
     fsm = StateMachine(initial=State.IDLE)
     eyes = EyesController(
         fsm,
-        clips_dir=config.EYES_CLIPS_DIR,
         size=config.EYES_SIZE,
         fullscreen=config.EYES_FULLSCREEN,
         fps=config.EYES_FPS,
         debug=True,  # this is the eyeball-the-look tool; always show the overlay
-        transition_ms=config.EYES_TRANSITION_MS,
     )
     eyes.start()
     print("Eyes demo — Ctrl-C to quit. Cycling states:")

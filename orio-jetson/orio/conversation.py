@@ -245,12 +245,10 @@ def _start_eyes(fsm: StateMachine):
 
         eyes = EyesController(
             fsm,
-            clips_dir=config.EYES_CLIPS_DIR,
             size=config.EYES_SIZE,
             fullscreen=config.EYES_FULLSCREEN,
             fps=config.EYES_FPS,
             debug=config.EYES_DEBUG,
-            transition_ms=config.EYES_TRANSITION_MS,
         )
         eyes.start()
         return eyes

@@ -208,8 +208,6 @@ way.
 | `ORIO_EYES_SIZE` | `1024x600` | Render size — match your panel |
 | `ORIO_EYES_FPS` | `30` | Render frame rate |
 | `ORIO_EYES_DEBUG` | `0` | `1` to overlay the FSM state name + FPS |
-| `ORIO_EYES_TRANSITION_MS` | `400` | Blink duration masking a state's clip swap; `0` for an instant cut |
-| `ORIO_EYES_CLIPS_DIR` | `assets/eyes` | Per-state Lottie clip directory |
 | `ORIO_WAKE` | `1` | `0` to disable wake-word gating (always listening) |
 | `ORIO_WAKE_ENGINE` | `whisper` | `whisper` (reuse ASR) or `oww` (dedicated openWakeWord model) |
 | `ORIO_WAKE_PHRASES` | `hey orio,okay orio,…` | Comma-separated accepted phrases |
@@ -316,8 +314,8 @@ $env:ORIO_EYES_FULLSCREEN = "0"; uv run python tools/eyes_demo.py
 
 Ctrl-C to quit. To enable the face in the real conversation loop, set
 `ORIO_EYES=1` (and `ORIO_EYES_FULLSCREEN=0` if you're not on the panel) before
-`uv run main.py`. See `docs/eyes_animation_plan.md` for the expression data
-format under `assets/eyes/`.
+`uv run main.py`. See `docs/eyes_animation_plan.md` — the expressions are
+procedural code in `orio/eyes.py`, not asset files.
 
 ## Scope
 

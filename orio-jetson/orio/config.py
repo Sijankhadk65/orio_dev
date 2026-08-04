@@ -284,16 +284,6 @@ EYES_DEBUG = _env("ORIO_EYES_DEBUG", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
-# Blink duration (ms) when the FSM switches expressions: eyelids sweep shut
-# (half this time), the expression swaps while hidden, then they sweep back
-# open (the other half) — masks the hard cut since expressions don't blend
-# into each other. 0 disables it and reverts to an instant cut.
-EYES_TRANSITION_MS = int(_env("ORIO_EYES_TRANSITION_MS", "400"))
-
-# Where the per-state expression data lives (one "<state>.json" each). Generate
-# placeholder data with tools/make_placeholder_eyes.py; swap in designer data by
-# overwriting these files.
-EYES_CLIPS_DIR = Path(_env("ORIO_EYES_CLIPS_DIR", str(ROOT / "assets" / "eyes")))
 
 
 # ── Scope / persona ──────────────────────────────────────────────────────────
