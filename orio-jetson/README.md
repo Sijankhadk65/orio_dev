@@ -1,22 +1,28 @@
 # Orio — LLM operator layer
 
 The conversational brain for Orio, the wheeled mobile robot. It speaks *as* the
-robot: you talk to it through the **mic**, a local LLM (via **Ollama**) replies
-within the robot's scope, and the reply is spoken aloud with **ElevenLabs**
-cloud TTS. (A keyboard mode is available too.) Runs on Windows, Linux (Jetson),
-and macOS — mic/speaker I/O goes through `sounddevice` (PortAudio), not any
-OS-specific CLI tool.
+robot: you talk to it through the **mic**, an LLM replies within the robot's
+scope, and the reply is spoken aloud with **ElevenLabs** cloud TTS. (A keyboard
+mode is available too.) Runs on Windows, Linux (Jetson), and macOS — mic/speaker
+I/O goes through `sounddevice` (PortAudio), not any OS-specific CLI tool.
+
+The chat-model backend is pluggable (`ORIO_LLM_PROVIDER`): **Anthropic Claude**
+(cloud, the default — a local 3B model wasn't reliable enough at staying in
+scope, see "Scope" below) or a local model via **Ollama**.
 
 The LLM can also call **tools** ([LangChain](https://python.langchain.com/) +
-Ollama's native tool-calling) to answer questions it can't just make up — right
-now, a vision tool: ask "what do you see" and it captures a camera frame, runs
-it through a YOLO object detector, and answers from the real result. Tools here
-are query-only. Motion (`drive_to`, `move_arm_to`, `stop`, `get_status`) will
-be a separate, deterministic-mediator-routed layer later. **The LLM never talks
-to hardware directly and is never in the control loop.**
+native tool-calling) to answer questions it can't just make up: a vision
+tool (ask "what do you see" and it captures a camera frame, runs it through a
+YOLO object detector, and answers from the real result), and a knowledge-base
+tool (ask what Orio is, what it can do, or anything loaded into its
+deployment-specific knowledge, and it retrieves an answer from a local
+sqlite-vec store instead of improvising). Tools here are query-only. Motion
+(`drive_to`, `move_arm_to`, `stop`, `get_status`) will be a separate,
+deterministic-mediator-routed layer later. **The LLM never talks to hardware
+directly and is never in the control loop.**
 
 ```
-mic → ASR (Whisper) → LLM (Ollama) ⇄ tools (vision: camera → YOLO) → TTS (ElevenLabs) → speaker
+mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools (vision: camera → YOLO; knowledge base: sqlite-vec RAG) → TTS (ElevenLabs) → speaker
                           │  later: motion tool calls
                      deterministic mediator → STM32 → motors/servos
 ```
@@ -28,10 +34,12 @@ mic → ASR (Whisper) → LLM (Ollama) ⇄ tools (vision: camera → YOLO) → T
 | `main.py` | Entry point (`uv run main.py`) |
 | `orio/config.py` | All tunables (model, mic, voice, scope prompt) — env-overridable |
 | `orio/audio_input.py` | Cross-platform mic capture (`sounddevice`) shared by ASR + wake word |
-| `orio/asr.py` | RMS voice-activity gate + Whisper transcription |
-| `orio/llm.py` | `ChatOllama` (LangChain) chat wrapper: history, streaming, tool-call loop |
-| `orio/tools.py` | LLM-callable tools (currently: vision) — degrades to none on missing deps |
+| `orio/asr.py` | RMS voice-activity gate + ElevenLabs Scribe (cloud) transcription |
+| `orio/llm.py` | Chat wrapper (LangChain, `ChatAnthropic` or `ChatOllama`): history, streaming, tool-call loop |
+| `orio/tools.py` | LLM-callable tools (vision, knowledge base) — vision degrades away on missing deps |
 | `orio/vision.py` | Camera capture (OpenCV) + YOLO (`ultralytics`) object detection |
+| `orio/knowledge.py` | Per-profile RAG knowledge base (sqlite-vec + local ONNX embeddings) |
+| `orio/kb_ingest.py` | CLI to ingest `.md`/`.txt` documents into a knowledge-base profile |
 | `orio/tts.py` | Pluggable TTS (`elevenlabs` engine, `console` fallback) |
 | `orio/conversation.py` | The interactive talk loop (voice or keyboard) |
 | `orio/eyes.py` | Animated face (`EyesController`), subscribes to FSM state changes |
@@ -40,10 +48,17 @@ mic → ASR (Whisper) → LLM (Ollama) ⇄ tools (vision: camera → YOLO) → T
 
 ## One-time setup
 
-Python deps are already managed by `uv` (`ollama`, `elevenlabs`, `faster-whisper`,
+Python deps are already managed by `uv` (`langchain-anthropic`, `elevenlabs`,
 `sounddevice`). A few things live outside Python:
 
-**1. Install + start the Ollama daemon** (not a pip package):
+**1. Anthropic API key** (default LLM backend) — copy `.env.example` to `.env`
+and fill in `ANTHROPIC_API_KEY` (get one at https://console.anthropic.com).
+`config.py` loads `.env` automatically; real environment variables still take
+precedence over it.
+
+**1b. (Optional) Ollama, for a local/offline model instead** — set
+`ORIO_LLM_PROVIDER=ollama` (env var or `settings.json`), then install + start
+the Ollama daemon (not a pip package):
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh   # installs + starts the service
@@ -53,9 +68,8 @@ ollama pull llama3.2:3b                          # ~2 GB, fits the Orin Nano bud
 If the service isn't running, start it with `ollama serve` (or
 `systemctl start ollama` / the Ollama app on Windows).
 
-**2. ElevenLabs API key** — copy `.env.example` to `.env` and fill in
-`ELEVENLABS_API_KEY` (get one at https://elevenlabs.io). `config.py` loads
-`.env` automatically; real environment variables still take precedence over it.
+**2. ElevenLabs API key** — same `.env`, fill in `ELEVENLABS_API_KEY` (get one
+at https://elevenlabs.io). Used for both TTS and speech-to-text (Scribe).
 
 **3. PortAudio (Linux/Jetson only)** — `sounddevice`'s wheel bundles PortAudio
 for Windows/macOS, but on Linux it dynamically loads the system library,
@@ -71,8 +85,8 @@ found` (text mode is unaffected — it never imports `sounddevice`).
 **4. Mic + speech recognizer** — list input/output devices with
 `uv run python -m sounddevice`; if the wrong one is picked by default, pin it
 with `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE` (index or name substring — see
-Configuration below). The Whisper model (`base`, ~140 MB) downloads from
-Hugging Face on first run and is cached under `~/.cache/huggingface`.
+Configuration below). Transcription is a cloud call to ElevenLabs Scribe — no
+local model to download, but voice mode needs internet.
 
 On Linux, leaving the device unset doesn't just take PortAudio's raw
 "default" at face value: if a device literally named `pipewire` exists,
@@ -110,7 +124,8 @@ track it.
 
 ## Run
 
-From `orio-jetson/`, with the Ollama daemon running and `.env` filled in:
+From `orio-jetson/`, with `.env` filled in (and the Ollama daemon running, if
+`ORIO_LLM_PROVIDER=ollama`):
 
 ```bash
 uv run main.py
@@ -160,15 +175,16 @@ way.
 
 | Var | Default | Notes |
 |---|---|---|
-| `ORIO_LLM_MODEL` | `llama3.2:3b` | Any pulled Ollama model |
-| `OLLAMA_HOST` | _(localhost)_ | Point at a remote daemon |
+| `ORIO_LLM_PROVIDER` | `anthropic` | `anthropic` (Claude, cloud) or `ollama` (local model) |
+| `ORIO_LLM_MODEL` | `claude-haiku-4-5-20251001` (anthropic) / `llama3.2:3b` (ollama) | Claude model ID, or any pulled Ollama model |
+| `ANTHROPIC_API_KEY` | _(required for anthropic)_ | Set in `.env` — see `.env.example` |
+| `OLLAMA_HOST` | _(localhost)_ | Point at a remote daemon (only used when `ORIO_LLM_PROVIDER=ollama`) |
 | `ORIO_LLM_TEMPERATURE` | `0.3` | Low — Orio has a narrow job |
 | `ORIO_MAX_HISTORY_TURNS` | `12` | Conversation turns kept in the rolling history |
 | `ORIO_INPUT` | `voice` | `voice` (mic) or `text` (keyboard) |
 | `ORIO_MIC_DEVICE` | _(system default)_ | `sounddevice` input device: index or name substring |
-| `ORIO_ASR_MODEL` | `base` | Whisper size: `tiny`/`base`/`small`… |
-| `ORIO_ASR_COMPUTE_TYPE` | `int8` | Whisper CPU quantization |
-| `ORIO_ASR_LANGUAGE` | `en` | Whisper transcription language |
+| `ORIO_ASR_MODEL` | `scribe_v1` | ElevenLabs Scribe model id |
+| `ORIO_ASR_LANGUAGE` | `en` | ISO-639-1 language hint; `""` to auto-detect |
 | `ORIO_VAD_MIN_RMS` | `300` | Speech-gate floor (raise in a noisy room) |
 | `ORIO_VAD_SILENCE_MS` | `800` | Trailing silence that ends a phrase |
 | `ORIO_VAD_MAX_PHRASE_S` | `15` | Hard cap on a single phrase's length |
@@ -179,8 +195,11 @@ way.
 | `ORIO_YOLO_CONFIDENCE` | `0.5` | Minimum detection confidence [0,1] to report an object |
 | `ORIO_VISION_DEBUG` | `0` | `1` for a live camera + detection-box preview window |
 | `ORIO_VISION_DEBUG_FPS` | `15` | Preview window's target refresh rate |
+| `ORIO_KB_PROFILE` | `orio` | Knowledge-base profile to query (see Knowledge base below) |
+| `ORIO_KB_TOP_K` | `3` | Max chunks retrieved per knowledge-base query |
+| `ORIO_KB_DIR` | `kb/` | Where sqlite-vec profile databases live |
 | `ORIO_TTS` | `elevenlabs` | `elevenlabs` or `console` (no audio) |
-| `ELEVENLABS_API_KEY` | _(required)_ | Set in `.env` — see `.env.example` |
+| `ELEVENLABS_API_KEY` | _(required)_ | Set in `.env` — see `.env.example`. Used for both TTS and STT (Scribe) |
 | `ORIO_ELEVENLABS_VOICE_ID` | Rachel | Any ElevenLabs voice ID |
 | `ORIO_ELEVENLABS_MODEL` | `eleven_turbo_v2_5` | ElevenLabs model ID |
 | `ORIO_SPEAKER_DEVICE` | _(system default)_ | `sounddevice` output device: index or name substring |
@@ -232,6 +251,49 @@ uv run python -c "from orio.vision import ObjectDetector; print(ObjectDetector()
 The first run downloads the YOLO nano checkpoint (~6 MB) into `models/yolo/`
 (gitignored, like `voices/`).
 
+## Knowledge base (RAG)
+
+Orio's second tool: ask what it is, what it can do, or anything covered by
+its deployment's knowledge, and the LLM calls `search_knowledge_base`, which
+embeds the question locally and does a nearest-neighbor search over a
+[sqlite-vec](https://github.com/asg017/sqlite-vec) collection —
+`orio/knowledge.py`. Embeddings come from a small local ONNX model
+(`BAAI/bge-small-en-v1.5` via
+[fastembed](https://github.com/qdrant/fastembed)) — torch-free and
+CPU-friendly, same reasoning as the ONNX wake-word backend. No API key, no
+per-query network call. A question with no close-enough match returns
+nothing rather than a random chunk, so the model can honestly say it doesn't
+know instead of guessing — the distance cutoff (`_MAX_DISTANCE` in
+`knowledge.py`) is tuned to favor that over confidently answering an
+unrelated question; see the module's comments if a deployment needs it
+retuned for a larger knowledge set.
+
+Knowledge is split into **profiles** — each one its own sqlite-vec
+collection under `kb/` (gitignored, generated data), selected by
+`ORIO_KB_PROFILE` (see Configuration below). The default profile, `"orio"`,
+self-seeds on first query with facts about Orio itself, the nex-ON platform
+it runs on, and the CozmoBot Robotics team — no setup needed. To point Orio
+at a different domain (e.g. turn it into a grocery-store assistant), ingest
+that venue's documents into a new profile and switch to it:
+
+```bash
+uv run python -m orio.kb_ingest --profile grocery-store aisles.md hours.md
+ORIO_KB_PROFILE=grocery-store uv run main.py
+```
+
+```powershell
+uv run python -m orio.kb_ingest --profile grocery-store aisles.md hours.md
+$env:ORIO_KB_PROFILE = "grocery-store"; uv run main.py
+```
+
+`kb_ingest.py` splits each `.md`/`.txt` file on blank lines — one paragraph
+becomes one chunk — so write source documents as short, self-contained
+paragraphs; a chunk is returned to the LLM verbatim and read aloud. Add
+`--replace` to clear a profile's existing chunks before ingesting (e.g. when
+re-ingesting an updated document set). The first embedding call downloads the
+ONNX model (~130 MB, cached by `fastembed`/`huggingface_hub`) — needs
+internet once, same pattern as the YOLO checkpoint.
+
 ## Eyes / face display
 
 Animated eyes react to Orio's FSM state (idle / listening / thinking /
@@ -266,13 +328,14 @@ reports the actual result instead of guessing. Motion still isn't wired up: it
 won't pretend to physically drive or move its arms, and says it'll be able to
 once its controls are connected.
 
-Small local models (llama3.2:3b) are occasionally over-eager about invoking
-the tool, or invoke one that doesn't exist, on questions that have nothing to
-do with vision. The system prompt explicitly guards against this ("only call
-it when actually asked about what you can see... never invent a tool... never
-write JSON in your reply"), which fixed the worst cases in testing, but it's
-worth knowing this is a small-model quirk, not a bug in the tool-calling code,
-if you see it recur — tune the prompt further or try a larger model.
+Small local models (llama3.2:3b, the previous default) were occasionally
+over-eager about invoking the tool, or invoked one that doesn't exist, on
+questions that have nothing to do with vision — the main reason the default
+backend switched to Claude. The system prompt explicitly guards against this
+("only call it when actually asked about what you can see... never invent a
+tool... never write JSON in your reply") regardless of backend, but it's worth
+knowing this was largely a small-model quirk, not a bug in the tool-calling
+code, if you see it recur on `ORIO_LLM_PROVIDER=ollama`.
 
 ## Next
 

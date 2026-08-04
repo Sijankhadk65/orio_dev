@@ -2,11 +2,13 @@
 
 Captures audio from the mic via `sounddevice` (cross-platform, PortAudio-backed),
 endpoints a single spoken phrase with a simple RMS voice-activity gate, and
-transcribes it with faster-whisper. Like the LLM and TTS, this is out of the
-real-time path.
+transcribes it with ElevenLabs Scribe (cloud) — the same account already used
+for TTS, and considerably more accurate than the local faster-whisper "base"
+model this replaced. Like the LLM and TTS, this is out of the real-time path.
 
 Design notes:
-- 16 kHz mono S16_LE is what Whisper wants, so we capture it natively.
+- 16 kHz mono S16_LE is captured natively and sent to Scribe as raw PCM
+  (file_format="pcm_s16le_16") — no WAV container needed.
 - We measure the ambient noise floor at the start of each listen() and set the
   speech threshold relative to it, so it adapts to a quiet vs. noisy room.
 - A short pre-roll buffer is kept so the first word isn't clipped.
@@ -35,14 +37,14 @@ def _rms(frame: np.ndarray) -> float:
 class SpeechToText:
     def __init__(
         self,
-        model_name: str = config.ASR_MODEL,
-        compute_type: str = config.ASR_COMPUTE_TYPE,
+        model_id: str = config.ASR_MODEL,
         mic_device: str | int | None = config.MIC_DEVICE,
         language: str = config.ASR_LANGUAGE,
     ) -> None:
-        from faster_whisper import WhisperModel  # heavy import, kept lazy
+        from elevenlabs.client import ElevenLabs  # heavy import, kept lazy
 
-        self._model = WhisperModel(model_name, device="cpu", compute_type=compute_type)
+        self._client = ElevenLabs(api_key=config.ELEVENLABS_API_KEY)
+        self._model_id = model_id
         self._mic = mic_device
         self._language = language
 
@@ -116,7 +118,16 @@ class SpeechToText:
         if pcm is None or pcm.size < SAMPLE_RATE // 2:  # <0.5s → noise, ignore
             return None
 
-        audio = pcm.astype(np.float32) / 32768.0
-        segments, _ = self._model.transcribe(audio, language=self._language)
-        text = "".join(seg.text for seg in segments).strip()
+        kwargs = {"language_code": self._language} if self._language else {}
+        try:
+            resp = self._client.speech_to_text.convert(
+                model_id=self._model_id,
+                file=pcm.tobytes(),
+                file_format="pcm_s16le_16",
+                **kwargs,
+            )
+        except Exception as exc:  # network/API hiccup shouldn't kill the voice loop
+            print(f"\n⚠ transcription failed: {exc}")
+            return None
+        text = (getattr(resp, "text", "") or "").strip()
         return text or None

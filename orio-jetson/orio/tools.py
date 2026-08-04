@@ -17,6 +17,7 @@ import logging
 from langchain_core.tools import tool
 
 from . import config
+from .knowledge import search as search_knowledge
 
 log = logging.getLogger(__name__)
 
@@ -54,17 +55,35 @@ def what_do_you_see() -> str:
     )
 
 
+@tool
+def search_knowledge_base(question: str) -> str:
+    """Search Orio's knowledge base for facts relevant to the question.
+
+    Covers what Orio itself is, what it can do, and who built it, plus
+    whatever venue- or domain-specific knowledge has been loaded for this
+    deployment (e.g. store info, product details) — not for vision ("what
+    do you see") or anything outside what's actually in the knowledge base.
+    """
+    facts = search_knowledge(config.KB_PROFILE, question, top_k=config.KB_TOP_K)
+    if not facts:
+        return "nothing in the knowledge base matches that question"
+    return " ".join(facts)
+
+
 def get_tools() -> list:
-    """Build the enabled tool list, degrading to none on missing deps."""
+    """Build the enabled tool list, degrading to just the knowledge base
+    (no hardware deps) if vision's deps/hardware aren't available."""
     if not config.TOOLS_ENABLED:
         return []
+    tools = [search_knowledge_base]
     try:
         import cv2  # noqa: F401
         import ultralytics  # noqa: F401
     except Exception as exc:
-        log.warning("vision tool unavailable (%s); Orio has no tools this run", exc)
-        return []
-    return [what_do_you_see]
+        log.warning("vision tool unavailable (%s); Orio runs without it", exc)
+        return tools
+    tools.append(what_do_you_see)
+    return tools
 
 
 def close_tools() -> None:

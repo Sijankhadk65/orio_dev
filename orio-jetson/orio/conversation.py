@@ -16,7 +16,7 @@ import sys
 
 from . import config
 from .fsm import State, StateMachine
-from .llm import Conversation, OllamaUnavailable
+from .llm import Conversation, LLMUnavailable
 from .tts import TTS, get_tts
 
 BANNER = """\
@@ -67,7 +67,8 @@ def _make_waker(stt):
     """Build the wake-gate engine selected by `config.WAKE_ENGINE`.
 
     "oww"  → dedicated openWakeWord hotword model (`orio/wake_oww.py`).
-    other  → Whisper ASR + string match (`orio/wake.py`), the default.
+    other  → transcribe-and-match via the loaded ASR + string match
+             (`orio/wake.py`), the default.
 
     Both expose `.label` and `.await_wake()`, so the loop stays engine-agnostic.
     Imports are local so selecting one engine never pulls in the other's deps.
@@ -76,9 +77,9 @@ def _make_waker(stt):
         from .wake_oww import OpenWakeWord
 
         return OpenWakeWord()
-    from .wake import WhisperWaker
+    from .wake import TranscribeWaker
 
-    return WhisperWaker(stt)
+    return TranscribeWaker(stt)
 
 
 def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
@@ -170,14 +171,16 @@ def _run_text(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
 def run() -> None:
     print(
         BANNER.format(
-            model=config.LLM_MODEL, inp=config.INPUT_MODE, tts=config.TTS_ENGINE
+            model=f"{config.LLM_PROVIDER}:{config.LLM_MODEL}",
+            inp=config.INPUT_MODE,
+            tts=config.TTS_ENGINE,
         )
     )
 
     convo = Conversation()
     try:
         convo.preflight()
-    except OllamaUnavailable as exc:
+    except LLMUnavailable as exc:
         print(f"✗ {exc}")
         return
 

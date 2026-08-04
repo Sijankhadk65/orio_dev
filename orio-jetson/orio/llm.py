@@ -1,19 +1,21 @@
-"""LLM operator brain — a thin conversational wrapper over a local Ollama model.
+"""LLM operator brain — a thin conversational wrapper over a chat model.
 
 Holds the rolling chat history (seeded with the scope-limiting system prompt),
 streams assistant replies, and executes any tool calls the model makes (see
 tools.py). This is the cognition layer: it produces words, and now query-only
 tool calls (e.g. "what do you see"). It never talks to hardware directly —
 tools here only ever answer questions, they don't actuate the robot.
+
+The backend is pluggable (config.LLM_PROVIDER): "anthropic" (Claude, cloud) or
+"ollama" (a local model). Provider-specific imports are local to _build_llm so
+picking one never requires the other's package to be installed/working.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterator
 
-import ollama
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from langchain_ollama import ChatOllama
 
 from . import config
 from .tools import get_tools
@@ -23,37 +25,79 @@ from .tools import get_tools
 _MAX_TOOL_HOPS = 3
 
 
-class OllamaUnavailable(RuntimeError):
-    """Raised when the Ollama daemon or the requested model isn't reachable."""
+class LLMUnavailable(RuntimeError):
+    """Raised when the configured chat model/provider isn't usable."""
+
+
+def _content_text(content: str | list) -> str:
+    """Normalize a chunk's `.content` to plain text.
+
+    ChatOllama streams `.content` as a plain string, but ChatAnthropic streams
+    it as a list of content blocks (e.g. `[{"type": "text", "text": "...", ...}]`)
+    — join just the text blocks so both providers yield the same shape here.
+    """
+    if isinstance(content, str):
+        return content
+    parts = []
+    for block in content:
+        if isinstance(block, str):
+            parts.append(block)
+        elif isinstance(block, dict) and block.get("type") == "text":
+            parts.append(block.get("text", ""))
+    return "".join(parts)
+
+
+def _build_llm(provider: str, model: str, host: str | None):
+    if provider == "anthropic":
+        from langchain_anthropic import ChatAnthropic
+
+        return ChatAnthropic(
+            model=model, api_key=config.ANTHROPIC_API_KEY, temperature=config.LLM_TEMPERATURE
+        )
+
+    from langchain_ollama import ChatOllama
+
+    return ChatOllama(model=model, base_url=host, temperature=config.LLM_TEMPERATURE)
 
 
 class Conversation:
-    """A single ongoing conversation with the local model."""
+    """A single ongoing conversation with the configured chat model."""
 
     def __init__(
         self,
         model: str = config.LLM_MODEL,
         system_prompt: str = config.SYSTEM_PROMPT,
         host: str | None = config.OLLAMA_HOST,
+        provider: str = config.LLM_PROVIDER,
     ) -> None:
         self.model = model
+        self.provider = provider
         self._host = host
         self._tools = get_tools()
         self._tools_by_name = {t.name: t for t in self._tools}
 
-        llm = ChatOllama(model=model, base_url=host, temperature=config.LLM_TEMPERATURE)
+        llm = _build_llm(provider, model, host)
         self._llm = llm.bind_tools(self._tools) if self._tools else llm
 
         self._system = SystemMessage(system_prompt)
         self._history: list[BaseMessage] = []
 
     def preflight(self) -> None:
-        """Check the daemon is up and the model is pulled; raise a helpful error."""
+        """Check the configured provider is actually usable; raise a helpful error."""
+        if self.provider == "anthropic":
+            if not config.ANTHROPIC_API_KEY:
+                raise LLMUnavailable(
+                    "ANTHROPIC_API_KEY is not set. Add it to .env (see .env.example)."
+                )
+            return
+
+        import ollama
+
         client = ollama.Client(host=self._host) if self._host else ollama.Client()
         try:
             available = {m.model for m in client.list().models}
         except Exception as exc:  # connection refused, etc.
-            raise OllamaUnavailable(
+            raise LLMUnavailable(
                 "Cannot reach the Ollama daemon. Start it with `ollama serve` "
                 "(or `systemctl start ollama`)."
             ) from exc
@@ -63,7 +107,7 @@ class Conversation:
         if self.model not in available and not any(
             m.split(":", 1)[0] == self.model.split(":", 1)[0] for m in available
         ):
-            raise OllamaUnavailable(
+            raise LLMUnavailable(
                 f"Model '{self.model}' is not pulled. Run `ollama pull {self.model}`."
             )
 
@@ -101,9 +145,10 @@ class Conversation:
         parts: list[str] = []
         for chunk in self._llm.stream(self._messages()):
             full = chunk if full is None else full + chunk
-            if chunk.content:
-                parts.append(chunk.content)
-                yield chunk.content
+            text = _content_text(chunk.content)
+            if text:
+                parts.append(text)
+                yield text
 
         if full is None:
             return

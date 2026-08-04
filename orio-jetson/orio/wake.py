@@ -1,13 +1,14 @@
-"""Wake-word detection ("Hey Orio"), Whisper-match strategy.
+"""Wake-word detection ("Hey Orio"), transcribe-and-match strategy.
 
-Rather than run a dedicated always-on hotword model, we reuse the Whisper ASR
-that's already loaded: the conversation loop endpoints each spoken phrase,
-transcribes it, and asks this matcher whether it contains the wake word. This
-adds no model or dependency and recognizes the literal name "Orio" out of the
-box; the trade-off is the CPU cost of transcribing ambient phrases while
-dormant (the same work the loop already did when it was always-on).
+Rather than run a dedicated always-on hotword model, we reuse the ASR engine
+that's already loaded (ElevenLabs Scribe, see asr.py): the conversation loop
+endpoints each spoken phrase, transcribes it, and asks this matcher whether it
+contains the wake word. This adds no extra model/dependency and recognizes the
+literal name "Orio" out of the box; the trade-off is a transcription API call
+for every ambient phrase while dormant (the same work the loop already did
+when it was always-on).
 
-Matching is token-based so it's forgiving of how Whisper renders short phrases:
+Matching is token-based so it's forgiving of how the ASR renders short phrases:
 - configured wake *phrases* ("hey orio", …) are matched as whole-word sequences
   anywhere in the transcript, longest first;
 - failing that, *multi-word* phrases are fuzzily matched against sliding windows
@@ -98,8 +99,8 @@ class WakeWord:
         return self.split(transcript)[0]
 
 
-class WhisperWaker:
-    """Wake gate using the Whisper ASR + the `WakeWord` matcher (the default).
+class TranscribeWaker:
+    """Wake gate using the loaded ASR engine + the `WakeWord` matcher (the default).
 
     Endpoints and transcribes each dormant phrase via `stt`, then checks it for
     the wake word. Exposes the same `label` / `await_wake()` interface as the

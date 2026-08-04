@@ -1,5 +1,6 @@
 {
-  "ORIO_LLM_MODEL": "llama3.2:3b",
+  "ORIO_LLM_PROVIDER": "anthropic",
+  "ORIO_LLM_MODEL": "claude-haiku-4-5-20251001",
   "OLLAMA_HOST": "",
   "ORIO_LLM_TEMPERATURE": "0.3",
   "ORIO_MAX_HISTORY_TURNS": "12",
@@ -11,8 +12,7 @@
 
   "ORIO_INPUT": "voice",
   "ORIO_MIC_DEVICE": "",
-  "ORIO_ASR_MODEL": "base",
-  "ORIO_ASR_COMPUTE_TYPE": "int8",
+  "ORIO_ASR_MODEL": "scribe_v1",
   "ORIO_ASR_LANGUAGE": "en",
   "ORIO_VAD_MIN_RMS": "300",
   "ORIO_VAD_SILENCE_MS": "800",

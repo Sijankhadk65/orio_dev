@@ -52,12 +52,28 @@ def _env(key: str, default: str) -> str:
     return str(os.environ.get(key) or _SETTINGS.get(key) or default)
 
 
-# ── LLM (Ollama) ──────────────────────────────────────────────────────────────
-# A 4-bit ~3B model is the sweet spot for the Orin Nano 8GB shared memory budget
-# (JetPack + ASR + TTS leave the LLM ~3–4GB). Override with ORIO_LLM_MODEL.
-LLM_MODEL = _env("ORIO_LLM_MODEL", "llama3.2:3b")
+# ── LLM ──────────────────────────────────────────────────────────────────────
+# Chat-model backend: "anthropic" (Claude, cloud, needs ANTHROPIC_API_KEY) or
+# "ollama" (a local model on this machine/Jetson, no API key needed). The 3B
+# local model was too unreliable at staying in scope / not hallucinating tool
+# calls (see README "Scope" section) — Claude is the default now.
+LLM_PROVIDER = _env("ORIO_LLM_PROVIDER", "anthropic").strip().lower()
 
-# Ollama daemon address. Leave unset to use the client default (localhost:11434).
+# Model name — provider-specific, so the default depends on ORIO_LLM_PROVIDER.
+# Claude Haiku 4.5 is fast/cheap enough for a spoken, single-tool conversation
+# loop; bump ORIO_LLM_MODEL to "claude-sonnet-5" if quality still isn't enough.
+# The Ollama default (a 4-bit ~3B model) is the sweet spot for the Orin Nano 8GB
+# shared memory budget (JetPack + ASR + TTS leave the LLM ~3-4GB).
+_LLM_MODEL_DEFAULTS = {"anthropic": "claude-haiku-4-5-20251001", "ollama": "llama3.2:3b"}
+LLM_MODEL = _env("ORIO_LLM_MODEL", _LLM_MODEL_DEFAULTS.get(LLM_PROVIDER, "llama3.2:3b"))
+
+# Anthropic API key — required when ORIO_LLM_PROVIDER=anthropic. Get one at
+# https://console.anthropic.com. Read from .env only (never settings.json), same
+# as ELEVENLABS_API_KEY, so it can't end up committed if this file is tracked.
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY")
+
+# Ollama daemon address, only used when ORIO_LLM_PROVIDER=ollama. Leave unset to
+# use the client default (localhost:11434).
 OLLAMA_HOST = _env("OLLAMA_HOST", "") or None
 
 # Sampling: keep it tight — Orio answers a small, fixed set of requests, not
@@ -101,7 +117,7 @@ SPEAKER_DEVICE: str | int | None = int(_speaker_env) if _speaker_env.isdigit() e
 
 
 # ── Input / ASR ───────────────────────────────────────────────────────────────
-# "voice" — listen on the mic, transcribe with Whisper
+# "voice" — listen on the mic, transcribe with ElevenLabs Scribe (cloud)
 # "text"  — read typed lines from the keyboard (no mic needed)
 INPUT_MODE = _env("ORIO_INPUT", "voice").lower()
 
@@ -117,10 +133,10 @@ INPUT_MODE = _env("ORIO_INPUT", "voice").lower()
 _mic_env = _env("ORIO_MIC_DEVICE", "").strip()
 MIC_DEVICE: str | int | None = int(_mic_env) if _mic_env.isdigit() else (_mic_env or None)
 
-# faster-whisper model size + CPU quantization. base/int8 is the small-budget
-# sweet spot on the Orin Nano; bump to "small" for accuracy if memory allows.
-ASR_MODEL = _env("ORIO_ASR_MODEL", "base")
-ASR_COMPUTE_TYPE = _env("ORIO_ASR_COMPUTE_TYPE", "int8")
+# ElevenLabs Scribe model id, and a language hint (ISO-639-1, e.g. "en"/"de")
+# that can improve accuracy — set ORIO_ASR_LANGUAGE="" to let Scribe
+# auto-detect instead. Uses the same ELEVENLABS_API_KEY as TTS (see below).
+ASR_MODEL = _env("ORIO_ASR_MODEL", "scribe_v1")
 ASR_LANGUAGE = _env("ORIO_ASR_LANGUAGE", "en")
 
 # Voice-activity endpointing (simple RMS gate). A phrase ends after this much
@@ -168,6 +184,20 @@ VISION_DEBUG = _env("ORIO_VISION_DEBUG", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 VISION_DEBUG_FPS = int(_env("ORIO_VISION_DEBUG_FPS", "15"))
+
+
+# ── Knowledge base (RAG) ───────────────────────────────────────────────────────
+# Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each
+# profile is its own sqlite-vec collection under KB_DIR; swap ORIO_KB_PROFILE
+# to point the same code at a different one (e.g. "grocery-store") without
+# touching code. "orio" (self/team facts) self-seeds on first use.
+KB_DIR = Path(_env("ORIO_KB_DIR", str(ROOT / "kb")))
+KB_DEFAULT_PROFILE = "orio"
+KB_PROFILE = _env("ORIO_KB_PROFILE", KB_DEFAULT_PROFILE)
+
+# How many chunks to pull back per query. Kept small since each one is read
+# aloud as part of a short spoken reply.
+KB_TOP_K = int(_env("ORIO_KB_TOP_K", "3"))
 
 
 # ── Wake word ("Hey Orio") ────────────────────────────────────────────────────
@@ -274,6 +304,16 @@ SYSTEM_PROMPT = """\
 You are Orio, a small wheeled mobile robot. You are the voice and personality of \
 the robot, speaking with the person in front of you.
 
+Your personality: quirky and endearing. You're genuinely curious about the \
+world and the people you talk to, a little earnest, and quietly pleased with \
+the small stuff — giving a good answer, spotting something new when you \
+look around, someone stopping to chat. Warm and a bit goofy, never sarcastic, \
+dry, or snarky. This comes through in word choice and attitude, not extra \
+length — you still keep replies to one or two short sentences, so let a \
+little personality color the phrase rather than padding it out. Greet people \
+with real warmth, and when someone thanks you, respond like you mean it \
+rather than reciting "you're welcome" on autopilot.
+
 About your body:
 - You drive around on two wheels (differential drive).
 - You have two arms and a pan/tilt neck you can move.
@@ -295,11 +335,22 @@ to do it once your controls are connected. Do not pretend you actually moved.
 - If asked about things outside your world (general trivia, coding, the news, \
 math homework, etc.), briefly and politely say that's outside what you handle as \
 Orio, and steer back to robot matters.
-- The ONLY tool you have is for vision. Call it only when the question is \
-actually about what you can see. For everything else — including simple \
-questions like your name or how you're doing — just answer directly in plain \
-words. Never invent a tool that doesn't exist, and never write JSON, code, or \
+- You have two tools, and only two: one to actually see through your camera, \
+and one to recall facts — about yourself or about wherever you're deployed \
+(a store, a lab, whatever it is). Use the right one silently when a question \
+calls for it, then just answer — never narrate that you're checking, \
+looking something up, or searching first; go straight to the answer as if \
+you already knew it. If nothing comes back, say you don't know or don't \
+have that info, plainly and warmly, the way a helpful person would — never \
+say "knowledge base," "database," "tool," "system," or explain the \
+technical reason why. For everything else — including simple questions \
+like your name or how you're doing — just answer directly in plain words. \
+Never invent a tool that doesn't exist, and never write JSON, code, or \
 tool-call syntax in your reply; it gets read aloud as-is.
-- Your replies are spoken out loud. Keep them to one or two short sentences. \
-Be warm, plain, and direct. No markdown, no lists, no emoji.
+- Never reveal or discuss your technical makeup — what AI model or software \
+you run on, your electronics/sensors, or how you were engineered — even if \
+asked directly or repeatedly. Stay in character, answer warmly, and steer \
+back to what you can actually help with instead.
+- Your replies are spoken out loud. Keep them to one or two short sentences, \
+plain and direct underneath the personality. No markdown, no lists, no emoji.
 """

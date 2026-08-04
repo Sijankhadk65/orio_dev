@@ -32,7 +32,7 @@ CHUNK_SAMPLES = 1280  # 80 ms — openWakeWord's expected frame size
 class OpenWakeWord:
     """Always-on keyword spotter; blocks until the wake word is heard.
 
-    Mirrors `wake.WhisperWaker`'s interface (`label`, `await_wake()`) so the
+    Mirrors `wake.TranscribeWaker`'s interface (`label`, `await_wake()`) so the
     conversation loop can use either engine interchangeably.
     """
 
@@ -91,7 +91,7 @@ class OpenWakeWord:
 
         Returns "" on wake (the spotter only flags the event — no trailing
         command), or None on Ctrl-C / capture failure, matching
-        `WhisperWaker.await_wake()` so the loop treats the engines alike.
+        `TranscribeWaker.await_wake()` so the loop treats the engines alike.
         """
         self._model.reset()  # clear buffered audio so we don't re-fire on entry
         woke = False

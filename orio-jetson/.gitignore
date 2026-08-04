@@ -15,6 +15,10 @@ voices/
 # YOLO weights (downloaded by ultralytics on first run)
 models/yolo/
 
+# Knowledge-base collections (sqlite-vec dbs — local/per-deployment data,
+# not source; the "orio" profile self-seeds, others come from kb_ingest.py)
+kb/
+
 # Secrets — copy .env.example to .env and fill in your own values.
 .env
 
