@@ -316,8 +316,8 @@ $env:ORIO_EYES_FULLSCREEN = "0"; uv run python tools/eyes_demo.py
 
 Ctrl-C to quit. To enable the face in the real conversation loop, set
 `ORIO_EYES=1` (and `ORIO_EYES_FULLSCREEN=0` if you're not on the panel) before
-`uv run main.py`. Note the checked-in clips under `assets/eyes/` are
-placeholder art (`tools/make_placeholder_eyes.py`), not the final designs.
+`uv run main.py`. See `docs/eyes_animation_plan.md` for the expression data
+format under `assets/eyes/`.
 
 ## Scope
 

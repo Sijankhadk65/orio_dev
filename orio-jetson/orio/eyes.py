@@ -2,17 +2,25 @@
 
 The eyes are a *subscriber* to `fsm.StateMachine`, not their own state source:
 the conversation loop never calls into here. It just transitions the FSM, and
-this controller maps the new `State` to a pre-baked **Lottie clip** and plays it.
+this controller maps the new `State` to an **expression** (two keyframed
+rounded rects) and draws it directly with pygame each frame.
 
-Why pre-baked clips (not procedural): the expressions are a small fixed set, and
-`rlottie` rasterizes them on the **CPU**, so the always-on face never contends
-with the GPU running the LLM / object detector. rlottie itself has no live
-blending between clips, so a state change is masked with a **blink** instead —
-eyelids sweep shut, the clip swaps while hidden, then they sweep back open —
-the same trick most robot faces use to hide a hard cut behind natural eye
-behavior. Drawn as a pygame overlay over whatever the clip renders, so it
-works unmodified once designer art replaces the placeholders. See
-docs/eyes_animation_plan.md.
+Why procedural (not a Lottie/rlottie clip, which is what this used to be): the
+`rlottie` build available here renders keyframed Scale-type properties (a
+layer's own scale, a shape group's transform, or a shape's own declared size)
+correctly only on their very first frame, and separately breaks a layer's
+Position keyframes the moment that same layer also carries an animated Path —
+both confirmed by isolated repro, not a config issue. Since the actual art is
+just two parametric rounded rects (no designer-authored vector paths), it's
+simpler and more robust to interpolate width/height/position ourselves from a
+small keyframe table (assets/eyes/*.json) and draw with `pygame.draw.rect`
+each frame — this is also cheaper per frame than rasterizing a full Lottie
+shape tree, so the "keep the always-on face off the GPU" goal from the
+original design still holds. rlottie has no live blending between clips
+anyway, so a state change is masked with a **blink** regardless of renderer —
+eyelids sweep shut, the expression swaps while hidden, then they sweep back
+open — the same trick most robot faces use to hide a hard cut behind natural
+eye behavior. See docs/eyes_animation_plan.md.
 
 Concurrency: a background thread owns the pygame window and renders continuously
 (~`fps`), because every operator call (`stt.listen`, `convo.send`, `tts.speak`)
@@ -23,21 +31,21 @@ flips a flag; the render thread picks up the new state on its next frame.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import threading
 from pathlib import Path
 
 import pygame
-import rlottie_python as rl
 
 from .fsm import State, StateMachine
 
 log = logging.getLogger(__name__)
 
-# Which clip file backs each FSM state. Files live in the clips dir as
-# "<name>.json" (Lottie). Reaction one-shots (happy/confused) come later with
-# the command layer — they aren't FSM states, so they're not mapped here yet.
+# Which expression file backs each FSM state. Files live in the clips dir as
+# "<name>.json" (see _Expression). Reaction one-shots (happy/confused) come
+# later with the command layer — they aren't FSM states, so not mapped here yet.
 _STATE_CLIP: dict[State, str] = {
     State.ASLEEP: "asleep",
     State.IDLE: "idle",
@@ -48,25 +56,68 @@ _STATE_CLIP: dict[State, str] = {
 }
 
 
-class _Clip:
-    """A loaded Lottie animation plus its frame metadata."""
+class _EyeTrack:
+    """One eye's keyframed (width, height, x, y), plus its static color/
+    radius/rotation, linearly interpolated frame-by-frame."""
+
+    def __init__(self, spec: dict) -> None:
+        self.color = tuple(spec["color"])
+        self.radius = spec["radius"]
+        self.rotation = spec["rotation"]
+        self._kf = spec["keyframes"]  # sorted by "t"; first == last (seamless loop)
+        # Looping past the last keyframe repeats the first, so the *period*
+        # is the last keyframe's time, not one past it.
+        self.total = max(1, self._kf[-1]["t"])
+
+    def _sample(self, frame: int) -> tuple[float, float, float, float]:
+        t = frame % self.total
+        lo = self._kf[0]
+        for hi in self._kf[1:]:
+            if t <= hi["t"]:
+                span = hi["t"] - lo["t"]
+                frac = (t - lo["t"]) / span if span else 0.0
+                return (
+                    lo["w"] + (hi["w"] - lo["w"]) * frac,
+                    lo["h"] + (hi["h"] - lo["h"]) * frac,
+                    lo["x"] + (hi["x"] - lo["x"]) * frac,
+                    lo["y"] + (hi["y"] - lo["y"]) * frac,
+                )
+            lo = hi
+        return (lo["w"], lo["h"], lo["x"], lo["y"])
+
+    def draw(self, surface: pygame.Surface, frame: int) -> None:
+        w, h, x, y = self._sample(frame)
+        w, h = max(1, round(w)), max(1, round(h))
+        radius = round(min(self.radius, w / 2, h / 2))
+        if not self.rotation:
+            rect = pygame.Rect(0, 0, w, h)
+            rect.center = (round(x), round(y))
+            pygame.draw.rect(surface, self.color, rect, border_radius=radius)
+            return
+        # pygame.draw.rect has no rotation, so draw unrotated onto a small
+        # padded transparent surface, rotate that, then blit it centered.
+        pad = max(w, h) // 2 + 4
+        local = pygame.Surface((w + pad, h + pad), pygame.SRCALPHA)
+        rect = pygame.Rect(0, 0, w, h)
+        rect.center = local.get_rect().center
+        pygame.draw.rect(local, self.color, rect, border_radius=radius)
+        rotated = pygame.transform.rotate(local, -self.rotation)
+        surface.blit(rotated, rotated.get_rect(center=(round(x), round(y))))
+
+
+class _Expression:
+    """A loaded eye expression: two `_EyeTrack`s sharing one keyframe clock."""
 
     def __init__(self, path: Path) -> None:
         self.name = path.stem
-        self._anim = rl.LottieAnimation.from_file(str(path))
-        self.total = max(1, self._anim.lottie_animation_get_totalframe())
-        self.fps = self._anim.lottie_animation_get_framerate() or 30.0
-        self.w, self.h = self._anim.lottie_animation_get_size()
+        data = json.loads(path.read_text())
+        self.fps = data.get("fps", 30.0)
+        self._eyes = [_EyeTrack(data["eyes"]["left"]), _EyeTrack(data["eyes"]["right"])]
+        self.total = max(eye.total for eye in self._eyes)
 
-    def surface(self, frame: int) -> pygame.Surface:
-        """Rasterize `frame` (CPU) into a pygame surface."""
-        buf = self._anim.lottie_animation_render(
-            frame_num=frame % self.total, width=self.w, height=self.h
-        )
-        return pygame.image.frombuffer(buf, (self.w, self.h), "BGRA")
-
-    def destroy(self) -> None:
-        self._anim.lottie_animation_destroy()
+    def draw(self, surface: pygame.Surface, frame: int) -> None:
+        for eye in self._eyes:
+            eye.draw(surface, frame)
 
 
 class EyesController:
@@ -82,6 +133,7 @@ class EyesController:
         fps: int = 30,
         debug: bool = False,
         transition_ms: int = 250,
+        pixel_size: int = 6,
     ) -> None:
         self._fsm = fsm
         self._clips_dir = clips_dir
@@ -90,13 +142,14 @@ class EyesController:
         self._fps = fps
         self._debug = debug
         self._transition_ms = transition_ms
+        self._pixel_size = max(1, pixel_size)
 
         self._lock = threading.Lock()
         self._pending = fsm.state  # latest state the render thread should show
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
         self._unsubscribe = None
-        self._clips: dict[str, _Clip] = {}
+        self._clips: dict[str, _Expression] = {}
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def start(self) -> None:
@@ -134,11 +187,11 @@ class EyesController:
                 log.warning("eyes: missing clip %s", path)
                 continue
             try:
-                self._clips[name] = _Clip(path)
+                self._clips[name] = _Expression(path)
             except Exception:
                 log.exception("eyes: failed to load clip %s", path)
 
-    def _clip_for(self, state: State) -> _Clip | None:
+    def _clip_for(self, state: State) -> _Expression | None:
         clip = self._clips.get(_STATE_CLIP.get(state, "idle"))
         return clip or self._clips.get("idle")
 
@@ -197,6 +250,15 @@ class EyesController:
         # each at least 1 frame so a very short transition_ms still blinks.
         half_frames = max(1, round(self._transition_ms / 1000 * self._fps / 2))
 
+        # Face is composed at full res, then squashed down and blown back up
+        # through a nearest-neighbor scale to get the design's blocky,
+        # LED-matrix pixelation — simplest to do as a display-side
+        # post-process rather than bake into every expression's keyframes.
+        low_w = max(1, self._size[0] // self._pixel_size)
+        low_h = max(1, self._size[1] // self._pixel_size)
+        face = pygame.Surface(self._size)
+        low_res = pygame.Surface((low_w, low_h))
+
         clock = pygame.time.Clock()
         shown = self._take_pending()
         clip = self._clip_for(shown)
@@ -231,14 +293,15 @@ class EyesController:
                     frame = 0
                     blink = None
 
+            face.fill(self._LID_COLOR)
             if blink is not None:
                 if clip is not None:
-                    screen.blit(clip.surface(frame), (0, 0))
+                    clip.draw(face, frame)
                     frame += 1
                 closing = blink["phase"] == "close"
                 p = (blink["step"] + 1) / half_frames
                 eased = p * p * (3 - 2 * p)  # smoothstep: eases in/out instead of a constant-speed sweep
-                self._draw_lids(screen, eased if closing else 1.0 - eased)
+                self._draw_lids(face, eased if closing else 1.0 - eased)
                 blink["step"] += 1
                 if blink["step"] >= half_frames:
                     if closing:
@@ -247,8 +310,13 @@ class EyesController:
                     else:
                         blink = None
             elif clip is not None:
-                screen.blit(clip.surface(frame), (0, 0))
+                clip.draw(face, frame)
                 frame = (frame + 1) % clip.total
+
+            # Downscale with smoothing (so shapes don't alias into noise), then
+            # blow back up with the fast/nearest scale to get chunky pixels.
+            pygame.transform.smoothscale(face, (low_w, low_h), low_res)
+            pygame.transform.scale(low_res, self._size, screen)
 
             if overlay_font is not None:
                 self._draw_overlay(screen, overlay_font, shown, clock.get_fps())
@@ -256,6 +324,4 @@ class EyesController:
             pygame.display.flip()
             clock.tick(self._fps)
 
-        for clip in self._clips.values():
-            clip.destroy()
         pygame.quit()

@@ -235,8 +235,8 @@ def _start_vision_debug():
 def _start_eyes(fsm: StateMachine):
     """Build and start the eyes face if enabled; return it (or None).
 
-    Kept import-local so text/headless runs never pull in pygame/rlottie, and a
-    display/clip failure only disables the face — it never breaks the loop.
+    Kept import-local so text/headless runs never pull in pygame, and a
+    display/expression failure only disables the face — it never breaks the loop.
     """
     if not config.EYES_ENABLED:
         return None
