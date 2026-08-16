@@ -73,6 +73,12 @@ void Error_Handler(void);
 #define DEBUG_SWDIO_GPIO_Port GPIOA
 #define DEBUG_SWCLK_Pin GPIO_PIN_14
 #define DEBUG_SWCLK_GPIO_Port GPIOA
+#define SERVO_PWM_Pin GPIO_PIN_6
+#define SERVO_PWM_GPIO_Port GPIOA
+#define ARGB_DATA_Pin GPIO_PIN_0
+#define ARGB_DATA_GPIO_Port GPIOA
+#define FAN_PWM_Pin GPIO_PIN_4
+#define FAN_PWM_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

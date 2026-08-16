@@ -28,10 +28,12 @@ extern "C" {
 
 typedef enum
 {
-  CMD_HEARTBEAT   = 0x01,
-  CMD_MOVE_ARM_TO = 0x02,
-  CMD_STOP        = 0x03,
-  CMD_GET_STATUS  = 0x04,
+  CMD_HEARTBEAT    = 0x01,
+  CMD_MOVE_ARM_TO  = 0x02,
+  CMD_STOP         = 0x03,
+  CMD_GET_STATUS   = 0x04,
+  CMD_SET_FAN_SPEED = 0x05, /* payload: [percent 0-100] */
+  CMD_SET_FAN_RGB   = 0x06, /* payload: [r][g][b], applied to every LED */
 
   CMD_ACK         = 0x80,
   CMD_NACK        = 0x81,

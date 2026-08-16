@@ -20,6 +20,8 @@ CMD_HEARTBEAT = 0x01
 CMD_MOVE_ARM_TO = 0x02
 CMD_STOP = 0x03
 CMD_GET_STATUS = 0x04
+CMD_SET_FAN_SPEED = 0x05
+CMD_SET_FAN_RGB = 0x06
 
 CMD_ACK = 0x80
 CMD_NACK = 0x81
@@ -30,6 +32,8 @@ CMD_NAMES = {
     CMD_MOVE_ARM_TO: "MOVE_ARM_TO",
     CMD_STOP: "STOP",
     CMD_GET_STATUS: "GET_STATUS",
+    CMD_SET_FAN_SPEED: "SET_FAN_SPEED",
+    CMD_SET_FAN_RGB: "SET_FAN_RGB",
     CMD_ACK: "ACK",
     CMD_NACK: "NACK",
     CMD_STATUS: "STATUS",
@@ -139,6 +143,17 @@ def main():
     print("\n--- status after the move ---")
     send_and_show(ser, "GET_STATUS", CMD_GET_STATUS)
 
+    print("\n--- fan: ramp speed 0 -> 50 -> 100% ---")
+    for pct in (0, 50, 100):
+        send_and_show(ser, f"SET_FAN_SPEED {pct}%", CMD_SET_FAN_SPEED, bytes([pct]))
+
+    print("\n--- fan: speed out of range (101%), expect NACK OUT_OF_RANGE ---")
+    send_and_show(ser, "SET_FAN_SPEED 101%", CMD_SET_FAN_SPEED, bytes([101]))
+
+    print("\n--- fan RGB: red, green, blue, then off ---")
+    for name, rgb in (("red", (255, 0, 0)), ("green", (0, 255, 0)), ("blue", (0, 0, 255)), ("off", (0, 0, 0))):
+        send_and_show(ser, f"SET_FAN_RGB {name}", CMD_SET_FAN_RGB, bytes(rgb))
+
     print("\n--- move out of range (95 deg), expect NACK OUT_OF_RANGE ---")
     send_and_show(ser, "MOVE_ARM_TO joint=0 95deg", CMD_MOVE_ARM_TO, bytes([0]) + (9500).to_bytes(2, "little", signed=True))
 
@@ -146,9 +161,10 @@ def main():
     send_and_show(ser, "HEARTBEAT (bad CRC)", CMD_HEARTBEAT, corrupt_crc=True)
     send_and_show(ser, "HEARTBEAT (good, confirms still alive)", CMD_HEARTBEAT)
 
-    print("\n--- stop, then move should be rejected as ESTOPPED ---")
+    print("\n--- stop (also cuts fan speed to 0%), then move/fan-speed should be rejected as ESTOPPED ---")
     send_and_show(ser, "STOP", CMD_STOP)
     send_and_show(ser, "MOVE_ARM_TO joint=0 10deg", CMD_MOVE_ARM_TO, bytes([0]) + (1000).to_bytes(2, "little", signed=True))
+    send_and_show(ser, "SET_FAN_SPEED 50%", CMD_SET_FAN_SPEED, bytes([50]))
 
     print("\n--- heartbeat watchdog: clear e-stop, then let it lapse (>500ms) ---")
     send_and_show(ser, "HEARTBEAT", CMD_HEARTBEAT)

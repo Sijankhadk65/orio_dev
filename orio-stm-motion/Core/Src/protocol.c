@@ -4,6 +4,9 @@
   */
 #include <string.h>
 #include "protocol.h"
+#include "servo.h"
+#include "fan.h"
+#include "argb.h"
 
 typedef enum
 {
@@ -33,6 +36,26 @@ static volatile uint32_t s_last_heartbeat_tick;
 static volatile uint8_t s_estopped;
 
 static int16_t s_joint_angle_cdeg[PROTO_ARM_JOINT_COUNT];
+
+/* Only joint 0 has a physical servo (TIM3_CH1 / PA6) wired up so far; the
+ * remaining joints are latched for status reporting but don't drive hardware
+ * yet. */
+#define SERVO_JOINT_ID 0u
+
+/**
+  * @brief  Maps a commanded joint angle to a servo PWM pulse width.
+  * @param  angle_cdeg Angle in hundredths of a degree, within
+  *                     [PROTO_JOINT_ANGLE_MIN_CDEG, PROTO_JOINT_ANGLE_MAX_CDEG].
+  * @retval Pulse width in microseconds, within [SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US].
+  */
+static uint16_t joint_angle_to_pulse_us(int16_t angle_cdeg)
+{
+  int32_t span_cdeg = PROTO_JOINT_ANGLE_MAX_CDEG - PROTO_JOINT_ANGLE_MIN_CDEG;
+  int32_t span_us = SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US;
+  int32_t offset_cdeg = angle_cdeg - PROTO_JOINT_ANGLE_MIN_CDEG;
+
+  return (uint16_t)(SERVO_PULSE_MIN_US + (offset_cdeg * span_us) / span_cdeg);
+}
 
 /**
   * @brief  Computes CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over a buffer.
@@ -124,9 +147,8 @@ static void send_status(void)
 
 /**
   * @brief  Validates and applies a CMD_MOVE_ARM_TO command.
-  * @note   Only latches the commanded angle for now; nothing drives an actual
-  *         servo/motor yet since no timer/PWM peripheral is configured on
-  *         this board.
+  * @note   Latches the commanded angle for status reporting; for
+  *         SERVO_JOINT_ID it also drives the physical servo via PWM.
   * @param  payload Payload bytes: [joint_id][angle_cdeg_lo][angle_cdeg_hi].
   * @param  len     Number of bytes in payload (must be exactly 3).
   * @retval None
@@ -159,10 +181,59 @@ static void handle_move_arm_to(const uint8_t *payload, uint8_t len)
   }
 
   s_joint_angle_cdeg[joint_id] = angle_cdeg;
-  /* TODO: drive the actual servo/motor once actuator hardware (timers/PWM)
-   * is configured for this board; for now the commanded angle is only
-   * latched so the link can be exercised end-to-end. */
+  if (joint_id == SERVO_JOINT_ID)
+  {
+    Servo_SetPulseWidthUs(joint_angle_to_pulse_us(angle_cdeg));
+  }
   send_ack(CMD_MOVE_ARM_TO);
+}
+
+/**
+  * @brief  Validates and applies a CMD_SET_FAN_SPEED command.
+  * @param  payload Payload bytes: [percent].
+  * @param  len     Number of bytes in payload (must be exactly 1).
+  * @retval None
+  */
+static void handle_set_fan_speed(const uint8_t *payload, uint8_t len)
+{
+  if (len != 1u)
+  {
+    send_nack(CMD_SET_FAN_SPEED, NACK_BAD_LENGTH);
+    return;
+  }
+  if (payload[0] > 100u)
+  {
+    send_nack(CMD_SET_FAN_SPEED, NACK_OUT_OF_RANGE);
+    return;
+  }
+  if (s_estopped)
+  {
+    send_nack(CMD_SET_FAN_SPEED, NACK_ESTOPPED);
+    return;
+  }
+
+  Fan_SetSpeedPercent(payload[0]);
+  send_ack(CMD_SET_FAN_SPEED);
+}
+
+/**
+  * @brief  Validates and applies a CMD_SET_FAN_RGB command.
+  * @note   Not gated by e-stop: lighting isn't a motion-safety concern.
+  * @param  payload Payload bytes: [r][g][b], applied to every LED.
+  * @param  len     Number of bytes in payload (must be exactly 3).
+  * @retval None
+  */
+static void handle_set_fan_rgb(const uint8_t *payload, uint8_t len)
+{
+  if (len != 3u)
+  {
+    send_nack(CMD_SET_FAN_RGB, NACK_BAD_LENGTH);
+    return;
+  }
+
+  ARGB_SetAll(payload[0], payload[1], payload[2]);
+  ARGB_Show();
+  send_ack(CMD_SET_FAN_RGB);
 }
 
 /**
@@ -178,7 +249,12 @@ static void handle_frame(uint8_t cmd, const uint8_t *payload, uint8_t payload_le
   {
     case CMD_HEARTBEAT:
       s_last_heartbeat_tick = HAL_GetTick();
-      s_estopped = 0u;
+      if (s_estopped)
+      {
+        s_estopped = 0u;
+        Servo_Resume();
+        Fan_Resume();
+      }
       send_ack(cmd);
       break;
 
@@ -188,11 +264,21 @@ static void handle_frame(uint8_t cmd, const uint8_t *payload, uint8_t payload_le
 
     case CMD_STOP:
       s_estopped = 1u;
+      Servo_Stop();
+      Fan_Stop();
       send_ack(cmd);
       break;
 
     case CMD_GET_STATUS:
       send_status();
+      break;
+
+    case CMD_SET_FAN_SPEED:
+      handle_set_fan_speed(payload, payload_len);
+      break;
+
+    case CMD_SET_FAN_RGB:
+      handle_set_fan_rgb(payload, payload_len);
       break;
 
     default:
@@ -284,6 +370,7 @@ void Protocol_Init(UART_HandleTypeDef *huart)
   s_estopped = 1u; /* stay stopped until the first heartbeat arrives */
   s_last_heartbeat_tick = HAL_GetTick();
   memset(s_joint_angle_cdeg, 0, sizeof(s_joint_angle_cdeg));
+  Servo_Stop(); /* Servo_Init() left PWM running; hold off until armed */
 
   HAL_UART_Receive_IT(s_huart, &s_rx_byte, 1u);
 }
@@ -308,7 +395,8 @@ void Protocol_Process(void)
   if (!s_estopped && ((HAL_GetTick() - s_last_heartbeat_tick) > PROTO_HEARTBEAT_TIMEOUT_MS))
   {
     s_estopped = 1u;
-    /* TODO: once motor drivers exist, cut PWM outputs here. */
+    Servo_Stop();
+    Fan_Stop();
   }
 
   if (!s_frame_ready)

@@ -1,0 +1,5 @@
+../Core/Src/fan.c:11:13:apply_percent	24	static
+../Core/Src/fan.c:16:6:Fan_Init	16	static
+../Core/Src/fan.c:26:6:Fan_SetSpeedPercent	16	static
+../Core/Src/fan.c:37:6:Fan_Stop	8	static
+../Core/Src/fan.c:42:6:Fan_Resume	8	static
