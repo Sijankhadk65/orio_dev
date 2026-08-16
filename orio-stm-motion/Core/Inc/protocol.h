@@ -14,6 +14,7 @@
 
 #include <stdint.h>
 #include "stm32c0xx_hal.h"
+#include "servo_joint.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -22,18 +23,21 @@ extern "C" {
 #define PROTO_STX                  0xAAu
 #define PROTO_MAX_PAYLOAD          16u
 #define PROTO_HEARTBEAT_TIMEOUT_MS 500u
-#define PROTO_ARM_JOINT_COUNT      4u
-#define PROTO_JOINT_ANGLE_MIN_CDEG (-9000)  /* -90.00 deg, in hundredths of a degree */
-#define PROTO_JOINT_ANGLE_MAX_CDEG (9000)   /*  90.00 deg */
+
+/* One slot per ServoJointPosition_t value (neck, left-arm, right-arm). Every
+ * joint is a pan+tilt pair -- see servo_joint.h -- so CMD_MOVE_JOINT_TO
+ * addresses a whole joint by position and moves both servos in one frame. */
+#define PROTO_JOINT_COUNT 3u
 
 typedef enum
 {
   CMD_HEARTBEAT    = 0x01,
-  CMD_MOVE_ARM_TO  = 0x02,
+  CMD_MOVE_JOINT_TO = 0x02, /* payload: [position][pan_cdeg_lo][pan_cdeg_hi][tilt_cdeg_lo][tilt_cdeg_hi] */
   CMD_STOP         = 0x03,
   CMD_GET_STATUS   = 0x04,
   CMD_SET_FAN_SPEED = 0x05, /* payload: [percent 0-100] */
   CMD_SET_FAN_RGB   = 0x06, /* payload: [r][g][b], applied to every LED */
+  CMD_RESET_JOINTS  = 0x07, /* payload: none; moves every joint to its predefined home pose */
 
   CMD_ACK         = 0x80,
   CMD_NACK        = 0x81,
@@ -48,6 +52,21 @@ typedef enum
   NACK_OUT_OF_RANGE    = 0x04,
   NACK_ESTOPPED        = 0x05,
 } ProtoNackReason;
+
+/**
+  * @brief  Binds the physical ServoJoint_t at a body position so
+  *         CMD_MOVE_JOINT_TO can drive it and CMD_GET_STATUS can report it.
+  * @note   Call before Protocol_Init() for any joint that must start held
+  *         stopped (Protocol_Init()'s e-stop-on-boot handling only stops
+  *         joints already bound at that point). Passing NULL leaves that
+  *         position latched for status only, same as a position never bound.
+  * @param  position Which body position joint is being bound.
+  * @param  joint    Pointer to a ServoJoint_t already initialized with
+  *                  ServoJoint_Init() (must outlive the protocol layer), or
+  *                  NULL to unbind.
+  * @retval None
+  */
+void Protocol_BindJoint(ServoJointPosition_t position, ServoJoint_t *joint);
 
 /**
   * @brief  Initializes the protocol layer and arms the first byte-wise UART receive.

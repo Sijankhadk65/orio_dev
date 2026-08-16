@@ -4,7 +4,7 @@
   */
 #include <string.h>
 #include "protocol.h"
-#include "servo.h"
+#include "servo_joint.h"
 #include "fan.h"
 #include "argb.h"
 
@@ -35,27 +35,24 @@ static uint8_t s_frame_payload_len;
 static volatile uint32_t s_last_heartbeat_tick;
 static volatile uint8_t s_estopped;
 
-static int16_t s_joint_angle_cdeg[PROTO_ARM_JOINT_COUNT];
+/* Physical joints, and their last-commanded angles, indexed by
+ * ServoJointPosition_t. Only JOINT_POS_NECK has servos wired up so far;
+ * s_joints[] holds NULL for any position without hardware yet, which is
+ * still latched here for status reporting. */
+static ServoJoint_t *s_joints[PROTO_JOINT_COUNT];
+static int16_t s_pan_cdeg[PROTO_JOINT_COUNT];
+static int16_t s_tilt_cdeg[PROTO_JOINT_COUNT];
 
-/* Only joint 0 has a physical servo (TIM3_CH1 / PA6) wired up so far; the
- * remaining joints are latched for status reporting but don't drive hardware
- * yet. */
-#define SERVO_JOINT_ID 0u
-
-/**
-  * @brief  Maps a commanded joint angle to a servo PWM pulse width.
-  * @param  angle_cdeg Angle in hundredths of a degree, within
-  *                     [PROTO_JOINT_ANGLE_MIN_CDEG, PROTO_JOINT_ANGLE_MAX_CDEG].
-  * @retval Pulse width in microseconds, within [SERVO_PULSE_MIN_US, SERVO_PULSE_MAX_US].
-  */
-static uint16_t joint_angle_to_pulse_us(int16_t angle_cdeg)
-{
-  int32_t span_cdeg = PROTO_JOINT_ANGLE_MAX_CDEG - PROTO_JOINT_ANGLE_MIN_CDEG;
-  int32_t span_us = SERVO_PULSE_MAX_US - SERVO_PULSE_MIN_US;
-  int32_t offset_cdeg = angle_cdeg - PROTO_JOINT_ANGLE_MIN_CDEG;
-
-  return (uint16_t)(SERVO_PULSE_MIN_US + (offset_cdeg * span_us) / span_cdeg);
-}
+/* Reset ("home") pose per joint position, on the same centered command
+ * scale as CMD_MOVE_JOINT_TO (0 = each servo's own mechanical center).
+ *   neck: pan  raw 180 deg on its 0..270 deg datasheet scale is 45 deg past
+ *              pan's 135 deg center -> +4500 cdeg.
+ *         tilt raw 90 deg on its 0..180 deg datasheet scale IS tilt's own
+ *              90 deg center -> 0 cdeg.
+ * left-arm/right-arm have no hardware yet; default to dead center (0, 0)
+ * until their actual reset pose is known. */
+static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 4500, 0, 0 }; /* neck, left-arm, right-arm */
+static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 0, 0, 0 };
 
 /**
   * @brief  Computes CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over a buffer.
@@ -128,64 +125,98 @@ static void send_nack(uint8_t orig_cmd, uint8_t reason)
 }
 
 /**
-  * @brief  Sends a CMD_STATUS frame with the current e-stop state and all
-  *         last-commanded joint angles.
+  * @brief  Sends a CMD_STATUS frame with the current e-stop state and every
+  *         joint's last-commanded pan/tilt angles.
   * @retval None
   */
 static void send_status(void)
 {
-  uint8_t p[1u + (PROTO_ARM_JOINT_COUNT * 2u)];
+  uint8_t p[1u + (PROTO_JOINT_COUNT * 4u)];
 
   p[0] = s_estopped;
-  for (uint32_t i = 0; i < PROTO_ARM_JOINT_COUNT; i++)
+  for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
   {
-    p[1u + (i * 2u)] = (uint8_t)(s_joint_angle_cdeg[i] & 0xFF);
-    p[1u + (i * 2u) + 1u] = (uint8_t)((s_joint_angle_cdeg[i] >> 8) & 0xFF);
+    uint8_t *e = &p[1u + (i * 4u)];
+    e[0] = (uint8_t)(s_pan_cdeg[i] & 0xFF);
+    e[1] = (uint8_t)((s_pan_cdeg[i] >> 8) & 0xFF);
+    e[2] = (uint8_t)(s_tilt_cdeg[i] & 0xFF);
+    e[3] = (uint8_t)((s_tilt_cdeg[i] >> 8) & 0xFF);
   }
   send_frame(CMD_STATUS, p, sizeof(p));
 }
 
 /**
-  * @brief  Validates and applies a CMD_MOVE_ARM_TO command.
-  * @note   Latches the commanded angle for status reporting; for
-  *         SERVO_JOINT_ID it also drives the physical servo via PWM.
-  * @param  payload Payload bytes: [joint_id][angle_cdeg_lo][angle_cdeg_hi].
-  * @param  len     Number of bytes in payload (must be exactly 3).
+  * @brief  Validates and applies a CMD_MOVE_JOINT_TO command.
+  * @note   Latches both angles for status reporting and, if a physical
+  *         ServoJoint_t is bound at that position, drives its pan and tilt
+  *         servos together via a single ServoJoint_SetAngles() call.
+  * @param  payload Payload bytes: [position][pan_cdeg_lo][pan_cdeg_hi][tilt_cdeg_lo][tilt_cdeg_hi].
+  * @param  len     Number of bytes in payload (must be exactly 5).
   * @retval None
   */
-static void handle_move_arm_to(const uint8_t *payload, uint8_t len)
+static void handle_move_joint_to(const uint8_t *payload, uint8_t len)
 {
-  if (len != 3u)
+  if (len != 5u)
   {
-    send_nack(CMD_MOVE_ARM_TO, NACK_BAD_LENGTH);
+    send_nack(CMD_MOVE_JOINT_TO, NACK_BAD_LENGTH);
     return;
   }
 
-  uint8_t joint_id = payload[0];
-  int16_t angle_cdeg = (int16_t)(payload[1] | ((uint16_t)payload[2] << 8));
+  uint8_t position = payload[0];
+  int16_t pan_cdeg = (int16_t)(payload[1] | ((uint16_t)payload[2] << 8));
+  int16_t tilt_cdeg = (int16_t)(payload[3] | ((uint16_t)payload[4] << 8));
 
-  if (joint_id >= PROTO_ARM_JOINT_COUNT)
+  if (position >= PROTO_JOINT_COUNT)
   {
-    send_nack(CMD_MOVE_ARM_TO, NACK_OUT_OF_RANGE);
+    send_nack(CMD_MOVE_JOINT_TO, NACK_OUT_OF_RANGE);
     return;
   }
-  if ((angle_cdeg < PROTO_JOINT_ANGLE_MIN_CDEG) || (angle_cdeg > PROTO_JOINT_ANGLE_MAX_CDEG))
+  if ((pan_cdeg < SERVO_JOINT_PAN_MIN_CDEG) || (pan_cdeg > SERVO_JOINT_PAN_MAX_CDEG)
+      || (tilt_cdeg < SERVO_JOINT_TILT_MIN_CDEG) || (tilt_cdeg > SERVO_JOINT_TILT_MAX_CDEG))
   {
-    send_nack(CMD_MOVE_ARM_TO, NACK_OUT_OF_RANGE);
+    send_nack(CMD_MOVE_JOINT_TO, NACK_OUT_OF_RANGE);
     return;
   }
   if (s_estopped)
   {
-    send_nack(CMD_MOVE_ARM_TO, NACK_ESTOPPED);
+    send_nack(CMD_MOVE_JOINT_TO, NACK_ESTOPPED);
     return;
   }
 
-  s_joint_angle_cdeg[joint_id] = angle_cdeg;
-  if (joint_id == SERVO_JOINT_ID)
+  s_pan_cdeg[position] = pan_cdeg;
+  s_tilt_cdeg[position] = tilt_cdeg;
+  if (s_joints[position] != NULL)
   {
-    Servo_SetPulseWidthUs(joint_angle_to_pulse_us(angle_cdeg));
+    ServoJoint_SetAngles(s_joints[position], pan_cdeg, tilt_cdeg);
   }
-  send_ack(CMD_MOVE_ARM_TO);
+  send_ack(CMD_MOVE_JOINT_TO);
+}
+
+/**
+  * @brief  Validates and applies a CMD_RESET_JOINTS command: moves every
+  *         joint (bound or not) to its predefined reset pose in one shot.
+  * @note   Latches every position's reset angles for status reporting even
+  *         if no physical ServoJoint_t is bound there yet.
+  * @retval None
+  */
+static void handle_reset_joints(void)
+{
+  if (s_estopped)
+  {
+    send_nack(CMD_RESET_JOINTS, NACK_ESTOPPED);
+    return;
+  }
+
+  for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
+  {
+    s_pan_cdeg[i] = s_reset_pan_cdeg[i];
+    s_tilt_cdeg[i] = s_reset_tilt_cdeg[i];
+    if (s_joints[i] != NULL)
+    {
+      ServoJoint_SetAngles(s_joints[i], s_reset_pan_cdeg[i], s_reset_tilt_cdeg[i]);
+    }
+  }
+  send_ack(CMD_RESET_JOINTS);
 }
 
 /**
@@ -237,6 +268,21 @@ static void handle_set_fan_rgb(const uint8_t *payload, uint8_t len)
 }
 
 /**
+  * @brief  Stops every bound joint's servos.
+  * @retval None
+  */
+static void stop_all_joints(void)
+{
+  for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
+  {
+    if (s_joints[i] != NULL)
+    {
+      ServoJoint_Stop(s_joints[i]);
+    }
+  }
+}
+
+/**
   * @brief  Dispatches a fully received, CRC-valid frame to its command handler.
   * @param  cmd         Command opcode.
   * @param  payload     Pointer to the command's payload bytes.
@@ -252,19 +298,29 @@ static void handle_frame(uint8_t cmd, const uint8_t *payload, uint8_t payload_le
       if (s_estopped)
       {
         s_estopped = 0u;
-        Servo_Resume();
+        for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
+        {
+          if (s_joints[i] != NULL)
+          {
+            ServoJoint_Resume(s_joints[i]);
+          }
+        }
         Fan_Resume();
       }
       send_ack(cmd);
       break;
 
-    case CMD_MOVE_ARM_TO:
-      handle_move_arm_to(payload, payload_len);
+    case CMD_MOVE_JOINT_TO:
+      handle_move_joint_to(payload, payload_len);
+      break;
+
+    case CMD_RESET_JOINTS:
+      handle_reset_joints();
       break;
 
     case CMD_STOP:
       s_estopped = 1u;
-      Servo_Stop();
+      stop_all_joints();
       Fan_Stop();
       send_ack(cmd);
       break;
@@ -357,6 +413,11 @@ static void on_byte_received(uint8_t byte)
   }
 }
 
+void Protocol_BindJoint(ServoJointPosition_t position, ServoJoint_t *joint)
+{
+  s_joints[position] = joint;
+}
+
 /**
   * @brief  Initializes the protocol layer and arms the first byte-wise UART receive.
   * @param  huart Pointer to the UART handle the protocol will run on.
@@ -369,8 +430,9 @@ void Protocol_Init(UART_HandleTypeDef *huart)
   s_frame_ready = 0u;
   s_estopped = 1u; /* stay stopped until the first heartbeat arrives */
   s_last_heartbeat_tick = HAL_GetTick();
-  memset(s_joint_angle_cdeg, 0, sizeof(s_joint_angle_cdeg));
-  Servo_Stop(); /* Servo_Init() left PWM running; hold off until armed */
+  memset(s_pan_cdeg, 0, sizeof(s_pan_cdeg));
+  memset(s_tilt_cdeg, 0, sizeof(s_tilt_cdeg));
+  stop_all_joints(); /* ServoJoint_Init() left PWM running; hold off until armed */
 
   HAL_UART_Receive_IT(s_huart, &s_rx_byte, 1u);
 }
@@ -395,7 +457,7 @@ void Protocol_Process(void)
   if (!s_estopped && ((HAL_GetTick() - s_last_heartbeat_tick) > PROTO_HEARTBEAT_TIMEOUT_MS))
   {
     s_estopped = 1u;
-    Servo_Stop();
+    stop_all_joints();
     Fan_Stop();
   }
 

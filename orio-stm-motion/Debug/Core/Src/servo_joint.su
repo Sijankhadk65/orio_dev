@@ -1,0 +1,6 @@
+../Core/Src/servo_joint.c:16:17:angle_to_pulse_us	40	static
+../Core/Src/servo_joint.c:26:16:clamp_cdeg	24	static
+../Core/Src/servo_joint.c:39:6:ServoJoint_Init	40	static
+../Core/Src/servo_joint.c:50:6:ServoJoint_SetAngles	32	static
+../Core/Src/servo_joint.c:63:6:ServoJoint_Stop	16	static
+../Core/Src/servo_joint.c:69:6:ServoJoint_Resume	16	static

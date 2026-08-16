@@ -10,6 +10,7 @@ C_SRCS += \
 ../Core/Src/main.c \
 ../Core/Src/protocol.c \
 ../Core/Src/servo.c \
+../Core/Src/servo_joint.c \
 ../Core/Src/stm32c0xx_hal_msp.c \
 ../Core/Src/stm32c0xx_it.c \
 ../Core/Src/syscalls.c \
@@ -22,6 +23,7 @@ OBJS += \
 ./Core/Src/main.o \
 ./Core/Src/protocol.o \
 ./Core/Src/servo.o \
+./Core/Src/servo_joint.o \
 ./Core/Src/stm32c0xx_hal_msp.o \
 ./Core/Src/stm32c0xx_it.o \
 ./Core/Src/syscalls.o \
@@ -34,6 +36,7 @@ C_DEPS += \
 ./Core/Src/main.d \
 ./Core/Src/protocol.d \
 ./Core/Src/servo.d \
+./Core/Src/servo_joint.d \
 ./Core/Src/stm32c0xx_hal_msp.d \
 ./Core/Src/stm32c0xx_it.d \
 ./Core/Src/syscalls.d \
@@ -48,7 +51,7 @@ Core/Src/%.o Core/Src/%.su Core/Src/%.cyclo: ../Core/Src/%.c Core/Src/subdir.mk
 clean: clean-Core-2f-Src
 
 clean-Core-2f-Src:
-	-$(RM) ./Core/Src/argb.cyclo ./Core/Src/argb.d ./Core/Src/argb.o ./Core/Src/argb.su ./Core/Src/fan.cyclo ./Core/Src/fan.d ./Core/Src/fan.o ./Core/Src/fan.su ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/protocol.cyclo ./Core/Src/protocol.d ./Core/Src/protocol.o ./Core/Src/protocol.su ./Core/Src/servo.cyclo ./Core/Src/servo.d ./Core/Src/servo.o ./Core/Src/servo.su ./Core/Src/stm32c0xx_hal_msp.cyclo ./Core/Src/stm32c0xx_hal_msp.d ./Core/Src/stm32c0xx_hal_msp.o ./Core/Src/stm32c0xx_hal_msp.su ./Core/Src/stm32c0xx_it.cyclo ./Core/Src/stm32c0xx_it.d ./Core/Src/stm32c0xx_it.o ./Core/Src/stm32c0xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32c0xx.cyclo ./Core/Src/system_stm32c0xx.d ./Core/Src/system_stm32c0xx.o ./Core/Src/system_stm32c0xx.su
+	-$(RM) ./Core/Src/argb.cyclo ./Core/Src/argb.d ./Core/Src/argb.o ./Core/Src/argb.su ./Core/Src/fan.cyclo ./Core/Src/fan.d ./Core/Src/fan.o ./Core/Src/fan.su ./Core/Src/main.cyclo ./Core/Src/main.d ./Core/Src/main.o ./Core/Src/main.su ./Core/Src/protocol.cyclo ./Core/Src/protocol.d ./Core/Src/protocol.o ./Core/Src/protocol.su ./Core/Src/servo.cyclo ./Core/Src/servo.d ./Core/Src/servo.o ./Core/Src/servo.su ./Core/Src/servo_joint.cyclo ./Core/Src/servo_joint.d ./Core/Src/servo_joint.o ./Core/Src/servo_joint.su ./Core/Src/stm32c0xx_hal_msp.cyclo ./Core/Src/stm32c0xx_hal_msp.d ./Core/Src/stm32c0xx_hal_msp.o ./Core/Src/stm32c0xx_hal_msp.su ./Core/Src/stm32c0xx_it.cyclo ./Core/Src/stm32c0xx_it.d ./Core/Src/stm32c0xx_it.o ./Core/Src/stm32c0xx_it.su ./Core/Src/syscalls.cyclo ./Core/Src/syscalls.d ./Core/Src/syscalls.o ./Core/Src/syscalls.su ./Core/Src/sysmem.cyclo ./Core/Src/sysmem.d ./Core/Src/sysmem.o ./Core/Src/sysmem.su ./Core/Src/system_stm32c0xx.cyclo ./Core/Src/system_stm32c0xx.d ./Core/Src/system_stm32c0xx.o ./Core/Src/system_stm32c0xx.su
 
 .PHONY: clean-Core-2f-Src
 

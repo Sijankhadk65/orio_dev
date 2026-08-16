@@ -22,7 +22,7 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "protocol.h"
-#include "servo.h"
+#include "servo_joint.h"
 #include "fan.h"
 #include "argb.h"
 /* USER CODE END Includes */
@@ -51,7 +51,7 @@ DMA_HandleTypeDef hdma_tim16_ch1;
 UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+static ServoJoint_t s_neckJoint; /* pan (TIM3_CH1/PA6) + tilt (TIM3_CH2/PA7) */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -107,9 +107,10 @@ int main(void)
   MX_TIM14_Init();
   MX_TIM16_Init();
   /* USER CODE BEGIN 2 */
-  Servo_Init(&htim3, TIM_CHANNEL_1);
+  ServoJoint_Init(&s_neckJoint, JOINT_POS_NECK, &htim3, TIM_CHANNEL_1, &htim3, TIM_CHANNEL_2);
   Fan_Init(&htim14, TIM_CHANNEL_1);
   ARGB_Init(&htim16, TIM_CHANNEL_1);
+  Protocol_BindJoint(JOINT_POS_NECK, &s_neckJoint); /* bind before Protocol_Init() so it can hold the joint stopped */
   Protocol_Init(&huart2);
   /* USER CODE END 2 */
 
@@ -219,8 +220,10 @@ static void MX_USART2_UART_Init(void)
 /**
   * @brief TIM3 Initialization Function
   * @note   Configured for 50 Hz PWM (20 ms period) with the counter clocked
-  *         at 1 MHz, so CCR1 directly equals the pulse width in microseconds
-  *         — see servo.h. Channel 1 drives the SERVO_PWM pin (PA6).
+  *         at 1 MHz, so CCR directly equals the pulse width in microseconds
+  *         — see servo.h. Channel 1 drives the pan servo on SERVO_PWM (PA6);
+  *         channel 2 drives the tilt servo on TILT_SERVO_PWM (PA7) -- the two
+  *         axes of one ServoJoint_t pair (see servo_joint.h).
   * @param None
   * @retval None
   */
@@ -264,6 +267,10 @@ static void MX_TIM3_Init(void)
   sConfigOC.OCPolarity = TIM_OCPOLARITY_HIGH;
   sConfigOC.OCFastMode = TIM_OCFAST_DISABLE;
   if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_TIM_PWM_ConfigChannel(&htim3, &sConfigOC, TIM_CHANNEL_2) != HAL_OK)
   {
     Error_Handler();
   }
@@ -417,6 +424,7 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *timHandle)
     __HAL_RCC_GPIOA_CLK_ENABLE();
     /**TIM3 GPIO Configuration
     PA6     ------> TIM3_CH1
+    PA7     ------> TIM3_CH2
     */
     GPIO_InitStruct.Pin = SERVO_PWM_Pin;
     GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
@@ -424,6 +432,13 @@ void HAL_TIM_MspPostInit(TIM_HandleTypeDef *timHandle)
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
     GPIO_InitStruct.Alternate = GPIO_AF1_TIM3;
     HAL_GPIO_Init(SERVO_PWM_GPIO_Port, &GPIO_InitStruct);
+
+    GPIO_InitStruct.Pin = TILT_SERVO_PWM_Pin;
+    GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+    GPIO_InitStruct.Alternate = GPIO_AF1_TIM3;
+    HAL_GPIO_Init(TILT_SERVO_PWM_GPIO_Port, &GPIO_InitStruct);
   }
   else if (timHandle->Instance == TIM14)
   {
