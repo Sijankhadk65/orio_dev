@@ -49,6 +49,8 @@ extern "C" {
 
 /* USER CODE END EM */
 
+void HAL_TIM_MspPostInit(TIM_HandleTypeDef *htim);
+
 /* Exported functions prototypes ---------------------------------------------*/
 void Error_Handler(void);
 
@@ -65,22 +67,30 @@ void Error_Handler(void);
 #define RCC_OSC_IN_GPIO_Port GPIOF
 #define RCC_OSC_OUT_Pin GPIO_PIN_1
 #define RCC_OSC_OUT_GPIO_Port GPIOF
+#define ARGB_DATA_Pin GPIO_PIN_0
+#define ARGB_DATA_GPIO_Port GPIOA
 #define VCP_USART2_TX_Pin GPIO_PIN_2
 #define VCP_USART2_TX_GPIO_Port GPIOA
 #define VCP_USART2_RX_Pin GPIO_PIN_3
 #define VCP_USART2_RX_GPIO_Port GPIOA
-#define DEBUG_SWDIO_Pin GPIO_PIN_13
-#define DEBUG_SWDIO_GPIO_Port GPIOA
-#define DEBUG_SWCLK_Pin GPIO_PIN_14
-#define DEBUG_SWCLK_GPIO_Port GPIOA
+#define FAN_PWM_Pin GPIO_PIN_4
+#define FAN_PWM_GPIO_Port GPIOA
 #define SERVO_PWM_Pin GPIO_PIN_6
 #define SERVO_PWM_GPIO_Port GPIOA
 #define TILT_SERVO_PWM_Pin GPIO_PIN_7
 #define TILT_SERVO_PWM_GPIO_Port GPIOA
-#define ARGB_DATA_Pin GPIO_PIN_0
-#define ARGB_DATA_GPIO_Port GPIOA
-#define FAN_PWM_Pin GPIO_PIN_4
-#define FAN_PWM_GPIO_Port GPIOA
+#define LEFT_ARM_PAN_PWM_Pin GPIO_PIN_0
+#define LEFT_ARM_PAN_PWM_GPIO_Port GPIOB
+#define LEFT_ARM_TILT_PWM_Pin GPIO_PIN_1
+#define LEFT_ARM_TILT_PWM_GPIO_Port GPIOB
+#define RIGHT_ARM_PAN_PWM_Pin GPIO_PIN_8
+#define RIGHT_ARM_PAN_PWM_GPIO_Port GPIOA
+#define RIGHT_ARM_TILT_PWM_Pin GPIO_PIN_9
+#define RIGHT_ARM_TILT_PWM_GPIO_Port GPIOA
+#define DEBUG_SWDIO_Pin GPIO_PIN_13
+#define DEBUG_SWDIO_GPIO_Port GPIOA
+#define DEBUG_SWCLK_Pin GPIO_PIN_14
+#define DEBUG_SWCLK_GPIO_Port GPIOA
 
 /* USER CODE BEGIN Private defines */
 

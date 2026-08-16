@@ -36,8 +36,8 @@ static volatile uint32_t s_last_heartbeat_tick;
 static volatile uint8_t s_estopped;
 
 /* Physical joints, and their last-commanded angles, indexed by
- * ServoJointPosition_t. Only JOINT_POS_NECK has servos wired up so far;
- * s_joints[] holds NULL for any position without hardware yet, which is
+ * ServoJointPosition_t. s_joints[] holds NULL for any position without
+ * hardware bound yet (Protocol_BindJoint() never called for it), which is
  * still latched here for status reporting. */
 static ServoJoint_t *s_joints[PROTO_JOINT_COUNT];
 static int16_t s_pan_cdeg[PROTO_JOINT_COUNT];
@@ -49,8 +49,8 @@ static int16_t s_tilt_cdeg[PROTO_JOINT_COUNT];
  *              pan's 135 deg center -> +4500 cdeg.
  *         tilt raw 90 deg on its 0..180 deg datasheet scale IS tilt's own
  *              90 deg center -> 0 cdeg.
- * left-arm/right-arm have no hardware yet; default to dead center (0, 0)
- * until their actual reset pose is known. */
+ * left-arm/right-arm default to dead center (0, 0) until their actual
+ * reset pose is measured on the physical brackets and tuned like neck's. */
 static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 4500, 0, 0 }; /* neck, left-arm, right-arm */
 static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 0, 0, 0 };
 
