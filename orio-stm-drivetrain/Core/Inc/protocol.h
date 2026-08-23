@@ -17,7 +17,7 @@
 #define PROTOCOL_H
 
 #include <stdint.h>
-#include "stm32c0xx_hal.h"
+#include "stm32l1xx_hal.h"
 
 #ifdef __cplusplus
 extern "C" {
