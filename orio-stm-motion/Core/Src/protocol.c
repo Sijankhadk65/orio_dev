@@ -45,14 +45,19 @@ static int16_t s_tilt_cdeg[PROTO_JOINT_COUNT];
 
 /* Reset ("home") pose per joint position, on the same centered command
  * scale as CMD_MOVE_JOINT_TO (0 = each servo's own mechanical center).
- *   neck: pan  raw 180 deg on its 0..270 deg datasheet scale is 45 deg past
- *              pan's 135 deg center -> +4500 cdeg.
- *         tilt raw 90 deg on its 0..180 deg datasheet scale IS tilt's own
- *              90 deg center -> 0 cdeg.
- * left-arm/right-arm default to dead center (0, 0) until their actual
- * reset pose is measured on the physical brackets and tuned like neck's. */
-static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 4500, 0, 0 }; /* neck, left-arm, right-arm */
-static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 0, 0, 0 };
+ * Every joint's tilt is now limited to a 30.00..90.00 deg window (see
+ * kJointLimits in servo_joint.c), so 0 cdeg is no longer a valid tilt
+ * anywhere -- 6000 cdeg (60.00 deg) is that window's midpoint, used as a
+ * neutral default for all three until a specific joint needs its own.
+ *   neck pan: raw 180 deg on its 0..270 deg datasheet scale is 45 deg past
+ *             pan's 135 deg center -> +4500 cdeg.
+ * left-arm/right-arm pan default to dead center (0) until their actual
+ * reset pose is measured on the physical brackets and tuned like neck's.
+ * handle_reset_joints() still clamps these against each joint's live
+ * limit before latching/applying, so a future limit change can't desync
+ * CMD_GET_STATUS from what's actually commanded to hardware. */
+static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 4500, 0, 0 };    /* neck, left-arm, right-arm */
+static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 6000, 6000, 6000 };
 
 /**
   * @brief  Computes CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over a buffer.
@@ -171,8 +176,11 @@ static void handle_move_joint_to(const uint8_t *payload, uint8_t len)
     send_nack(CMD_MOVE_JOINT_TO, NACK_OUT_OF_RANGE);
     return;
   }
-  if ((pan_cdeg < SERVO_JOINT_PAN_MIN_CDEG) || (pan_cdeg > SERVO_JOINT_PAN_MAX_CDEG)
-      || (tilt_cdeg < SERVO_JOINT_TILT_MIN_CDEG) || (tilt_cdeg > SERVO_JOINT_TILT_MAX_CDEG))
+
+  const ServoAxisLimit_t *pan_limit = ServoJoint_PanLimit((ServoJointPosition_t)position);
+  const ServoAxisLimit_t *tilt_limit = ServoJoint_TiltLimit((ServoJointPosition_t)position);
+  if ((pan_cdeg < pan_limit->min_cdeg) || (pan_cdeg > pan_limit->max_cdeg)
+      || (tilt_cdeg < tilt_limit->min_cdeg) || (tilt_cdeg > tilt_limit->max_cdeg))
   {
     send_nack(CMD_MOVE_JOINT_TO, NACK_OUT_OF_RANGE);
     return;
@@ -192,11 +200,29 @@ static void handle_move_joint_to(const uint8_t *payload, uint8_t len)
   send_ack(CMD_MOVE_JOINT_TO);
 }
 
+static int16_t clamp_cdeg(int16_t value, int16_t min_cdeg, int16_t max_cdeg)
+{
+  if (value < min_cdeg)
+  {
+    return min_cdeg;
+  }
+  if (value > max_cdeg)
+  {
+    return max_cdeg;
+  }
+  return value;
+}
+
 /**
   * @brief  Validates and applies a CMD_RESET_JOINTS command: moves every
   *         joint (bound or not) to its predefined reset pose in one shot.
   * @note   Latches every position's reset angles for status reporting even
-  *         if no physical ServoJoint_t is bound there yet.
+  *         if no physical ServoJoint_t is bound there yet. Clamps each
+  *         reset angle against that position's live limit before latching,
+  *         so CMD_GET_STATUS can never report a value different from what
+  *         ServoJoint_SetAngles() would actually apply -- protects against
+  *         the reset table and a joint's limit drifting out of sync (e.g.
+  *         after a limit change) without anyone noticing.
   * @retval None
   */
 static void handle_reset_joints(void)
@@ -209,11 +235,16 @@ static void handle_reset_joints(void)
 
   for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
   {
-    s_pan_cdeg[i] = s_reset_pan_cdeg[i];
-    s_tilt_cdeg[i] = s_reset_tilt_cdeg[i];
+    const ServoAxisLimit_t *pan_limit = ServoJoint_PanLimit((ServoJointPosition_t)i);
+    const ServoAxisLimit_t *tilt_limit = ServoJoint_TiltLimit((ServoJointPosition_t)i);
+    int16_t pan_cdeg = clamp_cdeg(s_reset_pan_cdeg[i], pan_limit->min_cdeg, pan_limit->max_cdeg);
+    int16_t tilt_cdeg = clamp_cdeg(s_reset_tilt_cdeg[i], tilt_limit->min_cdeg, tilt_limit->max_cdeg);
+
+    s_pan_cdeg[i] = pan_cdeg;
+    s_tilt_cdeg[i] = tilt_cdeg;
     if (s_joints[i] != NULL)
     {
-      ServoJoint_SetAngles(s_joints[i], s_reset_pan_cdeg[i], s_reset_tilt_cdeg[i]);
+      ServoJoint_SetAngles(s_joints[i], pan_cdeg, tilt_cdeg);
     }
   }
   send_ack(CMD_RESET_JOINTS);

@@ -27,7 +27,7 @@ extern "C" {
 /* One slot per ServoJointPosition_t value (neck, left-arm, right-arm). Every
  * joint is a pan+tilt pair -- see servo_joint.h -- so CMD_MOVE_JOINT_TO
  * addresses a whole joint by position and moves both servos in one frame. */
-#define PROTO_JOINT_COUNT 3u
+#define PROTO_JOINT_COUNT SERVO_JOINT_POSITION_COUNT
 
 typedef enum
 {
