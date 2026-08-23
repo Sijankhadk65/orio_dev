@@ -108,7 +108,7 @@ static void send_nack(uint8_t orig_cmd, uint8_t reason)
   * @param  side Which side's telemetry to append.
   * @retval None
   */
-static void append_status_side(uint8_t *dst, DriveSide_t side)
+static void append_status_side(uint8_t *dst, WheelSide_t side)
 {
   const VescTelemetry_t *t = Wheel_GetTelemetry(side);
   dst[0] = (uint8_t)(t->erpm & 0xFF);
@@ -130,11 +130,11 @@ static void append_status_side(uint8_t *dst, DriveSide_t side)
   */
 static void send_status(void)
 {
-  uint8_t p[1u + (DRIVE_SIDE_COUNT * 10u)];
+  uint8_t p[1u + (WHEEL_SIDE_COUNT * 10u)];
 
   p[0] = s_estopped;
-  append_status_side(&p[1], DRIVE_LEFT);
-  append_status_side(&p[11], DRIVE_RIGHT);
+  append_status_side(&p[1], WHEEL_LEFT);
+  append_status_side(&p[11], WHEEL_RIGHT);
   send_frame(CMD_STATUS, p, sizeof(p));
 }
 

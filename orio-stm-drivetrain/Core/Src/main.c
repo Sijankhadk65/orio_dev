@@ -22,7 +22,6 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "protocol.h"
-#include "usart_mux.h"
 #include "wheel.h"
 /* USER CODE END Includes */
 
@@ -96,8 +95,7 @@ int main(void)
   MX_USART2_UART_Init();
   MX_USART1_UART_Init();
   /* USER CODE BEGIN 2 */
-  UsartMux_Init(&huart1);
-  Wheel_Init();
+  Wheel_Init(&huart1, &huart3); /* huart1 = left FSESC, huart3 = right FSESC */
   Protocol_Init(&huart2); /* e-stops both wheels until the first heartbeat */
   s_last_telemetry_poll_tick = HAL_GetTick();
   /* USER CODE END 2 */
@@ -276,9 +274,10 @@ static void MX_GPIO_Init(void)
 /* USER CODE BEGIN 4 */
 /**
   * @brief  UART Rx-complete callback: forwards the received byte to the protocol layer.
-  * @note   Only fires for USART2 (the Jetson link) -- USART1 (the FSESC mux
-  *         link) is driven exclusively by blocking calls from vesc.c, never
-  *         armed with HAL_UART_Receive_IT, so no byte from it ever lands here.
+  * @note   Only fires for USART2 (the Jetson link) -- USART1/USART3 (the two
+  *         dedicated FSESC links) are driven exclusively by blocking calls
+  *         from vesc.c, never armed with HAL_UART_Receive_IT, so no byte
+  *         from either of them ever lands here.
   * @param  huart UART handle for which the receive completed.
   * @retval None
   */

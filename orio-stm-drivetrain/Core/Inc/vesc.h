@@ -1,7 +1,7 @@
 /**
   * @file    vesc.h
-  * @brief   Minimal VESC UART driver for one FSESC: enough to command duty
-  *          cycle and poll basic telemetry over usart_mux.h's shared link.
+  * @brief   Minimal VESC UART driver for one FSESC, talking over its own
+  *          dedicated hardware UART (no mux -- each FSESC gets a full USART).
   *
   * Packet layout (short packets only -- our payloads are always <256 bytes):
   *   [0x02][LEN][CMD][PAYLOAD 0..LEN-2][CRC16_HI][CRC16_LO][0x03]
@@ -14,18 +14,18 @@
 #define VESC_H
 
 #include <stdint.h>
-#include "usart_mux.h"
+#include "stm32l1xx_hal.h"
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 /**
-  * @brief  One FSESC, addressed through the shared USART1 mux.
+  * @brief  One FSESC, addressed over its own dedicated UART.
   */
 typedef struct
 {
-  DriveSide_t side;
+  UART_HandleTypeDef *huart;
 } Vesc_t;
 
 /**
@@ -46,17 +46,18 @@ typedef struct
 } VescTelemetry_t;
 
 /**
-  * @brief  Binds a Vesc_t to a mux side. Call after UsartMux_Init().
-  * @param  esc  Instance to initialize.
-  * @param  side Which mux side (and therefore which physical FSESC) this is.
+  * @brief  Binds a Vesc_t to its dedicated UART.
+  * @param  esc   Instance to initialize.
+  * @param  huart Pointer to the UART handle wired to this FSESC's COMM port
+  *               (must already be HAL_UART_Init'd), e.g. &huart1 or &huart3.
   * @retval None
   */
-void Vesc_Init(Vesc_t *esc, DriveSide_t side);
+void Vesc_Init(Vesc_t *esc, UART_HandleTypeDef *huart);
 
 /**
   * @brief  Sends a COMM_SET_DUTY command.
-  * @note   Fire-and-forget -- FSESC does not ack a SET_DUTY. If the mux link
-  *         is down this silently does nothing; rely on the FSESC's own
+  * @note   Fire-and-forget -- FSESC does not ack a SET_DUTY. If the link is
+  *         down this silently does nothing; rely on the FSESC's own
   *         UART-timeout safety cutoff (~1s) as the last-resort backstop, and
   *         on Wheel_Stop()/the Jetson heartbeat as the primary one.
   * @param  esc            Instance, already initialized with Vesc_Init().

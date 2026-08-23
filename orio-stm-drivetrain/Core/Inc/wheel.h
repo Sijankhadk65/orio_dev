@@ -14,10 +14,22 @@ extern "C" {
 #endif
 
 /**
-  * @brief  Binds both FSESCs through the mux. Call after UsartMux_Init().
+  * @brief  Which wheel -- and which dedicated UART/FSESC -- an index refers to.
+  */
+typedef enum
+{
+  WHEEL_LEFT = 0,
+  WHEEL_RIGHT = 1,
+  WHEEL_SIDE_COUNT,
+} WheelSide_t;
+
+/**
+  * @brief  Binds both FSESCs to their own dedicated UARTs.
+  * @param  huart_left  UART handle wired to the left FSESC's COMM port.
+  * @param  huart_right UART handle wired to the right FSESC's COMM port.
   * @retval None
   */
-void Wheel_Init(void);
+void Wheel_Init(UART_HandleTypeDef *huart_left, UART_HandleTypeDef *huart_right);
 
 /**
   * @brief  Commands both wheels' duty cycle.
@@ -58,7 +70,7 @@ void Wheel_PollTelemetry(void);
   * @retval Pointer to the cached VescTelemetry_t (owned by wheel.c, valid
   *         until the next Wheel_PollTelemetry() call).
   */
-const VescTelemetry_t *Wheel_GetTelemetry(DriveSide_t side);
+const VescTelemetry_t *Wheel_GetTelemetry(WheelSide_t side);
 
 #ifdef __cplusplus
 }

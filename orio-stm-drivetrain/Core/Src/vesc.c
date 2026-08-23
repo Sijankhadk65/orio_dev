@@ -83,9 +83,9 @@ static uint16_t vesc_build_packet(uint8_t *frame, uint8_t cmd, const uint8_t *pa
   return idx;
 }
 
-void Vesc_Init(Vesc_t *esc, DriveSide_t side)
+void Vesc_Init(Vesc_t *esc, UART_HandleTypeDef *huart)
 {
-  esc->side = side;
+  esc->huart = huart;
 }
 
 void Vesc_SetDuty(Vesc_t *esc, int16_t duty_permille)
@@ -109,7 +109,7 @@ void Vesc_SetDuty(Vesc_t *esc, int16_t duty_permille)
 
   uint8_t frame[4u + 6u];
   uint16_t len = vesc_build_packet(frame, VESC_COMM_SET_DUTY, payload, sizeof(payload));
-  UsartMux_Transmit(esc->side, frame, len, VESC_UART_TIMEOUT_MS);
+  HAL_UART_Transmit(esc->huart, frame, len, VESC_UART_TIMEOUT_MS);
 }
 
 void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
@@ -118,7 +118,7 @@ void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
 
   uint8_t frame[0u + 6u];
   uint16_t len = vesc_build_packet(frame, VESC_COMM_GET_VALUES, NULL, 0u);
-  if (UsartMux_Transmit(esc->side, frame, len, VESC_UART_TIMEOUT_MS) != HAL_OK)
+  if (HAL_UART_Transmit(esc->huart, frame, len, VESC_UART_TIMEOUT_MS) != HAL_OK)
   {
     return;
   }
@@ -129,11 +129,11 @@ void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
   uint8_t crc_bytes[2];
   uint8_t end;
 
-  if (UsartMux_Receive(esc->side, &start, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK || start != VESC_PKT_START)
+  if (HAL_UART_Receive(esc->huart, &start, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK || start != VESC_PKT_START)
   {
     return;
   }
-  if (UsartMux_Receive(esc->side, &payload_len, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK)
+  if (HAL_UART_Receive(esc->huart, &payload_len, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK)
   {
     return;
   }
@@ -141,15 +141,15 @@ void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
   {
     return;
   }
-  if (UsartMux_Receive(esc->side, payload, payload_len, VESC_UART_TIMEOUT_MS) != HAL_OK)
+  if (HAL_UART_Receive(esc->huart, payload, payload_len, VESC_UART_TIMEOUT_MS) != HAL_OK)
   {
     return;
   }
-  if (UsartMux_Receive(esc->side, crc_bytes, 2u, VESC_UART_TIMEOUT_MS) != HAL_OK)
+  if (HAL_UART_Receive(esc->huart, crc_bytes, 2u, VESC_UART_TIMEOUT_MS) != HAL_OK)
   {
     return;
   }
-  if (UsartMux_Receive(esc->side, &end, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK || end != VESC_PKT_END)
+  if (HAL_UART_Receive(esc->huart, &end, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK || end != VESC_PKT_END)
   {
     return;
   }
