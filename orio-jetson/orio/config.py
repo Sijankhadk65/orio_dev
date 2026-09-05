@@ -158,9 +158,34 @@ TOOLS_ENABLED = _env("ORIO_TOOLS", "1").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
-# Camera device index passed to cv2.VideoCapture. 0 is usually the first/only
-# webcam; bump if multiple cameras are attached.
+# Camera device index passed to cv2.VideoCapture. Only used for USB webcams,
+# i.e. when CAMERA_USE_ARGUS is off — the CSI cameras go through Argus below.
 CAMERA_INDEX = int(_env("ORIO_CAMERA_INDEX", "0"))
+
+# Capture the CSI camera through a GStreamer nvarguscamerasrc pipeline instead
+# of a plain cv2.VideoCapture(index).
+#
+# This is not a preference — it is the only thing that works on the Jetson. The
+# IMX219 exposes a single V4L2 format, RG10 (10-bit packed Bayer), and
+# debayering is done by the Jetson ISP, reached through Argus. A plain V4L2
+# grab hands OpenCV data it cannot convert, so it returns a *constant green
+# frame* and still reports success — the camera looks alive and YOLO silently
+# detects nothing. Turn this off only for a genuine USB webcam.
+CAMERA_USE_ARGUS = _env("ORIO_CAMERA_USE_ARGUS", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Argus sensor id. NOT the /dev/video* number: on this carrier board the two are
+# inverted (video0 is CAM1, video1 is CAM0), so treat them as separate
+# namespaces. See orio_csi_camera_troubleshooting.md in the knowledge base.
+CAMERA_SENSOR_ID = int(_env("ORIO_CAMERA_SENSOR_ID", "0"))
+
+# Frame geometry delivered to YOLO. The sensor's native mode is 3280x2464 (8 MP);
+# nvvidconv downscales on hardware for free, so there is no reason to run
+# inference on full-resolution frames.
+CAMERA_WIDTH = int(_env("ORIO_CAMERA_WIDTH", "1280"))
+CAMERA_HEIGHT = int(_env("ORIO_CAMERA_HEIGHT", "720"))
+CAMERA_FPS = int(_env("ORIO_CAMERA_FPS", "30"))
 
 # YOLO checkpoint: a bare name (e.g. "yolo11n.pt") auto-downloads from
 # Ultralytics on first use into models/yolo/ (gitignored); point at a local

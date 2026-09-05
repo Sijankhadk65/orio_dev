@@ -97,11 +97,31 @@ on a Jetson, where "default" captured pure silence but "pipewire" correctly
 reached the USB mic. An explicit `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE`
 always overrides this.
 
-**5. Camera (for the vision tool)** — needs a webcam at `ORIO_CAMERA_INDEX`
-(default `0`, the first/only camera). The YOLO nano checkpoint (~6 MB)
-auto-downloads into `models/yolo/` (gitignored) the first time the vision tool
-actually runs. No camera, or want the LLM to run with no tools at all? Set
-`ORIO_TOOLS=0` — Orio still runs fine, it just can't answer "what do you see".
+**5. Camera (for the vision tool)** — on the Jetson this is the IMX219 CSI
+pair, captured through the ISP via Argus. That needs an OpenCV built with
+GStreamer, which PyPI's `opencv-python` is not, so the project uses JetPack's
+system build instead. Link it into the venv (idempotent, safe to re-run):
+
+```bash
+sudo apt install python3-opencv      # once, if not already present
+uv run python tools/link_system_cv2.py
+```
+
+**Re-run that after recreating the venv** — `uv sync` alone will not restore
+the link, and without it CSI capture cannot work. Two related pins exist for
+the same reason and should not be "cleaned up": `requires-python = ">=3.12,<3.13"`
+(the system cv2 is built for 3.12 only) and `numpy<2` (it is compiled against
+numpy 1.x). `[tool.uv] override-dependencies` also keeps `opencv-python` out of
+the environment so it cannot shadow the link.
+
+For a plain USB webcam instead, set `ORIO_CAMERA_USE_ARGUS=0` and pick the
+device with `ORIO_CAMERA_INDEX` — that path is ordinary V4L2 and needs none of
+the above.
+
+The YOLO nano checkpoint (~6 MB) auto-downloads into `models/yolo/`
+(gitignored) the first time the vision tool actually runs. No camera, or want
+the LLM to run with no tools at all? Set `ORIO_TOOLS=0` — Orio still runs fine,
+it just can't answer "what do you see".
 
 **6. Local settings (optional)** — for anything you want to keep set across
 runs (device pins, `ORIO_EYES`, etc.), copy `settings.example.json` to
@@ -190,7 +210,12 @@ way.
 | `ORIO_VAD_MAX_PHRASE_S` | `15` | Hard cap on a single phrase's length |
 | `ORIO_VAD_THRESHOLD_FACTOR` | `3.0` | Speech threshold as a multiple of the ambient noise floor |
 | `ORIO_TOOLS` | `1` | `0` to disable all LLM tool-calling (e.g. no camera) |
-| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index |
+| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index (USB webcams only, i.e. when Argus is off) |
+| `ORIO_CAMERA_USE_ARGUS` | `1` | `1` to capture CSI cameras via `nvarguscamerasrc`; `0` for plain V4L2 |
+| `ORIO_CAMERA_SENSOR_ID` | `0` | Argus sensor id — *not* the `/dev/video*` number, the two are inverted |
+| `ORIO_CAMERA_WIDTH` | `1280` | Frame width handed to YOLO (ISP downscales in hardware) |
+| `ORIO_CAMERA_HEIGHT` | `720` | Frame height handed to YOLO |
+| `ORIO_CAMERA_FPS` | `30` | Sensor capture rate |
 | `ORIO_YOLO_MODEL` | `models/yolo/yolo11n.pt` | Ultralytics checkpoint name or path; auto-downloads if missing |
 | `ORIO_YOLO_CONFIDENCE` | `0.5` | Minimum detection confidence [0,1] to report an object |
 | `ORIO_VISION_DEBUG` | `0` | `1` for a live camera + detection-box preview window |
@@ -225,6 +250,14 @@ YOLO nano model, and gets back the actual objects, their rough position
 (left/center/right, close/far), and confidence — the model answers from that,
 not a guess. It's read-only: the tool only reports what's visible, it never
 drives or moves anything.
+
+**Why capture goes through Argus** — the IMX219 exposes exactly one V4L2
+format, `RG10` (10-bit packed Bayer), and only the Jetson ISP debayers it. A
+plain `cv2.VideoCapture(index)` therefore returns a **solid green frame while
+reporting success**: `read()` gives `True`, the array has the right shape, and
+every pixel is identical. Nothing raises — it just looks like the camera works
+and YOLO never detects anything. `ObjectDetector` logs an explicit error if it
+ever sees a single-colour frame, so that failure can't go quiet again.
 
 Missing camera, opencv, or ultralytics? `get_tools()` in `orio/tools.py`
 catches it and Orio just runs with no tools, same as any other optional piece
