@@ -3,8 +3,12 @@
 
     uv run python tools/stereo_debug.py
 
-Left pane is the left camera with sector distances drawn over it; right pane is
-the colourised depth map (warm = near, cool = far, black = unknown). The bar
+Left pane is the RECTIFIED left camera with sector distances drawn over it;
+right pane is the colourised depth map (warm = near, cool = far, black =
+unknown). Rectified, because that is the frame the depth map is computed in —
+the raw capture is displaced from it by enough to make the comparison useless.
+Black borders in the left pane are therefore real: they are the part of the
+output frame that rectification leaves undefined, and no depth can exist there. The bar
 under each sector shows its distance, and a sector with too few valid pixels
 reads UNKNOWN rather than a number — the distinction that matters, since
 "unknown" must never be acted on as "clear".

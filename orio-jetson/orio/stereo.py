@@ -45,6 +45,7 @@ it to the STM32 — is intentionally not implemented here.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from dataclasses import dataclass
@@ -260,10 +261,14 @@ class DepthEstimator:
         self._height = height
         self._baseline_m = baseline_m
         self._maps = None  # rectification maps, when calibrated
+        self._rect_valid = None  # where those maps actually have source data
         self._matcher = None
         self.calibrated = False
         self._focal_px = config.STEREO_FALLBACK_FOCAL_PX_AT_640 * (width / 640.0)
         self._vshift = int(round(config.STEREO_FALLBACK_VSHIFT_FRAC * height))
+        # Uncalibrated the frame is uncropped, so the datasheet FOV is right;
+        # `_load_calibration` replaces this with the rectified value.
+        self.hfov_deg = config.STEREO_HFOV_DEG
         self._load_calibration(calibration)
 
     def _load_calibration(self, path: Path) -> None:
@@ -285,29 +290,77 @@ class DepthEstimator:
         scale = self._width / float(data["image_width"])
         K1, K2 = data["K1"] * scale, data["K2"] * scale
         K1[2, 2] = K2[2, 2] = 1.0
+        # T is in MILLIMETRES: calibrate_stereo.py builds its board model in mm
+        # so the solved baseline is directly comparable to the published 60 mm.
+        # It has to become metres here, because T sets the units of P2[0,3] (and
+        # of Q) and this module speaks metres throughout. Feeding mm straight in
+        # does not produce a visibly silly number — it makes every depth 1000x
+        # too large, which the STEREO_MAX_RANGE_M gate then turns into NaN, so
+        # the symptom is "unknown everywhere" rather than "distances look wrong".
+        #
+        # alpha=-1 is OpenCV's default scaling, not alpha=0. alpha=0 crops to the
+        # rectangle both rectified images fully cover, and on this rig that is a
+        # 1.66x zoom: it throws away a third of the horizontal view (73.8 -> 48.7
+        # deg) and inflates the focal length, which in turn demands more
+        # disparities and so widens the structurally-blind left band. Measured
+        # A/B on live frames, alpha=-1 wins on every axis that matters —
+        #
+        #   alpha  hfov    numDisp  near     valid px  blind band  sectors seen
+        #    0.0   48.7 deg   96    0.23 m    34.4%      30%          4 of 7
+        #   -1.0   74.1 deg   64    0.21 m    38.7%      20%          6 of 7
+        #
+        # The cost is invalid pixels near the frame edges, which SGBM cannot
+        # match anyway and which therefore already read as unknown depth.
         R1, R2, P1, P2, Q, _, _ = cv2.stereoRectify(
-            K1, data["D1"], K2, data["D2"], size, data["R"], data["T"],
-            flags=cv2.CALIB_ZERO_DISPARITY, alpha=0,
+            K1, data["D1"], K2, data["D2"], size, data["R"], data["T"] / 1000.0,
+            flags=cv2.CALIB_ZERO_DISPARITY, alpha=-1,
         )
         self._maps = (
             cv2.initUndistortRectifyMap(K1, data["D1"], R1, P1, size, cv2.CV_16SC2),
             cv2.initUndistortRectifyMap(K2, data["D2"], R2, P2, size, cv2.CV_16SC2),
         )
+        # Rectification leaves part of the output frame with no source pixel, and
+        # remap fills that with BLACK — in both eyes. SGBM then matches black
+        # against black and returns a confident disparity for a region that
+        # contains no information at all, which is the one thing this module must
+        # never do: unknown must not come back as a measurement. Measured at 0.8%
+        # of the frame reporting a fabricated ~1.65 m, a third of it inside the
+        # obstacle band. Remapping a solid image finds the region exactly.
+        ones = np.full((self._height, self._width), 255, np.uint8)
+        self._rect_valid = (cv2.remap(ones, *self._maps[0], cv2.INTER_LINEAR) > 0) & (
+            cv2.remap(ones, *self._maps[1], cv2.INTER_LINEAR) > 0
+        )
         self._focal_px = float(P1[0, 0])
         self._baseline_m = abs(float(P2[0, 3] / P2[0, 0]))
+        # Sector angles must come from the rectified focal, not the datasheet
+        # FOV: rectification rescales the frame (see the alpha note above), so
+        # the two agree only by accident. Reading 73 deg off a 48.7 deg frame
+        # puts every obstacle further out to the side than it really is.
+        self.hfov_deg = 2.0 * math.degrees(math.atan(self._width / 2.0 / self._focal_px))
         self.calibrated = True
         log.info(
-            "stereo calibration loaded: focal %.1f px, baseline %.1f mm",
-            self._focal_px, self._baseline_m * 1000,
+            "stereo calibration loaded: focal %.1f px, baseline %.1f mm, hfov %.1f deg",
+            self._focal_px, self._baseline_m * 1000, self.hfov_deg,
         )
 
     def _ensure_matcher(self):
         if self._matcher is None:
             import cv2
 
-            # numDisparities must be a multiple of 16 and sets the near limit:
-            # closer than focal*baseline/numDisparities cannot be measured.
-            num_disp = 16 * max(1, round(self._width * 96 / 640 / 16))
+            # numDisparities must be a multiple of 16, and it sets the NEAR
+            # limit: closer than focal*baseline/numDisparities cannot be
+            # measured. Derive it from the optics actually in effect rather than
+            # from the frame width, because rectification rescales the focal
+            # length and would otherwise push the near limit out past
+            # STEREO_MIN_RANGE_M — going blind at exactly the distances an
+            # obstacle map is for. It is a real trade: the leftmost
+            # numDisparities columns can never match, so this also sets how much
+            # of the left edge is structurally unknown. Capped at half the width,
+            # past which the blind band costs more than the near range is worth.
+            needed = self._focal_px * self._baseline_m / config.STEREO_MIN_RANGE_M
+            num_disp = 16 * min(
+                max(1, math.ceil(needed / 16)), max(1, self._width // 32)
+            )
             block = 7
             self._matcher = cv2.StereoSGBM_create(
                 minDisparity=0,
@@ -323,8 +376,15 @@ class DepthEstimator:
             )
         return self._matcher
 
-    def depth(self, left, right):
-        """(left, right) BGR pair -> float32 depth in metres, NaN where unknown."""
+    def rectify(self, left, right):
+        """(left, right) BGR pair -> the same pair as SGBM will see it.
+
+        Split out of `depth` because anything drawing depth alongside an image
+        has to draw it over *this* image, not the raw frame. Rectification moves
+        content by a long way — the principal point lands 85 px off centre on
+        this rig — so overlaying a depth map on the unrectified capture lines up
+        nothing with anything.
+        """
         import cv2
         import numpy as np
 
@@ -335,6 +395,20 @@ class DepthEstimator:
             # Uncalibrated: strip the measured rigid row offset so SGBM's
             # row-alignment assumption at least approximately holds.
             right = np.roll(right, -self._vshift, axis=0)
+        return left, right
+
+    def depth(self, left, right, rectified: bool = False):
+        """(left, right) BGR pair -> float32 depth in metres, NaN where unknown.
+
+        Pass `rectified=True` if the pair has already been through `rectify`,
+        so a caller that needs the rectified frames too does not pay for the
+        remap twice.
+        """
+        import cv2
+        import numpy as np
+
+        if not rectified:
+            left, right = self.rectify(left, right)
 
         gl = cv2.cvtColor(left, cv2.COLOR_BGR2GRAY)
         gr = cv2.cvtColor(right, cv2.COLOR_BGR2GRAY)
@@ -348,6 +422,12 @@ class DepthEstimator:
         # baseline simply cannot speak to it.
         depth[disp <= 0] = np.nan
         depth[(depth < config.STEREO_MIN_RANGE_M) | (depth > config.STEREO_MAX_RANGE_M)] = np.nan
+        if self._rect_valid is not None:
+            depth[~self._rect_valid] = np.nan
+        elif self._vshift:
+            # The uncalibrated path rolls the right eye, which wraps the top rows
+            # around to the bottom. Same problem, same answer.
+            depth[-self._vshift :, :] = np.nan
         return depth
 
 
@@ -355,7 +435,7 @@ def obstacles(
     depth,
     calibrated: bool,
     sectors: int = config.STEREO_SECTORS,
-    hfov_deg: float = 73.0,
+    hfov_deg: float = config.STEREO_HFOV_DEG,
 ) -> ObstacleMap:
     """Reduce a depth map to the nearest obstacle in each vertical sector.
 
@@ -408,14 +488,28 @@ class ObstacleDetector:
         with self._lock:
             left, right = self._camera.read()
             depth = self._estimator.depth(left, right)
-        return obstacles(depth, calibrated=self._estimator.calibrated)
+        return obstacles(
+            depth,
+            calibrated=self._estimator.calibrated,
+            hfov_deg=self._estimator.hfov_deg,
+        )
 
     def sense_with_frames(self):
-        """`(ObstacleMap, left, depth)` — for the debug view's overlay."""
+        """`(ObstacleMap, left, depth)` — for the debug view's overlay.
+
+        The frame returned is the RECTIFIED left eye, pixel-aligned with the
+        depth map, so the two can be drawn side by side and compared.
+        """
         with self._lock:
             left, right = self._camera.read()
-            depth = self._estimator.depth(left, right)
-        return obstacles(depth, calibrated=self._estimator.calibrated), left, depth
+            left, right = self._estimator.rectify(left, right)
+            depth = self._estimator.depth(left, right, rectified=True)
+        omap = obstacles(
+            depth,
+            calibrated=self._estimator.calibrated,
+            hfov_deg=self._estimator.hfov_deg,
+        )
+        return omap, left, depth
 
     def close(self) -> None:
         self._camera.close()

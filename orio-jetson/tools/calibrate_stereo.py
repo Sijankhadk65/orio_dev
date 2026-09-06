@@ -19,6 +19,15 @@ Aim for 20+ pairs with the board at varied distances, angles and corners of the
 frame — tilted views constrain the lens model that flat-on views cannot. Both
 cameras must see the whole board for a pair to count.
 
+**Work the board into the frame corners and edges**, not just the middle. The
+distortion model is only trusted where there is data: with centre-only views the
+solver extrapolates the periphery and gets it badly wrong, which rectification
+then turns into a depth map that is half black. This tool checks the coverage it
+actually got and warns you before saving.
+
+The corner correspondences are saved alongside the result, so `--refit` can
+re-solve with different flags without touching the cameras.
+
 Keys: SPACE captures, C calibrates and saves, Q quits without saving.
 """
 
@@ -39,6 +48,20 @@ from orio.stereo import StereoCamera
 # Corner refinement and the calibration solver both stop on this.
 CRITERIA = (cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 30, 1e-6)
 
+# The IMX219-83 is spec'd at <1% distortion, so the full five-term model has far
+# more freedom than the lens needs — and freedom it cannot support becomes
+# overfitting. Measured on this rig's first calibration: k3 solved to -0.294,
+# giving a radial correction that is well behaved out to 75% of the frame radius
+# (-2.1%) and then swings to -12.2% at the corner. That is not a lens, it is the
+# solver extrapolating past wherever the board actually reached, and it warps the
+# rectified image so far off-centre that half the depth map goes undefined.
+# Fixing k3 and zeroing the tangential terms keeps the fit inside the data.
+# `--full-distortion` restores the unconstrained model for comparison.
+CONSTRAINED_DIST = cv2.CALIB_FIX_K3 | cv2.CALIB_ZERO_TANGENT_DIST
+
+# Warn when the captured corners never came within this fraction of an edge.
+COVERAGE_MARGIN = 0.10
+
 
 def find_corners(gray, pattern):
     """Locate the checkerboard, refined to sub-pixel. None if not fully visible."""
@@ -51,12 +74,45 @@ def find_corners(gray, pattern):
     return cv2.cornerSubPix(gray, corners, (11, 11), (-1, -1), CRITERIA)
 
 
-def calibrate(obj_points, left_points, right_points, size, out_path: Path) -> int:
+def report_coverage(name, points, size) -> bool:
+    """Warn if the corners never reached the frame periphery. True if they did.
+
+    Distortion is only constrained where corners actually landed. Centre-heavy
+    captures fit the middle beautifully and invent the edges, which is exactly
+    the failure that produces a half-black depth map — so this is checked before
+    the numbers get a chance to look authoritative.
+    """
+    p = np.concatenate(points).reshape(-1, 2)
+    w, h = size
+    margins = {
+        "left": p[:, 0].min() / w, "right": 1 - p[:, 0].max() / w,
+        "top": p[:, 1].min() / h, "bottom": 1 - p[:, 1].max() / h,
+    }
+    thin = {k: v for k, v in margins.items() if v > COVERAGE_MARGIN}
+    edges = "  ".join(f"{k} {v:.0%}" for k, v in margins.items())
+    print(f"  {name} coverage:  closest approach to each edge — {edges}")
+    if thin:
+        which = ", ".join(f"{k} ({v:.0%})" for k, v in sorted(thin.items()))
+        print(f"  ⚠ board never got within {COVERAGE_MARGIN:.0%} of: {which}.")
+        print("    The distortion model is extrapolated there, not measured.")
+    return not thin
+
+
+def calibrate(obj_points, left_points, right_points, size, out_path: Path,
+              dist_flags: int, square_mm: float, pattern) -> int:
     """Solve intrinsics then extrinsics, report error, and save."""
     print(f"\ncalibrating on {len(obj_points)} pairs at {size[0]}x{size[1]}...")
+    covered = report_coverage("left ", left_points, size)
+    covered &= report_coverage("right", right_points, size)
 
-    err1, K1, D1, *_ = cv2.calibrateCamera(obj_points, left_points, size, None, None)
-    err2, K2, D2, *_ = cv2.calibrateCamera(obj_points, right_points, size, None, None)
+    err1, K1, D1, *_ = cv2.calibrateCamera(
+        obj_points, left_points, size, None, None, flags=dist_flags
+    )
+    err2, K2, D2, *_ = cv2.calibrateCamera(
+        obj_points, right_points, size, None, None, flags=dist_flags
+    )
+    model = "unconstrained k1..k3 + tangential" if not dist_flags else "k1,k2 only (k3 and tangential fixed at 0)"
+    print(f"  distortion model: {model}")
     print(f"  intrinsics RMS: left {err1:.3f} px, right {err2:.3f} px")
 
     # Intrinsics are already solved above, so only the pose between the cameras
@@ -76,17 +132,56 @@ def calibrate(obj_points, left_points, right_points, size, out_path: Path) -> in
     if abs(baseline_mm - 60.0) > 6.0:
         print("  ⚠ baseline is >10% off the published 60 mm, which usually means")
         print("    --square-mm is wrong. Every distance scales with it.")
+    if not covered:
+        print("  ⚠ thin edge coverage (above). Rectification will push the image")
+        print("    off-centre and blank part of the depth map. Recapture with the")
+        print("    board pushed into the frame corners.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
+    # The corner correspondences ride along so the model can be re-solved with
+    # different flags via --refit. They cost a few kB and save a recapture — the
+    # expensive, fiddly half of calibrating.
     np.savez(
         out_path,
         K1=K1, D1=D1, K2=K2, D2=D2, R=R, T=T,
         image_width=size[0], image_height=size[1],
         rms=err, baseline_mm=baseline_mm,
+        obj_points=np.asarray(obj_points, np.float32),
+        left_points=np.asarray(left_points, np.float32),
+        right_points=np.asarray(right_points, np.float32),
+        square_mm=square_mm, pattern=np.asarray(pattern),
+        dist_flags=dist_flags,
     )
     print(f"\n✓ saved {out_path}")
     print("  orio.stereo picks this up automatically on next start.")
     return 0
+
+
+def refit(src: Path, out_path: Path, dist_flags: int) -> int:
+    """Re-solve from stored corners. The cameras are not touched.
+
+    Recapturing is the slow, fiddly part of calibrating; the solve is seconds.
+    Once the corners are on disk, trying a different distortion model costs
+    nothing, so there is no reason to shoot the board again to answer "would a
+    constrained fit have done better?".
+    """
+    if not src.exists():
+        print(f"no calibration at {src}")
+        return 1
+    # Read everything out before solving: --refit usually writes back over its
+    # own source, so nothing may still be lazily reading the archive by then.
+    with np.load(src) as d:
+        if "left_points" not in d:
+            print(f"{src} predates corner storage — recapture to use --refit.")
+            return 1
+        size = (int(d["image_width"]), int(d["image_height"]))
+        obj = list(d["obj_points"])
+        left = list(d["left_points"])
+        right = list(d["right_points"])
+        square_mm = float(d["square_mm"]) if "square_mm" in d else 0.0
+        pattern = tuple(d["pattern"]) if "pattern" in d else (0, 0)
+    print(f"refitting from {src} ({len(obj)} stored pairs)")
+    return calibrate(obj, left, right, size, out_path, dist_flags, square_mm, pattern)
 
 
 def main() -> int:
@@ -103,7 +198,20 @@ def main() -> int:
     ap.add_argument("--height", type=int, default=960)
     ap.add_argument("--min-pairs", type=int, default=12)
     ap.add_argument("--out", type=Path, default=config.STEREO_CALIBRATION)
+    ap.add_argument(
+        "--full-distortion", action="store_true",
+        help="fit k3 and the tangential terms too (needs corner-to-corner coverage)",
+    )
+    ap.add_argument(
+        "--refit", type=Path, nargs="?", const=config.STEREO_CALIBRATION, default=None,
+        metavar="NPZ",
+        help="re-solve from the corners stored in an existing calibration, no cameras needed",
+    )
     args = ap.parse_args()
+
+    dist_flags = 0 if args.full_distortion else CONSTRAINED_DIST
+    if args.refit is not None:
+        return refit(args.refit, args.out, dist_flags)
 
     pattern = (args.cols, args.rows)
     size = (args.width, args.height)
@@ -151,7 +259,10 @@ def main() -> int:
                 if len(obj_points) < args.min_pairs:
                     print(f"  need at least {args.min_pairs} pairs, have {len(obj_points)}")
                     continue
-                return calibrate(obj_points, left_points, right_points, size, args.out)
+                return calibrate(
+                    obj_points, left_points, right_points, size, args.out,
+                    dist_flags, args.square_mm, pattern,
+                )
             elif key in (ord("q"), ord("Q"), 27):
                 print("quit without saving")
                 return 1

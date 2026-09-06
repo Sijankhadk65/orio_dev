@@ -241,7 +241,7 @@ STEREO_RIGHT_SENSOR_ID = int(_env("ORIO_STEREO_RIGHT_SENSOR_ID", "1"))
 #   * 4.7x more sensor noise (sigma 8.47 vs 1.82), because each output pixel
 #     collects a quarter of the light and the ISP answers with analog gain.
 #     SGBM then happily matches the noise, which is what speckles the depth map.
-#   * the field of view narrows to ~47 deg, while obstacles() assumes 73 deg,
+#   * the field of view narrows to ~47 deg, while STEREO_HFOV_DEG says 73,
 #     so every sector angle is overstated by ~1.55x.
 #   * the effective focal length changes, so uncalibrated metres are ~28% low.
 # Measured end to end: 50.6% valid depth on the binned mode vs 29.7% on the crop.
@@ -304,6 +304,12 @@ STEREO_CALIBRATION = Path(
 STEREO_BASELINE_M = float(_env("ORIO_STEREO_BASELINE_M", "0.06"))
 STEREO_FALLBACK_FOCAL_PX_AT_640 = float(_env("ORIO_STEREO_FOCAL_PX_AT_640", "432"))
 STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(9.0 / 240.0)))
+
+# Horizontal field of view of the uncropped binned frame, from the datasheet
+# (83/73/50 deg diagonal/horizontal/vertical). Only the *uncalibrated* path uses
+# this: rectification with alpha=0 crops the frame, so a loaded calibration
+# derives its own HFOV from the rectified focal length instead.
+STEREO_HFOV_DEG = float(_env("ORIO_STEREO_HFOV_DEG", "73.0"))
 
 # Range gate. Below the near limit the cameras cannot triangulate (disparity
 # saturates); beyond the far limit a 60 mm baseline is too short to be useful.
