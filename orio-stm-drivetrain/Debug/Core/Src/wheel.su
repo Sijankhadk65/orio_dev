@@ -1,0 +1,6 @@
+../Core/Src/wheel.c:11:6:Wheel_Init	16	static
+../Core/Src/wheel.c:19:6:Wheel_SetSpeeds	16	static
+../Core/Src/wheel.c:27:6:Wheel_Stop	8	static
+../Core/Src/wheel.c:33:6:Wheel_Resume	8	static
+../Core/Src/wheel.c:39:6:Wheel_PollTelemetry	8	static
+../Core/Src/wheel.c:45:24:Wheel_GetTelemetry	16	static

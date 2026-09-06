@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["pyserial"]
+# ///
 """
 Immediately e-stops both wheels -- no arming needed, CMD_STOP works
 regardless of the link's current e-stop state. Useful as a manual kill

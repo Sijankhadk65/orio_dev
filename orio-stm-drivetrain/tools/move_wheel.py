@@ -1,4 +1,7 @@
 #!/usr/bin/env python3
+# /// script
+# dependencies = ["pyserial"]
+# ///
 """
 Spins one hub motor via its FSESC, by side and direction, for a bounded
 duration -- a bench test for confirming wiring and rotation direction

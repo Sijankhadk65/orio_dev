@@ -29,6 +29,11 @@ typedef enum
 
 #define VESC_RX_MAX_PAYLOAD 128u
 
+/* Bounded byte-by-byte scan for VESC_PKT_START, so one glitched/leftover
+ * byte on the wire doesn't permanently desync every poll after it -- each
+ * failed poll used to leave the parser mid-stream with no way back. */
+#define VESC_RESYNC_MAX_ATTEMPTS 32u
+
 /**
   * @brief  Computes CRC-16/XMODEM (poly 0x1021, init 0x0000) -- VESC's own
   *         packet checksum, distinct from protocol.c's CCITT-FALSE variant.
@@ -129,9 +134,23 @@ void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
   uint8_t crc_bytes[2];
   uint8_t end;
 
-  if (HAL_UART_Receive(esc->huart, &start, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK || start != VESC_PKT_START)
   {
-    return;
+    uint8_t attempts = 0u;
+    for (;;)
+    {
+      if (HAL_UART_Receive(esc->huart, &start, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK)
+      {
+        return; /* nothing arriving at all -- link down or ESC not responding */
+      }
+      if (start == VESC_PKT_START)
+      {
+        break;
+      }
+      if (++attempts >= VESC_RESYNC_MAX_ATTEMPTS)
+      {
+        return; /* too much noise to find a real frame -- give up this poll */
+      }
+    }
   }
   if (HAL_UART_Receive(esc->huart, &payload_len, 1u, VESC_UART_TIMEOUT_MS) != HAL_OK)
   {

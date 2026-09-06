@@ -1,0 +1,5 @@
+../Core/Src/vesc.c:39:17:vesc_crc16	24	static
+../Core/Src/vesc.c:61:17:vesc_build_packet	40	static
+../Core/Src/vesc.c:86:6:Vesc_Init	16	static
+../Core/Src/vesc.c:91:6:Vesc_SetDuty	40	static
+../Core/Src/vesc.c:115:6:Vesc_PollValues	168	static
