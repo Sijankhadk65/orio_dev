@@ -26,6 +26,12 @@ void Wheel_SetSpeeds(int16_t left_permille, int16_t right_permille)
 
 void Wheel_Stop(void)
 {
+  /* Clears the commanded speeds too, not just the ESC outputs -- so a
+   * later Wheel_Resume() (from a heartbeat clearing the e-stop) comes back
+   * stopped and waits for a fresh command, instead of silently resuming
+   * whatever motion was in progress when the stop happened. */
+  s_commanded_permille[WHEEL_LEFT] = 0;
+  s_commanded_permille[WHEEL_RIGHT] = 0;
   Vesc_SetDuty(&s_escs[WHEEL_LEFT], 0);
   Vesc_SetDuty(&s_escs[WHEEL_RIGHT], 0);
 }

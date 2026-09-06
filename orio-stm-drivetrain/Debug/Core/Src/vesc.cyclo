@@ -1,5 +1,5 @@
-../Core/Src/vesc.c:39:17:vesc_crc16	4
-../Core/Src/vesc.c:61:17:vesc_build_packet	3
-../Core/Src/vesc.c:86:6:Vesc_Init	1
-../Core/Src/vesc.c:91:6:Vesc_SetDuty	3
-../Core/Src/vesc.c:115:6:Vesc_PollValues	13
+../Core/Src/vesc.c:44:17:vesc_crc16	4
+../Core/Src/vesc.c:66:17:vesc_build_packet	3
+../Core/Src/vesc.c:91:6:Vesc_Init	1
+../Core/Src/vesc.c:96:6:Vesc_SetDuty	3
+../Core/Src/vesc.c:120:6:Vesc_PollValues	14

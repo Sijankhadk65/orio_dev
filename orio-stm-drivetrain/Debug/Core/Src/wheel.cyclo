@@ -1,6 +1,6 @@
 ../Core/Src/wheel.c:11:6:Wheel_Init	1
 ../Core/Src/wheel.c:19:6:Wheel_SetSpeeds	1
 ../Core/Src/wheel.c:27:6:Wheel_Stop	1
-../Core/Src/wheel.c:33:6:Wheel_Resume	1
-../Core/Src/wheel.c:39:6:Wheel_PollTelemetry	1
-../Core/Src/wheel.c:45:24:Wheel_GetTelemetry	1
+../Core/Src/wheel.c:39:6:Wheel_Resume	1
+../Core/Src/wheel.c:45:6:Wheel_PollTelemetry	1
+../Core/Src/wheel.c:51:24:Wheel_GetTelemetry	1
