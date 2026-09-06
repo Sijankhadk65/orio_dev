@@ -47,6 +47,71 @@ JOINT_POS_NAMES = {
     JOINT_POS_RIGHT_ARM: "right-arm",
 }
 
+# Servo model calibration, mirroring PAN/TILT_SERVO_* in
+# Core/Inc/servo_joint.h: (min_cdeg, max_cdeg, min_pulse_us, max_pulse_us).
+# The full rated travel of each servo MODEL -- not what any joint is allowed
+# to command. Lets a tool show the pulse width a given angle will produce.
+PAN_SERVO_CALIB = (0, 27000, 500, 2500)
+TILT_SERVO_CALIB = (0, 18000, 500, 2500)
+
+# Commandable angle window per joint position, in degrees on the VENDOR
+# scale -- pan 0..270, tilt 0..180, each measured from that servo's own zero
+# end, exactly as the vendor's datasheet and example code number them. Tilt
+# mid-travel (level, for a square bracket) is 90. Mirrors kJointLimits[] in
+# Core/Src/servo_joint.c -- keep the two in step.
+#
+# The firmware remains the authority: it re-validates every angle and NACKs
+# OUT_OF_RANGE regardless of what this table says. The table exists so the
+# test scripts can DERIVE angles that are in or out of range instead of
+# hardcoding literals, which is how test_servo.py came to be asserting
+# against a neck tilt window (30..90) the firmware had already stopped
+# having.
+JOINT_LIMITS_DEG = {
+    # TEMPORARY: neck tilt opened to full travel for calibration, mirroring
+    # the same temporary row in kJointLimits[]. Restore to (85.0, 95.0), or to
+    # whatever sweep_axis.py measures, once the stops are known.
+    JOINT_POS_NECK: {"pan": (0.0, 270.0), "tilt": (0.0, 180.0)},
+    JOINT_POS_LEFT_ARM: {"pan": (0.0, 270.0), "tilt": (30.0, 90.0)},
+    JOINT_POS_RIGHT_ARM: {"pan": (0.0, 270.0), "tilt": (30.0, 90.0)},
+}
+
+# Home ("reset") pose per joint position, mirroring s_reset_pan_cdeg[] /
+# s_reset_tilt_cdeg[] in Core/Src/protocol.c. CMD_RESET_JOINTS drives every
+# joint here, and CMD_GET_STATUS reads these back afterwards.
+#
+# Note this is NOT simply the midpoint of each window: the neck's pan homes
+# to 180.00, well off its 135.00 centre, because that is the pose the bracket
+# was measured at. Only the tilt axes happen to home to their window midpoint.
+JOINT_HOME_DEG = {
+    JOINT_POS_NECK: {"pan": 180.0, "tilt": 90.0},
+    JOINT_POS_LEFT_ARM: {"pan": 135.0, "tilt": 60.0},
+    JOINT_POS_RIGHT_ARM: {"pan": 135.0, "tilt": 60.0},
+}
+
+
+def axis_limit(position: int, axis: str) -> tuple:
+    """(min_deg, max_deg) for one axis of one joint position."""
+    return JOINT_LIMITS_DEG[position][axis]
+
+
+def axis_mid(position: int, axis: str) -> float:
+    """Midpoint of an axis's commandable window. Always a legal angle, so
+    it is the safe filler for the axis a test isn't currently exercising --
+    holding the other axis at a hardcoded constant is what silently turned
+    range checks into no-ops when a window moved."""
+    lo, hi = axis_limit(position, axis)
+    return (lo + hi) / 2.0
+
+
+def axis_just_below(position: int, axis: str, margin: float = 5.0) -> float:
+    """An angle below an axis's floor -- must be rejected OUT_OF_RANGE."""
+    return axis_limit(position, axis)[0] - margin
+
+
+def axis_just_above(position: int, axis: str, margin: float = 5.0) -> float:
+    """An angle above an axis's ceiling -- must be rejected OUT_OF_RANGE."""
+    return axis_limit(position, axis)[1] + margin
+
 CMD_NAMES = {
     CMD_HEARTBEAT: "HEARTBEAT",
     CMD_MOVE_JOINT_TO: "MOVE_JOINT_TO",
@@ -60,13 +125,173 @@ CMD_NAMES = {
     CMD_STATUS: "STATUS",
 }
 
+# Must match ProtoNackReason in Core/Inc/protocol.h.
+NACK_BAD_CRC = 0x01
+NACK_BAD_LENGTH = 0x02
+NACK_UNKNOWN_CMD = 0x03
+NACK_OUT_OF_RANGE = 0x04
+NACK_ESTOPPED = 0x05
+
 NACK_REASONS = {
-    0x01: "BAD_CRC",
-    0x02: "BAD_LENGTH",
-    0x03: "UNKNOWN_CMD",
-    0x04: "OUT_OF_RANGE",
-    0x05: "ESTOPPED",
+    NACK_BAD_CRC: "BAD_CRC",
+    NACK_BAD_LENGTH: "BAD_LENGTH",
+    NACK_UNKNOWN_CMD: "UNKNOWN_CMD",
+    NACK_OUT_OF_RANGE: "OUT_OF_RANGE",
+    NACK_ESTOPPED: "ESTOPPED",
 }
+
+
+# --- assertions ----------------------------------------------------------
+# Checks are ACCUMULATED rather than raised. A hardware-in-the-loop run
+# should report every failure in one pass instead of stopping at the first,
+# and an exception mid-script would leave the board wherever it was -- often
+# e-stopped, sometimes with the fan spinning -- instead of running the
+# cleanup the tail of each script performs. results_exit_code() turns the
+# tally into a process exit status at the end.
+
+_RESULTS = []
+
+
+def reset_results():
+    """Clears the tally. Call once at the start of a run; test_protocol.py
+    does this so its aggregate summary covers all four subsystems."""
+    _RESULTS.clear()
+
+
+def record(ok: bool, label: str, detail: str = ""):
+    _RESULTS.append((bool(ok), label, detail))
+
+
+def results_exit_code(title: str = "RESULTS") -> int:
+    """Prints the tally and returns 0 if every check passed, else 1."""
+    failed = [r for r in _RESULTS if not r[0]]
+    total = len(_RESULTS)
+    print()
+    print("=" * 68)
+    if total == 0:
+        print(f"{title}: no checks ran")
+    else:
+        print(f"{title}: {total - len(failed)}/{total} checks passed")
+    for _, label, detail in failed:
+        print(f"  FAIL  {label}: {detail}")
+    print("=" * 68)
+    return 1 if failed else 0
+
+
+def describe_response(resp) -> str:
+    """One-line rendering of a (cmd, payload) response, for failure text."""
+    if resp is None:
+        return "no response"
+    cmd, payload = resp
+    name = CMD_NAMES.get(cmd, hex(cmd))
+    if cmd == CMD_NACK and len(payload) >= 2:
+        return f"{name} {NACK_REASONS.get(payload[1], hex(payload[1]))}"
+    return name
+
+
+class _Expect:
+    """An expected response: a human-readable description plus a check that
+    returns None on a match, or a string explaining the mismatch."""
+
+    __slots__ = ("describe", "_check")
+
+    def __init__(self, describe, check):
+        self.describe = describe
+        self._check = check
+
+    def check(self, resp):
+        return self._check(resp)
+
+
+def expect_ack(orig_cmd: int = None) -> _Expect:
+    """ACK, optionally verifying which command it echoes back."""
+
+    def check(resp):
+        if resp is None:
+            return "no response"
+        cmd, payload = resp
+        if cmd != CMD_ACK:
+            return f"got {describe_response(resp)}"
+        if orig_cmd is not None:
+            got = payload[0] if payload else None
+            if got != orig_cmd:
+                return f"ACK echoed orig_cmd={hex(got) if got is not None else '(none)'}"
+        return None
+
+    suffix = "" if orig_cmd is None else f" for {CMD_NAMES.get(orig_cmd, hex(orig_cmd))}"
+    return _Expect("ACK" + suffix, check)
+
+
+def expect_nack(reason: int, orig_cmd: int = None) -> _Expect:
+    """NACK carrying a specific reason code. The reason matters: range is
+    validated before the e-stop flag in handle_move_joint_to(), so a frame
+    meant to prove the e-stop rejects it can come back OUT_OF_RANGE and look
+    like a pass to anything that only checks 'was it a NACK'."""
+
+    def check(resp):
+        if resp is None:
+            return "no response"
+        cmd, payload = resp
+        if cmd != CMD_NACK:
+            return f"got {describe_response(resp)}"
+        if len(payload) < 2:
+            return f"NACK payload too short ({len(payload)} bytes)"
+        if payload[1] != reason:
+            return f"got NACK {NACK_REASONS.get(payload[1], hex(payload[1]))}"
+        if orig_cmd is not None and payload[0] != orig_cmd:
+            return f"NACK echoed orig_cmd={hex(payload[0])}"
+        return None
+
+    return _Expect(f"NACK {NACK_REASONS.get(reason, hex(reason))}", check)
+
+
+def expect_no_response() -> _Expect:
+    """Frame silently dropped -- what a bad CRC must produce."""
+
+    def check(resp):
+        return None if resp is None else f"got {describe_response(resp)}"
+
+    return _Expect("no response (frame dropped)", check)
+
+
+def expect_status(estopped: int = None, joints: dict = None, tol_deg: float = 0.005) -> _Expect:
+    """CMD_STATUS, optionally checking the e-stop flag and any subset of the
+    reported joint angles. joints maps position -> (pan_deg, tilt_deg); None
+    for either axis skips that axis."""
+
+    def check(resp):
+        if resp is None:
+            return "no response"
+        cmd, payload = resp
+        if cmd != CMD_STATUS:
+            return f"got {describe_response(resp)}"
+        if not payload:
+            return "STATUS payload empty"
+        if estopped is not None and payload[0] != estopped:
+            return f"estopped={payload[0]}, wanted {estopped}"
+        body = payload[1:]
+        for pos, (want_pan, want_tilt) in (joints or {}).items():
+            off = pos * 4
+            if len(body) < off + 4:
+                return f"STATUS carries no slot for position {pos}"
+            got_pan = int.from_bytes(body[off : off + 2], "little", signed=True) / 100.0
+            got_tilt = int.from_bytes(body[off + 2 : off + 4], "little", signed=True) / 100.0
+            name = JOINT_POS_NAMES.get(pos, pos)
+            if want_pan is not None and abs(got_pan - want_pan) > tol_deg:
+                return f"{name} pan={got_pan:g}, wanted {want_pan:g}"
+            if want_tilt is not None and abs(got_tilt - want_tilt) > tol_deg:
+                return f"{name} tilt={got_tilt:g}, wanted {want_tilt:g}"
+        return None
+
+    bits = []
+    if estopped is not None:
+        bits.append(f"estopped={estopped}")
+    for pos, (p, t) in sorted((joints or {}).items()):
+        axes = ", ".join(
+            f"{a}={v:g}" for a, v in (("pan", p), ("tilt", t)) if v is not None
+        )
+        bits.append(f"{JOINT_POS_NAMES.get(pos, pos)} {axes}")
+    return _Expect("STATUS" + (" " + "; ".join(bits) if bits else ""), check)
 
 
 def crc16_ccitt(data: bytes) -> int:
@@ -151,10 +376,17 @@ def send_and_show(
     corrupt_crc: bool = False,
     delay_s: float = DEFAULT_DELAY_S,
     keep_alive: bool = True,
+    expect=None,
 ):
     """keep_alive=False skips the post-command heartbeat pings during the
     delay -- use it when a test deliberately wants the e-stop to stay
-    engaged (e.g. right after CMD_STOP), since a heartbeat would clear it."""
+    engaged (e.g. right after CMD_STOP), since a heartbeat would clear it.
+
+    expect= takes one of the expect_*() objects above. The response is then
+    checked against it, PASS/FAIL is printed inline, and the result is added
+    to the tally results_exit_code() reports on. Omitting it leaves the call
+    as print-only, which is right for commands sent purely to set up state
+    (arming, cleanup) rather than to assert something."""
     frame = build_frame(cmd, payload, corrupt_crc=corrupt_crc)
     print(f"-> {label}: {frame.hex(' ')}")
     ser.write(frame)
@@ -162,12 +394,25 @@ def send_and_show(
     resp = read_frame(ser)
     if resp is None:
         print("<- (no response / timeout)")
-        if keep_alive:
-            hold_alive(ser, delay_s)
-        else:
-            time.sleep(delay_s)
-        return None
+    else:
+        _print_response(resp)
 
+    if expect is not None:
+        problem = expect.check(resp)
+        record(problem is None, label, problem or "")
+        if problem is None:
+            print(f"   PASS  ({expect.describe})")
+        else:
+            print(f"   FAIL  expected {expect.describe}; {problem}")
+
+    if keep_alive:
+        hold_alive(ser, delay_s)
+    else:
+        time.sleep(delay_s)
+    return resp
+
+
+def _print_response(resp):
     resp_cmd, resp_payload = resp
     name = CMD_NAMES.get(resp_cmd, hex(resp_cmd))
     if resp_cmd == CMD_NACK and len(resp_payload) >= 2:
@@ -188,11 +433,12 @@ def send_and_show(
     else:
         print(f"<- {name} payload={resp_payload.hex(' ')}")
 
-    if keep_alive:
-        hold_alive(ser, delay_s)
-    else:
-        time.sleep(delay_s)
-    return resp
+
+def open_serial(port: str) -> serial.Serial:
+    """Opens a serial port and lets it settle before the first write."""
+    ser = serial.Serial(port, 115200, timeout=1.0)
+    time.sleep(0.2)  # let the port settle after opening
+    return ser
 
 
 def open_port(argv=None) -> serial.Serial:
@@ -203,13 +449,11 @@ def open_port(argv=None) -> serial.Serial:
         print(f"usage: {argv[0]} <serial-port, e.g. COM5>")
         sys.exit(1)
 
-    ser = serial.Serial(argv[1], 115200, timeout=1.0)
-    time.sleep(0.2)  # let the port settle after opening
-    return ser
+    return open_serial(argv[1])
 
 
 def arm(ser: serial.Serial):
     """Sends the CMD_HEARTBEAT every standalone test needs first to clear
     the boot-time e-stop before it can command anything."""
     print("--- heartbeat clears the boot-time e-stop ---")
-    send_and_show(ser, "HEARTBEAT", CMD_HEARTBEAT)
+    send_and_show(ser, "HEARTBEAT", CMD_HEARTBEAT, expect=expect_ack(CMD_HEARTBEAT))

@@ -1,0 +1,10 @@
+17:50:05 **** Incremental Build of configuration Debug for project orio-stm-drive-train ****
+make -j16 all 
+arm-none-eabi-size  orio-stm-drive-train.elf 
+   text	   data	    bss	    dec	    hex	filename
+  14332	     12	   1900	  16244	   3f74	orio-stm-drive-train.elf
+Finished building: default.size.stdout
+ 
+
+17:50:05 Build Finished. 0 errors, 0 warnings. (took 193ms)
+

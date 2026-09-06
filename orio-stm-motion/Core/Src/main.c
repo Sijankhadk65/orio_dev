@@ -56,6 +56,7 @@ UART_HandleTypeDef huart2;
 static ServoJoint_t s_neckJoint;     /* pan (TIM3_CH1/PA6) + tilt (TIM3_CH2/PA7) */
 static ServoJoint_t s_leftArmJoint;  /* pan (TIM3_CH3/PB0) + tilt (TIM3_CH4/PB1) */
 static ServoJoint_t s_rightArmJoint; /* pan (TIM1_CH1/PA8) + tilt (TIM1_CH2/PA9) */
+static uint32_t s_lastServoTick;     /* HAL tick the joint ramps were last stepped at */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -121,6 +122,7 @@ int main(void)
   Protocol_BindJoint(JOINT_POS_LEFT_ARM, &s_leftArmJoint);
   Protocol_BindJoint(JOINT_POS_RIGHT_ARM, &s_rightArmJoint);
   Protocol_Init(&huart2);
+  s_lastServoTick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -131,6 +133,20 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
+    /* Step every joint's ramp toward its target (see ServoJoint_Update()).
+     * This loop spins far faster than the 1 ms HAL tick, so most passes see
+     * elapsed == 0. Advancing s_lastServoTick only on a non-zero elapsed is
+     * what makes that safe: resetting it every pass would discard the
+     * sub-millisecond remainder each time and the ramp would never advance. */
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed_ms = now - s_lastServoTick;
+    if (elapsed_ms > 0u)
+    {
+      s_lastServoTick = now;
+      ServoJoint_Update(&s_neckJoint, elapsed_ms);
+      ServoJoint_Update(&s_leftArmJoint, elapsed_ms);
+      ServoJoint_Update(&s_rightArmJoint, elapsed_ms);
+    }
   }
   /* USER CODE END 3 */
 }

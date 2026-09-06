@@ -8,11 +8,19 @@ Usage:
     python tools/test_fan.py COM5
 """
 
+import sys
+
 from proto_client import (
     CMD_SET_FAN_SPEED,
     CMD_STOP,
+    NACK_ESTOPPED,
+    NACK_OUT_OF_RANGE,
     arm,
+    expect_ack,
+    expect_nack,
     open_port,
+    reset_results,
+    results_exit_code,
     send_and_show,
 )
 
@@ -22,18 +30,35 @@ def run(ser):
 
     print("\n--- fan: ramp speed 0 -> 50 -> 100% ---")
     for pct in (0, 50, 100):
-        send_and_show(ser, f"SET_FAN_SPEED {pct}%", CMD_SET_FAN_SPEED, bytes([pct]))
+        send_and_show(
+            ser,
+            f"SET_FAN_SPEED {pct}%",
+            CMD_SET_FAN_SPEED,
+            bytes([pct]),
+            expect=expect_ack(CMD_SET_FAN_SPEED),
+        )
 
     print("\n--- fan: speed out of range (101%), expect NACK OUT_OF_RANGE ---")
-    send_and_show(ser, "SET_FAN_SPEED 101%", CMD_SET_FAN_SPEED, bytes([101]))
+    send_and_show(
+        ser,
+        "SET_FAN_SPEED 101%",
+        CMD_SET_FAN_SPEED,
+        bytes([101]),
+        expect=expect_nack(NACK_OUT_OF_RANGE, CMD_SET_FAN_SPEED),
+    )
 
     print("\n--- stop, then fan speed should be rejected as ESTOPPED ---")
     print(
         "    (no keep-alive heartbeats in this block -- one would clear the e-stop we're testing for)"
     )
-    send_and_show(ser, "STOP", CMD_STOP, keep_alive=False)
+    send_and_show(ser, "STOP", CMD_STOP, keep_alive=False, expect=expect_ack(CMD_STOP))
     send_and_show(
-        ser, "SET_FAN_SPEED 50%", CMD_SET_FAN_SPEED, bytes([50]), keep_alive=False
+        ser,
+        "SET_FAN_SPEED 50%",
+        CMD_SET_FAN_SPEED,
+        bytes([50]),
+        keep_alive=False,
+        expect=expect_nack(NACK_ESTOPPED, CMD_SET_FAN_SPEED),
     )
 
     print(
@@ -42,15 +67,23 @@ def run(ser):
     arm(ser)
 
     print("\n--- fan: back to 0% (cleanup) ---")
-    send_and_show(ser, "SET_FAN_SPEED 0%", CMD_SET_FAN_SPEED, bytes([0]))
+    send_and_show(
+        ser,
+        "SET_FAN_SPEED 0%",
+        CMD_SET_FAN_SPEED,
+        bytes([0]),
+        expect=expect_ack(CMD_SET_FAN_SPEED),
+    )
 
 
 def main():
+    reset_results()
     ser = open_port()
     try:
         run(ser)
     finally:
         ser.close()
+    sys.exit(results_exit_code("fan"))
 
 
 if __name__ == "__main__":

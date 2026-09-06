@@ -1,19 +1,10 @@
-22:00:15 **** Incremental Build of configuration Debug for project orio-stm-motion ****
+13:41:41 **** Incremental Build of configuration Debug for project orio-stm-motion ****
 make -j16 all 
-arm-none-eabi-gcc "../Core/Src/main.c" -mcpu=cortex-m0plus -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32C031xx -c -I../Core/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32C0xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/main.d" -MT"Core/Src/main.o" --specs=nano.specs -mfloat-abi=soft -mthumb -o "Core/Src/main.o"
-arm-none-eabi-gcc "../Core/Src/stm32c0xx_hal_msp.c" -mcpu=cortex-m0plus -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32C031xx -c -I../Core/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32C0xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/stm32c0xx_hal_msp.d" -MT"Core/Src/stm32c0xx_hal_msp.o" --specs=nano.specs -mfloat-abi=soft -mthumb -o "Core/Src/stm32c0xx_hal_msp.o"
-arm-none-eabi-gcc "../Core/Src/stm32c0xx_it.c" -mcpu=cortex-m0plus -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32C031xx -c -I../Core/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc -I../Drivers/STM32C0xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32C0xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/stm32c0xx_it.d" -MT"Core/Src/stm32c0xx_it.o" --specs=nano.specs -mfloat-abi=soft -mthumb -o "Core/Src/stm32c0xx_it.o"
-arm-none-eabi-gcc -o "orio-stm-motion.elf" @"objects.list"   -mcpu=cortex-m0plus -T"E:\cozmobot\orio_dev\orio-stm-motion\STM32C031C6TX_FLASH.ld" --specs=nosys.specs -Wl,-Map="orio-stm-motion.map" -Wl,--gc-sections -static --specs=nano.specs -mfloat-abi=soft -mthumb -Wl,--start-group -lc -lm -Wl,--end-group
-Finished building target: orio-stm-motion.elf
- 
 arm-none-eabi-size  orio-stm-motion.elf 
-arm-none-eabi-objdump -h -S orio-stm-motion.elf  > "orio-stm-motion.list"
    text	   data	    bss	    dec	    hex	filename
-  26848	     12	   3364	  30224	   7610	orio-stm-motion.elf
+  27760	     12	   3396	  31168	   79c0	orio-stm-motion.elf
 Finished building: default.size.stdout
  
-Finished building: orio-stm-motion.list
- 
 
-22:00:16 Build Finished. 0 errors, 0 warnings. (took 761ms)
+13:41:41 Build Finished. 0 errors, 0 warnings. (took 285ms)
 

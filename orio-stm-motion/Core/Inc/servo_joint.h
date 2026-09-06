@@ -35,19 +35,60 @@
 extern "C" {
 #endif
 
-/* Pan servo model: full 270 deg mechanical travel, centered at 0. Pulse
- * width is calibrated against this FULL range regardless of what subset
- * any given joint is allowed to command. */
+/* Both servo models below are calibrated straight from the vendor's own
+ * reference drivers for these two parts (the 2-DOF gimbal firmware, and
+ * the Arduino / Pico / Raspberry Pi tutorials): a 500..2500 us pulse
+ * sweeps the part's full rated travel, 50 Hz frame, no wider on either
+ * end. The two parts differ only in how much travel that same pulse range
+ * sweeps -- 270 deg for pan, 180 deg for tilt.
+ *
+ * Angles throughout this firmware are on that SAME vendor scale: pan runs
+ * 0.00..270.00, tilt runs 0.00..180.00, both measured from the servo's own
+ * zero end. Mid-travel is therefore 135.00 for pan and 90.00 for tilt, not
+ * 0. An earlier revision re-zeroed both axes on mid-travel; that made every
+ * angle in the codebase differ from every angle in the vendor's own
+ * documentation and examples by a constant, and the per-joint limit table
+ * was in fact written in vendor numbers and then read as re-zeroed ones,
+ * which silently aimed the neck's tilt window at the top 5 deg of the
+ * servo's travel instead of a band around level.
+ *
+ * NOTE: the 270 deg pan servo needs a 6..7.4 V supply. Below that it
+ * misbehaves rather than simply running weak, so a pan axis that jitters
+ * or fails to reach its commanded angle is worth checking against the
+ * rail before it is treated as a calibration problem. */
+
+/* Pan servo model: full 270 deg mechanical travel, 0 at one end stop.
+ * Pulse width is calibrated against this FULL range regardless of what
+ * subset any given joint is allowed to command. Mid-travel is 135.00. */
 #define PAN_SERVO_PULSE_MIN_US   500u
 #define PAN_SERVO_PULSE_MAX_US   2500u
-#define PAN_SERVO_CALIB_MIN_CDEG (-13500) /* -135.00 deg */
-#define PAN_SERVO_CALIB_MAX_CDEG (13500)  /*  135.00 deg */
+#define PAN_SERVO_CALIB_MIN_CDEG (0)     /*   0.00 deg -> 500 us */
+#define PAN_SERVO_CALIB_MAX_CDEG (27000) /* 270.00 deg -> 2500 us */
 
-/* Tilt servo model: full 180 deg mechanical travel, centered at 0. */
+/* Tilt servo model: full 180 deg mechanical travel, 0 at one end stop.
+ * Same 500..2500 us pulse range as pan -- the two servo models differ in
+ * how much travel that range sweeps (180 vs 270 deg), not in the pulse
+ * widths that sweep it. Mid-travel is 90.00.
+ *
+ * An earlier revision stretched this to 2556 us / +95.00 deg because the
+ * unit was seen to keep moving past its nominal top end. Every vendor
+ * reference for this part maps 0..180 deg onto exactly 500..2500 us and
+ * goes no wider, so that extra span is travel past the servo's rated
+ * limit, not rated travel that had been left out. Commanding into it
+ * drives the servo against its own end stop, where it stalls and heats
+ * under load instead of holding an angle. Restored to the rated range. */
 #define TILT_SERVO_PULSE_MIN_US   500u
 #define TILT_SERVO_PULSE_MAX_US   2500u
-#define TILT_SERVO_CALIB_MIN_CDEG (-9000) /* -90.00 deg */
-#define TILT_SERVO_CALIB_MAX_CDEG (9000)  /*  90.00 deg */
+#define TILT_SERVO_CALIB_MIN_CDEG (0)     /*   0.00 deg -> 500 us */
+#define TILT_SERVO_CALIB_MAX_CDEG (18000) /* 180.00 deg -> 2500 us */
+
+/* Max angular speed ServoJoint_Update() steps current angle toward target,
+ * for both axes of every joint. Fixed and global rather than per-joint or
+ * per-command: no bracket currently needs a different travel speed, and
+ * nothing yet exposes a per-move speed over the wire (CMD_MOVE_JOINT_TO's
+ * payload has no speed field). Tune this if a joint's servos turn out to
+ * need a slower/faster default. */
+#define SERVO_JOINT_SLEW_CDEG_PER_S 12000 /* 120.00 deg/s */
 
 /**
   * @brief  Which body position a ServoJoint_t occupies. The robot has (or
@@ -85,12 +126,20 @@ typedef struct
 
 /**
   * @brief  One 2-DOF joint: a pan (bottom) and tilt (top) servo moved together.
+  * @note   target_*_cdeg is where ServoJoint_SetAngles() wants the joint;
+  *         current_*_cdeg is where the PWM outputs are actually set right
+  *         now. ServoJoint_Update() steps current toward target over time
+  *         instead of jumping there in one call -- see servo_joint.c.
   */
 typedef struct
 {
   Servo_t pan;
   Servo_t tilt;
   ServoJointPosition_t position;
+  int16_t target_pan_cdeg;
+  int16_t target_tilt_cdeg;
+  int16_t current_pan_cdeg;
+  int16_t current_tilt_cdeg;
 } ServoJoint_t;
 
 /**
@@ -111,19 +160,34 @@ void ServoJoint_Init(ServoJoint_t *joint, ServoJointPosition_t position,
                       TIM_HandleTypeDef *tilt_htim, uint32_t tilt_channel);
 
 /**
-  * @brief  Moves both axes of the joint together. Each angle is clamped to
-  *         that joint's own commandable limit (see ServoJoint_PanLimit() /
-  *         ServoJoint_TiltLimit()) before being mapped to a pulse width
-  *         using the servo model's fixed full-travel calibration.
+  * @brief  Sets the target angles for both axes of the joint. Each angle is
+  *         clamped to that joint's own commandable limit (see
+  *         ServoJoint_PanLimit() / ServoJoint_TiltLimit()) first.
+  * @note   Does not move the servos itself -- it only sets where
+  *         ServoJoint_Update() should steer them. Call ServoJoint_Update()
+  *         periodically to actually approach this target.
   * @param  joint     Instance, already initialized with ServoJoint_Init().
-  * @param  pan_cdeg  Pan angle in hundredths of a degree.
-  * @param  tilt_cdeg Tilt angle in hundredths of a degree.
+  * @param  pan_cdeg  Pan target angle in hundredths of a degree.
+  * @param  tilt_cdeg Tilt target angle in hundredths of a degree.
   * @retval None
   */
 void ServoJoint_SetAngles(ServoJoint_t *joint, int16_t pan_cdeg, int16_t tilt_cdeg);
 
 /**
-  * @brief  Disables both PWM outputs (signal lines go idle/low).
+  * @brief  Steps both axes toward their target angle by up to
+  *         SERVO_JOINT_SLEW_CDEG_PER_S * elapsed_ms / 1000 hundredths of a
+  *         degree, then re-maps whichever axes moved to a pulse width and
+  *         applies it. A no-op for any axis already at its target.
+  * @param  joint      Instance, already initialized with ServoJoint_Init().
+  * @param  elapsed_ms Milliseconds since the last call (0 is a safe no-op).
+  * @retval None
+  */
+void ServoJoint_Update(ServoJoint_t *joint, uint32_t elapsed_ms);
+
+/**
+  * @brief  Disables both PWM outputs (signal lines go idle/low) and
+  *         abandons the rest of any in-flight ramp, so the joint's target
+  *         becomes wherever it had actually travelled to when it stopped.
   * @note   Use for e-stop; see Servo_Stop().
   * @param  joint Instance, already initialized with ServoJoint_Init().
   * @retval None
@@ -131,11 +195,30 @@ void ServoJoint_SetAngles(ServoJoint_t *joint, int16_t pan_cdeg, int16_t tilt_cd
 void ServoJoint_Stop(ServoJoint_t *joint);
 
 /**
-  * @brief  Re-enables both PWM outputs at their last commanded angles.
+  * @brief  Re-enables both PWM outputs at the angles the joint was stopped
+  *         at. A move interrupted by ServoJoint_Stop() does NOT continue --
+  *         the controller must re-command it.
   * @param  joint Instance, already initialized with ServoJoint_Init().
   * @retval None
   */
 void ServoJoint_Resume(ServoJoint_t *joint);
+
+/**
+  * @brief  Returns the pose a joint parks at with nothing commanded: the
+  *         midpoint of each axis's commandable window.
+  * @note   NOT necessarily the servo's mechanical centre. Where a window
+  *         excludes that centre -- the arms' 30..90 deg tilt does -- the
+  *         centre is an angle the joint must never be driven to, so it
+  *         cannot serve as a rest pose. Callers needing a safe default
+  *         angle (ServoJoint_Init() parking the outputs, the protocol
+  *         layer seeding the angles it reports before anything has been
+  *         commanded) must use this rather than assume any fixed value.
+  * @param  position  Body position to look up (must be < SERVO_JOINT_POSITION_COUNT).
+  * @param  pan_cdeg  Out: pan neutral, hundredths of a degree.
+  * @param  tilt_cdeg Out: tilt neutral, hundredths of a degree.
+  * @retval None
+  */
+void ServoJoint_NeutralAngles(ServoJointPosition_t position, int16_t *pan_cdeg, int16_t *tilt_cdeg);
 
 /**
   * @brief  Returns the pan axis's commandable limit for a joint position.

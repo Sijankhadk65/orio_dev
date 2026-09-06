@@ -32,7 +32,18 @@ extern "C" {
 typedef enum
 {
   CMD_HEARTBEAT    = 0x01,
-  CMD_MOVE_JOINT_TO = 0x02, /* payload: [position][pan_cdeg_lo][pan_cdeg_hi][tilt_cdeg_lo][tilt_cdeg_hi] */
+  /* payload: [position][pan_cdeg_lo][pan_cdeg_hi][tilt_cdeg_lo][tilt_cdeg_hi].
+   * Angles are hundredths of a degree on the VENDOR scale -- pan 0..27000
+   * (0..270.00 deg), tilt 0..18000 (0..180.00 deg), each measured from
+   * that servo's own zero end, matching the vendor's datasheet and example
+   * code. Mid-travel is 13500 for pan and 9000 for tilt.
+   * Each joint additionally restricts these; see kJointLimits in servo_joint.c.
+   * The joint ramps to these angles at SERVO_JOINT_SLEW_CDEG_PER_S rather
+   * than snapping to them, so the ACK means "accepted and under way", not
+   * "arrived" -- travel takes roughly (angle delta / slew rate). Nothing
+   * reports arrival yet; a controller that needs to know must wait out the
+   * ramp itself. */
+  CMD_MOVE_JOINT_TO = 0x02,
   CMD_STOP         = 0x03,
   CMD_GET_STATUS   = 0x04,
   CMD_SET_FAN_SPEED = 0x05, /* payload: [percent 0-100] */

@@ -44,20 +44,22 @@ static int16_t s_pan_cdeg[PROTO_JOINT_COUNT];
 static int16_t s_tilt_cdeg[PROTO_JOINT_COUNT];
 
 /* Reset ("home") pose per joint position, on the same centered command
- * scale as CMD_MOVE_JOINT_TO (0 = each servo's own mechanical center).
- * Every joint's tilt is now limited to a 30.00..90.00 deg window (see
- * kJointLimits in servo_joint.c), so 0 cdeg is no longer a valid tilt
- * anywhere -- 6000 cdeg (60.00 deg) is that window's midpoint, used as a
- * neutral default for all three until a specific joint needs its own.
- *   neck pan: raw 180 deg on its 0..270 deg datasheet scale is 45 deg past
- *             pan's 135 deg center -> +4500 cdeg.
- * left-arm/right-arm pan default to dead center (0) until their actual
- * reset pose is measured on the physical brackets and tuned like neck's.
+ * scale as CMD_MOVE_JOINT_TO: the vendor scale, pan 0..270 and tilt
+ * 0..180, measured from each servo's own zero end (see servo_joint.h).
+ * Each joint's tilt homes to the midpoint of its own window: 9000 cdeg
+ * (90.00 deg -- level) for the neck's 85..95 window, 6000 cdeg (60.00
+ * deg) for the arms' 30..90 one. Keep these in step with kJointLimits --
+ * a stale value here is silently clamped, not flagged, so the joint would
+ * just quietly home somewhere other than its midpoint.
+ *   neck pan: 180.00 deg on the pan servo's 0..270 scale -> 18000 cdeg.
+ * left-arm/right-arm pan default to pan mid-travel (13500 cdeg = 135.00
+ * deg) until their actual reset pose is measured on the physical
+ * brackets and tuned like neck's.
  * handle_reset_joints() still clamps these against each joint's live
  * limit before latching/applying, so a future limit change can't desync
  * CMD_GET_STATUS from what's actually commanded to hardware. */
-static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 4500, 0, 0 };    /* neck, left-arm, right-arm */
-static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 6000, 6000, 6000 };
+static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 18000, 13500, 13500 }; /* neck, left-arm, right-arm */
+static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 9000, 6000, 6000 };
 
 /**
   * @brief  Computes CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over a buffer.
@@ -132,6 +134,10 @@ static void send_nack(uint8_t orig_cmd, uint8_t reason)
 /**
   * @brief  Sends a CMD_STATUS frame with the current e-stop state and every
   *         joint's last-commanded pan/tilt angles.
+  * @note   These are the commanded TARGET angles, not live positions -- a
+  *         joint polled mid-ramp reports where it is heading, not where it
+  *         has got to. They coincide once the ramp finishes, which is the
+  *         only time the two can differ observably.
   * @retval None
   */
 static void send_status(void)
@@ -461,8 +467,16 @@ void Protocol_Init(UART_HandleTypeDef *huart)
   s_frame_ready = 0u;
   s_estopped = 1u; /* stay stopped until the first heartbeat arrives */
   s_last_heartbeat_tick = HAL_GetTick();
-  memset(s_pan_cdeg, 0, sizeof(s_pan_cdeg));
-  memset(s_tilt_cdeg, 0, sizeof(s_tilt_cdeg));
+  /* Report each joint's neutral -- the pose ServoJoint_Init() actually
+   * parked the outputs at -- rather than zeroing. Zero is below every
+   * joint's tilt floor, so a controller doing read-modify-write
+   * against CMD_GET_STATUS (move one axis, echo the other back unchanged)
+   * would resend that illegal tilt and have the whole move bounced as
+   * OUT_OF_RANGE, including the axis it did mean to move. */
+  for (uint32_t i = 0; i < PROTO_JOINT_COUNT; i++)
+  {
+    ServoJoint_NeutralAngles((ServoJointPosition_t)i, &s_pan_cdeg[i], &s_tilt_cdeg[i]);
+  }
   stop_all_joints(); /* ServoJoint_Init() left PWM running; hold off until armed */
 
   HAL_UART_Receive_IT(s_huart, &s_rx_byte, 1u);

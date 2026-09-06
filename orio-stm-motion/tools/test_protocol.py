@@ -12,14 +12,21 @@ Usage:
     pip install pyserial
     python tools/test_protocol.py COM5
 """
+import sys
+
 import test_fan
 import test_heartbeat
 import test_rgb
 import test_servo
-from proto_client import open_port
+from proto_client import open_port, reset_results, results_exit_code
 
 
 def main():
+    # One tally spanning all four subsystems: each module's run() records its
+    # own checks, and only the aggregate decides the exit code. The per-module
+    # main() functions are bypassed here, so their individual summaries and
+    # sys.exit() calls don't fire.
+    reset_results()
     ser = open_port()
     try:
         for label, module in (
@@ -32,6 +39,7 @@ def main():
             module.run(ser)
     finally:
         ser.close()
+    sys.exit(results_exit_code("ALL SUBSYSTEMS"))
 
 
 if __name__ == "__main__":
