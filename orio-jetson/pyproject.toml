@@ -3,18 +3,37 @@ name = "orio"
 version = "0.1.0"
 description = "Add your description here"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12,<3.13"  # JetPack's GStreamer-enabled system cv2 is built for 3.12 only
 dependencies = [
     "elevenlabs>=2.60.0",
     "fastembed>=0.8.0",
     "langchain-anthropic>=0.3.0",
     "langchain-ollama>=1.1.0",
     "ollama>=0.6.2",
-    "opencv-python>=5.0.0.93",
     "openwakeword>=0.6.0",
     "pygame>=2.6.1",
     "python-dotenv>=1.2.2",
     "sounddevice>=0.5.5",
     "sqlite-vec>=0.1.9",
     "ultralytics>=8.4.115",
+    "numpy<2",
+]
+
+[tool.uv]
+# Keep two packages out of the environment entirely:
+#
+#   opencv-python — pulled in transitively by ultralytics. We deliberately use
+#     JetPack's system OpenCV instead (symlinked into site-packages), because
+#     it is the only build with GStreamer, and GStreamer is the only way to
+#     reach the Jetson ISP via nvarguscamerasrc. The IMX219 exposes just RG10
+#     Bayer over plain V4L2, which the PyPI wheels cannot debayer — they return
+#     a solid green frame while reporting success.
+#
+#   tflite-runtime — required by openwakeword's metadata, but has no cp312
+#     wheels and is never imported: ORIO_WAKE_OWW_FRAMEWORK defaults to "onnx".
+#
+# The marker is simply never true, which is the uv idiom for "never install".
+override-dependencies = [
+    "opencv-python; python_version < '3.0'",
+    "tflite-runtime; python_version < '3.0'",
 ]

@@ -158,9 +158,34 @@ TOOLS_ENABLED = _env("ORIO_TOOLS", "1").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
-# Camera device index passed to cv2.VideoCapture. 0 is usually the first/only
-# webcam; bump if multiple cameras are attached.
+# Camera device index passed to cv2.VideoCapture. Only used for USB webcams,
+# i.e. when CAMERA_USE_ARGUS is off — the CSI cameras go through Argus below.
 CAMERA_INDEX = int(_env("ORIO_CAMERA_INDEX", "0"))
+
+# Capture the CSI camera through a GStreamer nvarguscamerasrc pipeline instead
+# of a plain cv2.VideoCapture(index).
+#
+# This is not a preference — it is the only thing that works on the Jetson. The
+# IMX219 exposes a single V4L2 format, RG10 (10-bit packed Bayer), and
+# debayering is done by the Jetson ISP, reached through Argus. A plain V4L2
+# grab hands OpenCV data it cannot convert, so it returns a *constant green
+# frame* and still reports success — the camera looks alive and YOLO silently
+# detects nothing. Turn this off only for a genuine USB webcam.
+CAMERA_USE_ARGUS = _env("ORIO_CAMERA_USE_ARGUS", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Argus sensor id. NOT the /dev/video* number: on this carrier board the two are
+# inverted (video0 is CAM1, video1 is CAM0), so treat them as separate
+# namespaces. See orio_csi_camera_troubleshooting.md in the knowledge base.
+CAMERA_SENSOR_ID = int(_env("ORIO_CAMERA_SENSOR_ID", "0"))
+
+# Frame geometry delivered to YOLO. The sensor's native mode is 3280x2464 (8 MP);
+# nvvidconv downscales on hardware for free, so there is no reason to run
+# inference on full-resolution frames.
+CAMERA_WIDTH = int(_env("ORIO_CAMERA_WIDTH", "1280"))
+CAMERA_HEIGHT = int(_env("ORIO_CAMERA_HEIGHT", "720"))
+CAMERA_FPS = int(_env("ORIO_CAMERA_FPS", "30"))
 
 # YOLO checkpoint: a bare name (e.g. "yolo11n.pt") auto-downloads from
 # Ultralytics on first use into models/yolo/ (gitignored); point at a local
@@ -185,6 +210,134 @@ VISION_DEBUG = _env("ORIO_VISION_DEBUG", "0").strip().lower() not in (
 )
 VISION_DEBUG_FPS = int(_env("ORIO_VISION_DEBUG_FPS", "15"))
 
+
+
+# ── Stereo depth / obstacle detection ─────────────────────────────────────────
+# Depth from the IMX219-83's two sensors (60 mm baseline), used to find
+# obstacles in front of the robot. Perception only — this module reports what
+# is in the way and how far; it does not drive anything.
+STEREO_ENABLED = _env("ORIO_STEREO", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Which Argus sensor is physically which eye. Verify these after ANY change to
+# the CSI cabling: they encode a physical fact about which ribbon goes where,
+# and getting them backwards is silent. Disparity comes out negative, depth()
+# discards every negative disparity as unknown, and the depth map goes blank
+# rather than raising.
+#
+# The ribbons were originally crossed, so sensor 1 was the LEFT camera. They
+# were swapped at the Jetson end on 2026-09-05 and the natural assignment now
+# holds: measured dx = x(sensor0) - x(sensor1) = +86 px at 640x360 (424 ORB
+# inliers), i.e. features sit further right in sensor 0, so sensor 0 is LEFT.
+STEREO_LEFT_SENSOR_ID = int(_env("ORIO_STEREO_LEFT_SENSOR_ID", "0"))
+STEREO_RIGHT_SENSOR_ID = int(_env("ORIO_STEREO_RIGHT_SENSOR_ID", "1"))
+
+# Sensor capture mode, before the ISP scales down to STEREO_WIDTH/HEIGHT.
+# 1640x1232 is the 2x2-BINNED full-array mode, and choosing it is not cosmetic:
+# the obvious-looking 1920x1080 is a 1.71x centre CROP with no binning (measured
+# against this mode by feature matching: similarity scale 0.586). That costs
+# three things at once —
+#   * 4.7x more sensor noise (sigma 8.47 vs 1.82), because each output pixel
+#     collects a quarter of the light and the ISP answers with analog gain.
+#     SGBM then happily matches the noise, which is what speckles the depth map.
+#   * the field of view narrows to ~47 deg, while STEREO_HFOV_DEG says 73,
+#     so every sector angle is overstated by ~1.55x.
+#   * the effective focal length changes, so uncalibrated metres are ~28% low.
+# Measured end to end: 50.6% valid depth on the binned mode vs 29.7% on the crop.
+# Changing this INVALIDATES the focal and vshift constants below — both are
+# per-mode, not per-camera. Re-measure with tools/check_stereo_eyes.py.
+STEREO_CAPTURE_WIDTH = int(_env("ORIO_STEREO_CAPTURE_WIDTH", "1640"))
+STEREO_CAPTURE_HEIGHT = int(_env("ORIO_STEREO_CAPTURE_HEIGHT", "1232"))
+
+# Matching resolution. Small is genuinely better here: it runs SGBM fast AND
+# yields more valid pixels, because coarser matching copes better with the
+# low-texture walls this robot faces. Obstacle avoidance needs range, not fine
+# detail. Kept at the capture mode's 4:3 aspect — 320x180 against a 4:3 sensor
+# mode would squash the frame and shear the epipolar geometry.
+STEREO_WIDTH = int(_env("ORIO_STEREO_WIDTH", "320"))
+STEREO_HEIGHT = int(_env("ORIO_STEREO_HEIGHT", "240"))
+STEREO_FPS = int(_env("ORIO_STEREO_FPS", "30"))
+
+# The two sensors run INDEPENDENT auto-exposure and auto-white-balance — Argus
+# offers no cross-sensor sync — and they disagree badly: 56% brightness and 63%
+# contrast mismatch measured on one indoor scene. SGBM matches raw intensities
+# and is not illumination-invariant, so it is being asked to match two images
+# that do not look alike. Rescaling the right eye to the left's mean/std before
+# matching measured 29.7% -> 41.9% valid depth, and 50.6% -> 72.1% once paired
+# with the binned capture mode above.
+# (CLAHE was tried here and is WORSE — 24.5% — because it amplifies each eye's
+# noise independently, and the noise differs between them. Don't reach for it.)
+STEREO_PHOTOMETRIC_MATCH = _env("ORIO_STEREO_PHOTOMETRIC_MATCH", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Optionally pin both sensors to the SAME fixed exposure and analog gain, which
+# fixes the mismatch at the source rather than papering over it after capture.
+# Empty (the default) leaves auto-exposure running, which adapts to the room but
+# lets the eyes drift apart. Set both to lock: exposure in nanoseconds (sensor
+# range 13000..683709000), gain 1.0..10.625. Suits a fixed, known environment.
+STEREO_EXPOSURE_NS = _env("ORIO_STEREO_EXPOSURE_NS", "").strip()
+STEREO_GAIN = _env("ORIO_STEREO_GAIN", "").strip()
+
+# Stereo calibration produced by tools/calibrate_stereo.py. Until this exists,
+# depth falls back to nominal published optics plus a measured vertical offset
+# — good enough to rank obstacles, NOT trustworthy as absolute metres.
+STEREO_CALIBRATION = Path(
+    _env("ORIO_STEREO_CALIBRATION", str(ROOT / "models" / "stereo" / "calibration.npz"))
+)
+
+# Fallback optics, used only when uncalibrated, and BOTH tied to the capture
+# mode above. Baseline is published by Waveshare.
+#
+# Focal: from the sensor geometry for the full-array (binned) mode — the IMX219
+# is 3280 px wide over a 73 deg horizontal FOV, so f = (3280/2)/tan(73/2) = 2216
+# px at full width, which is 432 px at 640. (The previous 532 belonged to no
+# mode in particular and, against the 1080p crop actually in use, made distances
+# read ~28% low.) A cross-check from the optics agrees: 2.6 mm lens / 1.12 um
+# pixels = 2321 px, within 5%.
+#
+# Vertical offset: re-measured by feature matching on the binned mode — 9 px at
+# 240 tall, stored as a fraction so it scales with STEREO_HEIGHT. It was 31 px
+# at 360 on the 1080p crop; the ratio between the two is exactly the 1.71x crop
+# factor, which is a satisfying independent confirmation of both numbers.
+STEREO_BASELINE_M = float(_env("ORIO_STEREO_BASELINE_M", "0.06"))
+STEREO_FALLBACK_FOCAL_PX_AT_640 = float(_env("ORIO_STEREO_FOCAL_PX_AT_640", "432"))
+STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(9.0 / 240.0)))
+
+# Horizontal field of view of the uncropped binned frame, from the datasheet
+# (83/73/50 deg diagonal/horizontal/vertical). Only the *uncalibrated* path uses
+# this: rectification with alpha=0 crops the frame, so a loaded calibration
+# derives its own HFOV from the rectified focal length instead.
+STEREO_HFOV_DEG = float(_env("ORIO_STEREO_HFOV_DEG", "73.0"))
+
+# Range gate. Below the near limit the cameras cannot triangulate (disparity
+# saturates); beyond the far limit a 60 mm baseline is too short to be useful.
+STEREO_MIN_RANGE_M = float(_env("ORIO_STEREO_MIN_RANGE_M", "0.25"))
+STEREO_MAX_RANGE_M = float(_env("ORIO_STEREO_MAX_RANGE_M", "4.0"))
+
+# The depth map is reduced to this many vertical sectors across the field of
+# view, each reporting its nearest obstacle — the form a planner actually wants.
+STEREO_SECTORS = int(_env("ORIO_STEREO_SECTORS", "7"))
+
+# A sector needs at least this fraction of valid pixels before its distance is
+# trusted; blank walls and dim corners produce large invalid regions, and an
+# unmatched region must read as "unknown", never as "clear".
+STEREO_MIN_VALID_FRAC = float(_env("ORIO_STEREO_MIN_VALID_FRAC", "0.10"))
+
+# Only the band of the image that can contain something the robot would hit,
+# as fractions of frame height (0 = top). Excludes ceiling and the floor
+# immediately underfoot, which otherwise register as a permanent obstacle.
+#
+# These are ANGLES wearing fractions' clothing, so they moved with the capture
+# mode: 0.25/0.85 was tuned on the 1080p crop, whose vertical FOV is only ~31
+# deg. The binned mode sees ~50 deg, and the same fractions would have swept in
+# a lot of floor — which reads as a near obstacle and would have the robot
+# believe it is permanently blocked. 0.35/0.71 preserves the same angular band
+# (-7.7 deg to +10.7 deg about the optical axis). Worth re-checking by eye in
+# tools/stereo_debug.py, since the original tuning was visual too.
+STEREO_BAND_TOP = float(_env("ORIO_STEREO_BAND_TOP", "0.35"))
+STEREO_BAND_BOTTOM = float(_env("ORIO_STEREO_BAND_BOTTOM", "0.71"))
 
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each

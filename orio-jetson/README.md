@@ -97,11 +97,31 @@ on a Jetson, where "default" captured pure silence but "pipewire" correctly
 reached the USB mic. An explicit `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE`
 always overrides this.
 
-**5. Camera (for the vision tool)** — needs a webcam at `ORIO_CAMERA_INDEX`
-(default `0`, the first/only camera). The YOLO nano checkpoint (~6 MB)
-auto-downloads into `models/yolo/` (gitignored) the first time the vision tool
-actually runs. No camera, or want the LLM to run with no tools at all? Set
-`ORIO_TOOLS=0` — Orio still runs fine, it just can't answer "what do you see".
+**5. Camera (for the vision tool)** — on the Jetson this is the IMX219 CSI
+pair, captured through the ISP via Argus. That needs an OpenCV built with
+GStreamer, which PyPI's `opencv-python` is not, so the project uses JetPack's
+system build instead. Link it into the venv (idempotent, safe to re-run):
+
+```bash
+sudo apt install python3-opencv      # once, if not already present
+uv run python tools/link_system_cv2.py
+```
+
+**Re-run that after recreating the venv** — `uv sync` alone will not restore
+the link, and without it CSI capture cannot work. Two related pins exist for
+the same reason and should not be "cleaned up": `requires-python = ">=3.12,<3.13"`
+(the system cv2 is built for 3.12 only) and `numpy<2` (it is compiled against
+numpy 1.x). `[tool.uv] override-dependencies` also keeps `opencv-python` out of
+the environment so it cannot shadow the link.
+
+For a plain USB webcam instead, set `ORIO_CAMERA_USE_ARGUS=0` and pick the
+device with `ORIO_CAMERA_INDEX` — that path is ordinary V4L2 and needs none of
+the above.
+
+The YOLO nano checkpoint (~6 MB) auto-downloads into `models/yolo/`
+(gitignored) the first time the vision tool actually runs. No camera, or want
+the LLM to run with no tools at all? Set `ORIO_TOOLS=0` — Orio still runs fine,
+it just can't answer "what do you see".
 
 **6. Local settings (optional)** — for anything you want to keep set across
 runs (device pins, `ORIO_EYES`, etc.), copy `settings.example.json` to
@@ -190,11 +210,28 @@ way.
 | `ORIO_VAD_MAX_PHRASE_S` | `15` | Hard cap on a single phrase's length |
 | `ORIO_VAD_THRESHOLD_FACTOR` | `3.0` | Speech threshold as a multiple of the ambient noise floor |
 | `ORIO_TOOLS` | `1` | `0` to disable all LLM tool-calling (e.g. no camera) |
-| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index |
+| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index (USB webcams only, i.e. when Argus is off) |
+| `ORIO_CAMERA_USE_ARGUS` | `1` | `1` to capture CSI cameras via `nvarguscamerasrc`; `0` for plain V4L2 |
+| `ORIO_CAMERA_SENSOR_ID` | `0` | Argus sensor id — *not* the `/dev/video*` number, the two are inverted |
+| `ORIO_CAMERA_WIDTH` | `1280` | Frame width handed to YOLO (ISP downscales in hardware) |
+| `ORIO_CAMERA_HEIGHT` | `720` | Frame height handed to YOLO |
+| `ORIO_CAMERA_FPS` | `30` | Sensor capture rate |
 | `ORIO_YOLO_MODEL` | `models/yolo/yolo11n.pt` | Ultralytics checkpoint name or path; auto-downloads if missing |
 | `ORIO_YOLO_CONFIDENCE` | `0.5` | Minimum detection confidence [0,1] to report an object |
 | `ORIO_VISION_DEBUG` | `0` | `1` for a live camera + detection-box preview window |
 | `ORIO_VISION_DEBUG_FPS` | `15` | Preview window's target refresh rate |
+| `ORIO_STEREO` | `0` | `1` to enable stereo depth / obstacle detection |
+| `ORIO_STEREO_LEFT_SENSOR_ID` | `0` | Argus sensor that is the physically *left* camera |
+| `ORIO_STEREO_RIGHT_SENSOR_ID` | `1` | Argus sensor that is the physically *right* camera |
+| `ORIO_STEREO_CAPTURE_WIDTH` / `_HEIGHT` | `1640` / `1232` | Sensor capture mode — the *binned* full-FOV one; see below |
+| `ORIO_STEREO_WIDTH` / `_HEIGHT` | `320` / `240` | Matching resolution (small is faster *and* denser) |
+| `ORIO_STEREO_PHOTOMETRIC_MATCH` | `1` | Relevel the right eye onto the left before matching |
+| `ORIO_STEREO_EXPOSURE_NS` / `_GAIN` | *(unset)* | Pin both sensors to one fixed exposure/gain; unset = auto |
+| `ORIO_STEREO_SECTORS` | `7` | Sectors the depth map is reduced to |
+| `ORIO_STEREO_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.25` / `4.0` | Usable range; outside reads unknown |
+| `ORIO_STEREO_MIN_VALID_FRAC` | `0.10` | Valid-pixel floor before a sector reports a distance |
+| `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.35` / `0.71` | Image band that can hold a collidable obstacle |
+| `ORIO_STEREO_CALIBRATION` | `models/stereo/calibration.npz` | Calibration from `tools/calibrate_stereo.py` |
 | `ORIO_KB_PROFILE` | `orio` | Knowledge-base profile to query (see Knowledge base below) |
 | `ORIO_KB_TOP_K` | `3` | Max chunks retrieved per knowledge-base query |
 | `ORIO_KB_DIR` | `kb/` | Where sqlite-vec profile databases live |
@@ -226,6 +263,14 @@ YOLO nano model, and gets back the actual objects, their rough position
 not a guess. It's read-only: the tool only reports what's visible, it never
 drives or moves anything.
 
+**Why capture goes through Argus** — the IMX219 exposes exactly one V4L2
+format, `RG10` (10-bit packed Bayer), and only the Jetson ISP debayers it. A
+plain `cv2.VideoCapture(index)` therefore returns a **solid green frame while
+reporting success**: `read()` gives `True`, the array has the right shape, and
+every pixel is identical. Nothing raises — it just looks like the camera works
+and YOLO never detects anything. `ObjectDetector` logs an explicit error if it
+ever sees a single-colour frame, so that failure can't go quiet again.
+
 Missing camera, opencv, or ultralytics? `get_tools()` in `orio/tools.py`
 catches it and Orio just runs with no tools, same as any other optional piece
 in this app — nothing else breaks. Force that off explicitly with
@@ -248,6 +293,94 @@ uv run python -c "from orio.vision import ObjectDetector; print(ObjectDetector()
 
 The first run downloads the YOLO nano checkpoint (~6 MB) into `models/yolo/`
 (gitignored, like `voices/`).
+
+## Stereo depth & obstacle detection
+
+`orio/stereo.py` turns the IMX219-83's two sensors into depth, and reduces that
+to the nearest obstacle in each of a few sectors across the view:
+
+```python
+from orio.stereo import ObstacleDetector
+det = ObstacleDetector()
+omap = det.sense()
+omap.describe()          # "nearest 0.53 m left (uncalibrated, approximate)"
+omap.clearance_ahead()   # metres straight on, or None if unknown
+```
+
+See it live — the stereo counterpart to `ORIO_VISION_DEBUG`:
+
+```bash
+uv run python tools/stereo_debug.py
+```
+
+Left pane is the camera with per-sector distance and valid-pixel percentage,
+right pane is the depth map (warm near, cool far, black unknown).
+
+**Perception only.** `ObstacleMap` carries distances, never velocities. Nothing
+here decides how fast to go, when to stop, or which way to turn, and nothing
+here talks to the STM32 — the `CMD_DRIVE` side of obstacle avoidance is
+deliberately not implemented yet.
+
+### Calibrate before trusting the numbers
+
+Uncalibrated, depth falls back to published optics plus a measured row offset.
+Obstacles *rank* correctly — nearer things read nearer — but the absolute
+metres carry real error. `ObstacleMap.calibrated` reports which mode produced a
+reading, and `describe()` says "approximate" out loud rather than hiding it.
+
+```bash
+uv run python tools/calibrate_stereo.py --square-mm 25
+```
+
+Print a checkerboard, tape it flat to something rigid, and capture 20+ pairs at
+varied distances and angles. Measure a square with calipers — that number sets
+the scale of the entire calibration.
+
+### Four hardware quirks, all measured
+
+Both are silent failures, so they are pinned in config rather than discovered
+again later:
+
+- **The eye/sensor mapping depends on the cabling.** Argus sensor 0 is the
+  physically *left* camera (`ORIO_STEREO_LEFT_SENSOR_ID` defaults to `0`), but
+  the ribbons were crossed until 2026-09-05 and sensor 1 was left. Get it
+  backwards and every disparity comes out negative; `depth()` drops negative
+  disparities, so the map goes blank rather than raising. Re-measure after any
+  CSI recabling.
+- **The sensors are not row-aligned.** There is a consistent vertical offset —
+  9 px at 240 px tall on the binned capture mode. SGBM assumes row-aligned
+  input, so this is removed before matching — by the calibration when present,
+  by the measured constant otherwise.
+- **The capture mode is load-bearing.** `1920x1080` looks like the obvious
+  choice and is a trap: it is a 1.71x centre *crop* of the array with no
+  binning. Measured against the binned `1640x1232` mode it carries **4.7x the
+  sensor noise** (sigma 8.47 vs 1.82) — each pixel gets a quarter of the light,
+  the ISP answers with analog gain, and SGBM matches the noise. It also narrows
+  the FOV to ~47° while `obstacles()` assumes 73°, and changes the focal length,
+  so distances read ~28% low. Valid depth: **29.7% on the crop, 50.6% binned.**
+- **The eyes auto-expose independently.** Argus has no cross-sensor sync, and
+  they drift far apart — 56% brightness and 63% contrast mismatch on one indoor
+  scene. SGBM compares raw intensities and is not illumination-invariant, so
+  the right eye is releveled onto the left's mean/std before matching. Worth
+  **29.7% → 41.9%** on its own, and **50.6% → 72.1%** combined with the binned
+  mode. Set `ORIO_STEREO_EXPOSURE_NS`/`_GAIN` to fix it at the source instead.
+
+  CLAHE is the tempting alternative here and is *worse* (24.5%): it amplifies
+  each eye's noise independently, and the two eyes' noise differs.
+
+### Why 320x240
+
+Counter-intuitively, matching small is better here: it runs SGBM fast *and*
+produces more valid pixels than 640-wide matching, because coarser matching
+copes better with the blank walls this robot faces. Obstacle avoidance needs
+range, not fine detail. The 4:3 aspect matches the binned capture mode — 320x180
+against a 4:3 sensor mode would squash the frame and shear the epipolar
+geometry. End to end, `sense_with_frames()` measured **29.7 fps at 67.7% valid
+depth** on an indoor scene.
+
+A sector below `ORIO_STEREO_MIN_VALID_FRAC` valid pixels reports `None`, not a
+distance. Untextured surfaces genuinely cannot be measured by a passive stereo
+pair, and unknown must never be acted on as clear.
 
 ## Knowledge base (RAG)
 

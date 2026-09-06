@@ -49,6 +49,24 @@ def _position(x1: float, y1: float, x2: float, y2: float, frame_w: int, frame_h:
     return f"{horiz}, {depth}"
 
 
+def _argus_pipeline(sensor_id: int, width: int, height: int, fps: int) -> str:
+    """GStreamer pipeline pulling CSI frames through the Jetson ISP via Argus.
+
+    `nvarguscamerasrc` yields NVMM (device-memory) buffers that `nvvidconv`
+    debayers and rescales in hardware; only the final BGR copy touches the CPU.
+    Scaling here rather than in numpy keeps YOLO off the sensor's native
+    3280x2464 frames. See config.CAMERA_USE_ARGUS for why plain V4L2 is not an
+    option on this hardware.
+    """
+    return (
+        f"nvarguscamerasrc sensor-id={sensor_id} ! "
+        f"video/x-raw(memory:NVMM),width=1920,height=1080,framerate={fps}/1 ! "
+        f"nvvidconv ! video/x-raw,width={width},height={height},format=BGRx ! "
+        "videoconvert ! video/x-raw,format=BGR ! "
+        "appsink drop=true max-buffers=2"
+    )
+
+
 class ObjectDetector:
     """Lazily opens the camera + YOLO model; call `detect_once()` per query."""
 
@@ -57,10 +75,22 @@ class ObjectDetector:
         camera_index: int = config.CAMERA_INDEX,
         model_path: Path = config.YOLO_MODEL_PATH,
         confidence: float = config.YOLO_CONFIDENCE,
+        use_argus: bool = config.CAMERA_USE_ARGUS,
+        sensor_id: int = config.CAMERA_SENSOR_ID,
+        width: int = config.CAMERA_WIDTH,
+        height: int = config.CAMERA_HEIGHT,
+        fps: int = config.CAMERA_FPS,
     ) -> None:
         self._camera_index = camera_index
         self._model_path = model_path
         self._confidence = confidence
+        self._use_argus = use_argus
+        self._sensor_id = sensor_id
+        self._width = width
+        self._height = height
+        self._fps = fps
+        self._source = "camera"
+        self._blank_checked = False
         self._cap = None
         self._model = None
         self._lock = threading.Lock()
@@ -75,10 +105,25 @@ class ObjectDetector:
         if self._cap is None:
             import cv2  # heavy import, kept lazy
 
-            cap = cv2.VideoCapture(self._camera_index)
-            if not cap.isOpened():
-                cap.release()
-                raise RuntimeError(f"could not open camera {self._camera_index}")
+            if self._use_argus:
+                self._source = f"Argus sensor {self._sensor_id}"
+                cap = cv2.VideoCapture(
+                    _argus_pipeline(self._sensor_id, self._width, self._height, self._fps),
+                    cv2.CAP_GSTREAMER,
+                )
+                if not cap.isOpened():
+                    cap.release()
+                    raise RuntimeError(
+                        f"could not open {self._source}. If OpenCV was built without "
+                        "GStreamer support this always fails — Orio expects JetPack's "
+                        "system cv2, not a PyPI opencv-python wheel."
+                    )
+            else:
+                self._source = f"camera {self._camera_index}"
+                cap = cv2.VideoCapture(self._camera_index)
+                if not cap.isOpened():
+                    cap.release()
+                    raise RuntimeError(f"could not open {self._source}")
             self._cap = cap
 
     def _detect_locked(self):
@@ -92,7 +137,8 @@ class ObjectDetector:
         self._ensure_open()
         ok, frame = self._cap.read()
         if not ok:
-            raise RuntimeError(f"could not read a frame from camera {self._camera_index}")
+            raise RuntimeError(f"could not read a frame from {self._source}")
+        self._warn_if_blank(frame)
 
         h, w = frame.shape[:2]
         result = self._model.predict(frame, conf=self._confidence, verbose=False)[0]
@@ -108,6 +154,27 @@ class ObjectDetector:
                 )
             )
         return detections, frame
+
+    def _warn_if_blank(self, frame) -> None:
+        """One-shot guard against a silently broken capture path.
+
+        A bad capture path does not raise here — a plain V4L2 grab from the
+        IMX219 returns a uniform buffer and still reports success, which reads
+        downstream as "the camera works but YOLO never detects anything". A
+        frame holding exactly one value means the pipeline is wrong, not that
+        the room is empty, so say so loudly. Subsampled, and only checked once.
+        """
+        if self._blank_checked:
+            return
+        self._blank_checked = True
+        sample = frame[::16, ::16]
+        if sample.max() == sample.min():
+            log.error(
+                "%s returned a blank, single-colour frame — the capture path is "
+                "broken, not the scene. Expect no detections. Check that cv2 has "
+                "GStreamer support and ORIO_CAMERA_USE_ARGUS=1.",
+                self._source,
+            )
 
     def detect_once(self) -> list[Detection]:
         """Capture one frame and return the objects detected in it."""
