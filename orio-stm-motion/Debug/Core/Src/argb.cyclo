@@ -1,7 +1,0 @@
-../Core/Src/argb.c:30:13:encode_byte	3
-../Core/Src/argb.c:38:6:ARGB_Init	1
-../Core/Src/argb.c:47:6:ARGB_SetLed	2
-../Core/Src/argb.c:59:6:ARGB_SetAll	2
-../Core/Src/argb.c:69:6:ARGB_Show	5
-../Core/Src/argb.c:97:6:ARGB_Off	1
-../Core/Src/argb.c:109:6:HAL_TIM_PWM_PulseFinishedCallback	2

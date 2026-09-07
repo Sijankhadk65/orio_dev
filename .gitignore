@@ -1,0 +1,8 @@
+# STM32CubeIDE workspace metadata -- machine-local IDE state (indexer
+# databases, build logs, per-session history snapshots), not part of any
+# one subproject and not something another checkout needs.
+.metadata/
+
+# OS cruft
+.DS_Store
+Thumbs.db

@@ -1,0 +1,6 @@
+# STM32CubeIDE build output -- regenerate with a normal Build in the IDE.
+Debug/
+Release/
+
+# Python tool cache
+tools/__pycache__/
