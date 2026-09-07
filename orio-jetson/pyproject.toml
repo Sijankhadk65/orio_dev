@@ -17,6 +17,7 @@ dependencies = [
     "sqlite-vec>=0.1.9",
     "ultralytics>=8.4.115",
     "numpy<2",
+    "pyserial>=3.5",
 ]
 
 [tool.uv]
