@@ -7,3 +7,12 @@
 !.gitignore
 !*.onnx
 !*.tflite
+
+# Stereo calibration (tools/calibrate_stereo.py), same reasoning: ~36 KB, and
+# reproducing it means 15 minutes of waving a checkerboard at the robot. It
+# describes THIS physical camera pair, though — a second build's optics and
+# baseline differ, and a wrong calibration is worse than none because it
+# silences the "uncalibrated, approximate" warning. Recalibrate per robot, and
+# after any change to the CSI cabling or the capture mode.
+!stereo/
+!stereo/*.npz
