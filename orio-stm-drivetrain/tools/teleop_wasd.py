@@ -17,7 +17,7 @@ only CMD_HEARTBEAT does (see protocol.c). So this sends heartbeats on its
 own timer in the background, independent of whatever WASD is doing;
 otherwise the board would e-stop every 500ms regardless of input.
 
-Controls:
+Controls (latched, not held -- tap a direction once and it keeps going):
   W          forward
   S          reverse
   A          turn left  (in place: left reverse, right forward)
@@ -28,16 +28,20 @@ Controls:
   Ctrl+C     also quits (stops first) -- works even on the raw-mode Linux
              terminal, since cbreak mode leaves signal generation enabled
 
-Safety: releasing all movement keys auto-stops after a short delay (handles
-OS key-repeat gaps without needing space every time); the firmware's own
-heartbeat watchdog is still the backstop of last resort if this script
-itself hangs or is killed outright.
+Safety: there's no auto-stop on its own here -- once latched, a direction
+keeps going until you press space, a different direction, or quit. The
+firmware's heartbeat watchdog is still the backstop if this script itself
+hangs or is killed outright (no more heartbeats -> e-stop within 500ms),
+but walking away from the keyboard without pressing space will NOT stop
+the robot on its own the way it used to.
 
 Usage:
     pip install pyserial
-    python tools/teleop_wasd.py COM5           # Windows
-    python tools/teleop_wasd.py /dev/ttyACM0   # Linux/Jetson
+    python tools/teleop_wasd.py COM5                    # Windows
+    python tools/teleop_wasd.py /dev/ttyACM0             # Linux/Jetson
+    python tools/teleop_wasd.py COM5 --duty 50           # start at 50% instead of the default
 """
+import argparse
 import sys
 import time
 
@@ -46,17 +50,13 @@ from proto_client import (
     CMD_SET_DRIVE,
     arm,
     build_frame,
-    open_port,
+    open_serial,
     set_drive_payload,
 )
 
 DEFAULT_DUTY_PERCENT = 30.0
 DUTY_STEP_PERCENT = 5.0
 HEARTBEAT_INTERVAL_S = 0.2
-# Comfortably longer than a typical OS's initial key-repeat delay (often
-# ~0.5s before repeat kicks in), so releasing a key doesn't get confused
-# with the normal pause before autorepeat starts.
-DEADMAN_TIMEOUT_S = 0.8
 LOOP_TICK_S = 0.03
 
 # (left_sign, right_sign)
@@ -129,22 +129,50 @@ def drain(ser):
         ser.read(ser.in_waiting)
 
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Live WASD teleop for bench-testing the drivetrain.")
+    parser.add_argument("port", help="serial port, e.g. COM5 or /dev/ttyACM0")
+    parser.add_argument(
+        "--duty",
+        type=float,
+        default=DEFAULT_DUTY_PERCENT,
+        help=f"starting duty cycle percent, 0-100 (default {DEFAULT_DUTY_PERCENT:g}); adjustable live with [ and ]",
+    )
+    return parser.parse_args()
+
+
 def main():
-    ser = open_port()
-    duty_percent = DEFAULT_DUTY_PERCENT
+    args = parse_args()
+    if not (0.0 <= args.duty <= 100.0):
+        print("--duty must be between 0 and 100")
+        sys.exit(1)
+
+    ser = open_serial(args.port)
+    duty_percent = args.duty
     last_sent = (0, 0)
-    last_movement_time = 0.0
+    current_direction = None  # (left_sign, right_sign) of the active latch, or None once stopped
     last_heartbeat_time = 0.0
+
+    def apply_direction(signs):
+        nonlocal last_sent, current_direction
+        left_sign, right_sign = signs
+        permille = round(duty_percent * 10)
+        left = left_sign * permille
+        right = right_sign * permille
+        if (left, right) != last_sent:
+            send_drive(ser, left, right)
+            last_sent = (left, right)
+            print(f"left={left} right={right}")
+        current_direction = signs
 
     print(__doc__)
     try:
         arm(ser)
-        print(f"\nduty={duty_percent:g}% -- hold W/A/S/D to drive, space to stop, q to quit\n")
+        print(f"\nduty={duty_percent:g}% -- tap W/A/S/D to drive, space to stop, q to quit\n")
 
         with KeyReader() as keys:
             while True:
                 now = time.monotonic()
-                moved_this_tick = False
 
                 while keys.kbhit():
                     key = keys.getch().lower()
@@ -153,29 +181,20 @@ def main():
                     if key == b"[":
                         duty_percent = max(0.0, duty_percent - DUTY_STEP_PERCENT)
                         print(f"duty={duty_percent:g}%")
+                        if current_direction is not None:
+                            apply_direction(current_direction)
                     elif key == b"]":
                         duty_percent = min(100.0, duty_percent + DUTY_STEP_PERCENT)
                         print(f"duty={duty_percent:g}%")
+                        if current_direction is not None:
+                            apply_direction(current_direction)
                     elif key == b" ":
                         last_sent = (0, 0)
+                        current_direction = None
                         send_drive(ser, 0, 0)
                         print("stop")
                     elif key in DIRECTION_KEYS:
-                        left_sign, right_sign = DIRECTION_KEYS[key]
-                        permille = round(duty_percent * 10)
-                        left = left_sign * permille
-                        right = right_sign * permille
-                        if (left, right) != last_sent:
-                            send_drive(ser, left, right)
-                            last_sent = (left, right)
-                            print(f"left={left} right={right}")
-                        last_movement_time = now
-                        moved_this_tick = True
-
-                if not moved_this_tick and last_sent != (0, 0) and (now - last_movement_time) > DEADMAN_TIMEOUT_S:
-                    send_drive(ser, 0, 0)
-                    last_sent = (0, 0)
-                    print("stop (key released)")
+                        apply_direction(DIRECTION_KEYS[key])
 
                 if (now - last_heartbeat_time) > HEARTBEAT_INTERVAL_S:
                     ser.write(build_frame(CMD_HEARTBEAT))

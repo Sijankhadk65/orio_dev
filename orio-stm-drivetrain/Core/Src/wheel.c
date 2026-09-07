@@ -7,6 +7,7 @@
 static Vesc_t s_escs[WHEEL_SIDE_COUNT];
 static int16_t s_commanded_permille[WHEEL_SIDE_COUNT];
 static VescTelemetry_t s_telemetry[WHEEL_SIDE_COUNT];
+static WheelSide_t s_next_poll_side = WHEEL_LEFT;
 
 void Wheel_Init(UART_HandleTypeDef *huart_left, UART_HandleTypeDef *huart_right)
 {
@@ -44,8 +45,12 @@ void Wheel_Resume(void)
 
 void Wheel_PollTelemetry(void)
 {
-  Vesc_PollValues(&s_escs[WHEEL_LEFT], &s_telemetry[WHEEL_LEFT]);
-  Vesc_PollValues(&s_escs[WHEEL_RIGHT], &s_telemetry[WHEEL_RIGHT]);
+  /* One side per call, alternating -- polling both back to back doubles
+   * the worst-case block on the main loop (which also has to service the
+   * Jetson-link heartbeat watchdog), for no benefit callers actually need.
+   * See the worst-case-timing note on VESC_UART_TIMEOUT_MS in vesc.c. */
+  Vesc_PollValues(&s_escs[s_next_poll_side], &s_telemetry[s_next_poll_side]);
+  s_next_poll_side = (s_next_poll_side == WHEEL_LEFT) ? WHEEL_RIGHT : WHEEL_LEFT;
 }
 
 const VescTelemetry_t *Wheel_GetTelemetry(WheelSide_t side)

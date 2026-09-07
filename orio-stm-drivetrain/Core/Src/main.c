@@ -33,6 +33,12 @@
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
 #define WHEEL_TELEMETRY_POLL_PERIOD_MS 50u
+/* Well under the FSESC's own configured UART command timeout (~1000ms,
+ * see VESC Tool -> App Settings -> General -> Timeout) -- that timeout
+ * cuts the motor independently of this board's Jetson-link heartbeat
+ * watchdog, so the commanded duty has to keep being re-sent even when it
+ * hasn't changed, not just once when a new CMD_SET_DRIVE arrives. */
+#define WHEEL_DUTY_REFRESH_PERIOD_MS 200u
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -47,6 +53,7 @@ UART_HandleTypeDef huart3;
 
 /* USER CODE BEGIN PV */
 static uint32_t s_last_telemetry_poll_tick;
+static uint32_t s_last_duty_refresh_tick;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -100,6 +107,7 @@ int main(void)
   Wheel_Init(&huart1, &huart3); /* huart1 = left FSESC, huart3 = right FSESC */
   Protocol_Init(&huart2); /* e-stops both wheels until the first heartbeat */
   s_last_telemetry_poll_tick = HAL_GetTick();
+  s_last_duty_refresh_tick = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -112,6 +120,12 @@ int main(void)
     {
       s_last_telemetry_poll_tick = HAL_GetTick();
       Wheel_PollTelemetry();
+    }
+
+    if ((HAL_GetTick() - s_last_duty_refresh_tick) >= WHEEL_DUTY_REFRESH_PERIOD_MS)
+    {
+      s_last_duty_refresh_tick = HAL_GetTick();
+      Wheel_Resume(); /* re-sends the currently commanded duty, changed or not */
     }
     /* USER CODE END WHILE */
 

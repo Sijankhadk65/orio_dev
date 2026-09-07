@@ -7,7 +7,15 @@
 
 #define VESC_PKT_START        0x02u
 #define VESC_PKT_END          0x03u
-#define VESC_UART_TIMEOUT_MS  25u
+/* Kept small deliberately: Vesc_PollValues() runs on the main loop, which
+ * also has to notice the Jetson-link heartbeat timeout (500ms, see
+ * protocol.h) in time. A poll's worst case is roughly
+ * (VESC_RESYNC_MAX_ATTEMPTS + 4) * VESC_UART_TIMEOUT_MS -- these two
+ * constants together must stay well under that 500ms budget, even with
+ * both wheels polled, or a slow/noisy ESC link can starve the watchdog
+ * check and cause a spurious self-e-stop that has nothing to do with
+ * whether the Jetson is actually still heartbeating on time. */
+#define VESC_UART_TIMEOUT_MS  10u
 
 /* COMM_PACKET_ID values this driver needs, per VESC's datatypes.h. */
 typedef enum
@@ -31,8 +39,9 @@ typedef enum
 
 /* Bounded byte-by-byte scan for VESC_PKT_START, so one glitched/leftover
  * byte on the wire doesn't permanently desync every poll after it -- each
- * failed poll used to leave the parser mid-stream with no way back. */
-#define VESC_RESYNC_MAX_ATTEMPTS 32u
+ * failed poll used to leave the parser mid-stream with no way back. Kept
+ * small for the same reason VESC_UART_TIMEOUT_MS is -- see its comment. */
+#define VESC_RESYNC_MAX_ATTEMPTS 8u
 
 /**
   * @brief  Computes CRC-16/XMODEM (poly 0x1021, init 0x0000) -- VESC's own

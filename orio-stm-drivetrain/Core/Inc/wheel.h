@@ -59,14 +59,24 @@ void Wheel_Stop(void);
 /**
   * @brief  Re-sends the last-commanded speeds (0 if none were ever set, or
   *         if the most recent event was a Wheel_Stop()).
+  * @note   Called both when a heartbeat clears the e-stop, and on its own
+  *         short timer from the main loop regardless of e-stop state --
+  *         each FSESC has its own UART command timeout independent of
+  *         this board's heartbeat watchdog, so the commanded duty (0 or
+  *         otherwise) has to keep arriving even when it hasn't changed.
   * @retval None
   */
 void Wheel_Resume(void);
 
 /**
-  * @brief  Polls fresh telemetry from both FSESCs (two blocking VESC UART
-  *         transactions) and caches it for Wheel_GetTelemetry().
-  * @note   Call periodically from the main loop, not from an ISR.
+  * @brief  Polls fresh telemetry from one FSESC (a single blocking VESC
+  *         UART transaction) and caches it for Wheel_GetTelemetry().
+  *         Alternates sides on successive calls -- each side gets updated
+  *         roughly every other call, not every call.
+  * @note   Call periodically from the main loop, not from an ISR. Only
+  *         polling one side per call bounds how long any single call can
+  *         block the loop that also has to service the Jetson-link
+  *         heartbeat watchdog; see the timing note in vesc.c.
   * @retval None
   */
 void Wheel_PollTelemetry(void);
