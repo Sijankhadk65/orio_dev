@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """WASD teleop that steers around obstacles instead of stopping at them.
 
-    uv run python tools/teleop_guarded.py                      # /dev/ttyACM0
-    uv run python tools/teleop_guarded.py --port /dev/ttyTHS1
+    uv run python tools/teleop_guarded.py                      # /dev/orio_drive
+    uv run python tools/teleop_guarded.py --port /dev/ttyACM1
     uv run python tools/teleop_guarded.py --duty 40 --clear-m 1.5
 
 Tap W and the robot cruises forward on its own, steering around what it sees
@@ -84,7 +84,10 @@ from orio import config
 from orio.drivetrain import Drivetrain
 from orio.stereo import ObstacleDetector
 
-DEFAULT_PORT = "/dev/ttyACM0"
+# The drivetrain board, by its stable udev name — never a raw /dev/ttyACM*,
+# whose number is enumeration order and can point at the motion board
+# instead. See config.DRIVETRAIN_PORT for why and how to override.
+DEFAULT_PORT = config.DRIVETRAIN_PORT
 DEFAULT_DUTY_PERCENT = 30.0
 DUTY_STEP_PERCENT = 5.0
 LOOP_TICK_S = 0.03
@@ -648,8 +651,12 @@ def main() -> int:
         except Exception as exc:
             print(
                 f"\ncould not open the drivetrain on {args.port}: {exc}\n"
-                "  Is the STM32 plugged in? Check `ls /dev/ttyACM* /dev/ttyTHS*` and "
-                "pass the right one with --port."
+                "  Is the STM32 plugged in? Check `ls -l /dev/orio_* /dev/ttyACM*`.\n"
+                "  If /dev/orio_drive is missing, the udev rule is not installed on\n"
+                "  this machine (see 99-orio-stm32.rules) — find the drivetrain board\n"
+                "  in `ls /dev/serial/by-id/` by its ST-LINK serial and pass it with\n"
+                "  --port. Do not guess between ttyACM0 and ttyACM1: the wrong one is\n"
+                "  the motion board, and it accepts drive frames without complaint."
             )
             return 1
 

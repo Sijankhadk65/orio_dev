@@ -149,6 +149,38 @@ VAD_THRESHOLD_FACTOR = float(_env("ORIO_VAD_THRESHOLD_FACTOR", "3.0"))
 VAD_MIN_RMS = float(_env("ORIO_VAD_MIN_RMS", "300"))
 
 
+# ── STM32 serial links ────────────────────────────────────────────────────────
+# Two STM32 boards hang off the Jetson's USB bus: the drivetrain (wheels, via
+# the FSESCs) and motion (neck and arm servos). Both are Nucleos presenting
+# their ST-LINK virtual COM port, so both enumerate as 0483:374b and both land
+# on /dev/ttyACM* — and the number each gets is USB *enumeration* order, not
+# physical port order. It changes across reboots, hot-plugs and a board reset.
+#
+# Getting it wrong is a silent failure, not a crash: the two boards share the
+# same framing, so a CMD_SET_DRIVE delivered to the motion board passes CRC and
+# decodes as a valid frame of the wrong kind. Wheels take a joint angle as
+# throttle, or servos slew to whatever a velocity float decodes to.
+#
+# The defaults below are the udev symlinks installed on the Jetson at
+# /etc/udev/rules.d/99-orio-stm32.rules, which match each board's ST-LINK
+# serial number and so survive re-enumeration:
+#
+#   SUBSYSTEM=="tty", ATTRS{idVendor}=="0483", ATTRS{idProduct}=="374b", \
+#     ATTRS{serial}=="<board serial>", SYMLINK+="orio_drive", MODE="0660", GROUP="dialout"
+#
+# Bench work off the robot overrides these — a Windows COM port, or a raw
+# /dev/ttyACM* on a machine without the rule installed:
+#
+#   ORIO_DRIVETRAIN_PORT=COM5      (or settings.json, see _load_settings above)
+#
+# The symlink is a convenience, not a guarantee — it silently matches nothing
+# if a board is swapped for one with a different ST-LINK serial. Verifying the
+# board's identity is the firmware's job, via a WHOAMI handshake on connect;
+# until that exists, an opened port is trusted to be what its name says.
+DRIVETRAIN_PORT = _env("ORIO_DRIVETRAIN_PORT", "/dev/orio_drive")
+MOTION_PORT = _env("ORIO_MOTION_PORT", "/dev/orio_motion")
+
+
 # ── Vision (camera / object detection) ─────────────────────────────────────────
 # Lets the LLM call a "what do you see" tool: capture one frame from the
 # camera and run it through YOLO. A query tool only — it answers questions,
