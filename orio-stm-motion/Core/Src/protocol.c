@@ -157,6 +157,31 @@ static void send_status(void)
 }
 
 /**
+  * @brief  Sends a CMD_IDENTITY frame naming this board's role, firmware
+  *         version and wire-protocol version.
+  * @note   Answers unconditionally, e-stopped or not -- modelled on
+  *         send_status() rather than on the gated command handlers. The
+  *         Jetson asks WHOAMI before its first heartbeat, so a reply that
+  *         needed the link armed would deadlock startup.
+  * @note   Deliberately does NOT touch s_last_heartbeat_tick. Only
+  *         CMD_HEARTBEAT may feed the watchdog; otherwise a controller
+  *         polling identity could hold the board armed indefinitely without
+  *         ever proving the link healthy.
+  * @retval None
+  */
+static void send_identity(void)
+{
+  uint8_t p[5];
+
+  p[0] = (uint8_t)PROTO_SELF_ROLE;
+  p[1] = FW_VERSION_MAJOR;
+  p[2] = FW_VERSION_MINOR;
+  p[3] = FW_VERSION_PATCH;
+  p[4] = PROTO_VERSION;
+  send_frame(CMD_IDENTITY, p, sizeof(p));
+}
+
+/**
   * @brief  Validates and applies a CMD_MOVE_JOINT_TO command.
   * @note   Latches both angles for status reporting and, if a physical
   *         ServoJoint_t is bound at that position, drives its pan and tilt
@@ -364,6 +389,10 @@ static void handle_frame(uint8_t cmd, const uint8_t *payload, uint8_t payload_le
 
     case CMD_GET_STATUS:
       send_status();
+      break;
+
+    case CMD_WHOAMI:
+      send_identity();
       break;
 
     case CMD_SET_FAN_SPEED:

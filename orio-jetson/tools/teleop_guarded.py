@@ -660,6 +660,11 @@ def main() -> int:
             )
             return 1
 
+        # connect() has already refused the link if this is the wrong board;
+        # printing what answered makes a swapped board visible in the log of a
+        # session that DID start, not just in the failure path above.
+        print(f"    identity confirmed on the wire: {link.identity}")
+
         with link as dt, KeyReader() as keys:
             print(f"duty={duty_percent:g}%  avoidance={'ON' if avoider.enabled else 'OFF'} "
                   f"(pivot<{args.stop_m:g}m, cruise>{args.clear_m:g}m)\n")

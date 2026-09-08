@@ -31,10 +31,27 @@ CMD_GET_STATUS = 0x04
 CMD_SET_FAN_SPEED = 0x05
 CMD_SET_FAN_RGB = 0x06
 CMD_RESET_JOINTS = 0x07
+CMD_WHOAMI = 0x08
 
 CMD_ACK = 0x80
 CMD_NACK = 0x81
 CMD_STATUS = 0x82
+CMD_IDENTITY = 0x83
+
+# Must match ProtoRole in Core/Inc/protocol.h -- the same numbering on both
+# boards, so this client can name the board it did NOT expect to reach.
+ROLE_DRIVETRAIN = 0x01
+ROLE_MOTION = 0x02
+
+ROLE_NAMES = {
+    ROLE_DRIVETRAIN: "drivetrain",
+    ROLE_MOTION: "motion",
+}
+
+# What this repo's firmware must answer CMD_WHOAMI with (PROTO_SELF_ROLE in
+# Core/Inc/protocol.h), and the wire-protocol version it reports.
+EXPECTED_ROLE = ROLE_MOTION
+EXPECTED_PROTO_VERSION = 1
 
 # Must match ServoJointPosition_t in Core/Inc/servo_joint.h.
 JOINT_POS_NECK = 0
@@ -120,9 +137,11 @@ CMD_NAMES = {
     CMD_SET_FAN_SPEED: "SET_FAN_SPEED",
     CMD_SET_FAN_RGB: "SET_FAN_RGB",
     CMD_RESET_JOINTS: "RESET_JOINTS",
+    CMD_WHOAMI: "WHOAMI",
     CMD_ACK: "ACK",
     CMD_NACK: "NACK",
     CMD_STATUS: "STATUS",
+    CMD_IDENTITY: "IDENTITY",
 }
 
 # Must match ProtoNackReason in Core/Inc/protocol.h.
@@ -294,6 +313,41 @@ def expect_status(estopped: int = None, joints: dict = None, tol_deg: float = 0.
     return _Expect("STATUS" + (" " + "; ".join(bits) if bits else ""), check)
 
 
+def expect_identity(role: int = None, proto_version: int = None) -> _Expect:
+    """CMD_IDENTITY, optionally checking the role and wire-protocol version.
+
+    An ACK here is a failure, not a pass: CMD_WHOAMI is answered with the
+    identity frame itself, and a board that merely ACKed would leave the caller
+    knowing the link works but not which board is on it -- which is the whole
+    question being asked."""
+
+    def check(resp):
+        if resp is None:
+            return "no response"
+        cmd, payload = resp
+        if cmd != CMD_IDENTITY:
+            return f"got {describe_response(resp)}"
+        if len(payload) < 5:
+            return f"IDENTITY payload too short ({len(payload)} bytes)"
+        ident = parse_identity_payload(payload)
+        if role is not None and ident["role"] != role:
+            return (
+                f"role={ident['role_name']} (0x{ident['role']:02x}) running firmware "
+                f"{ident['firmware']}, wanted {ROLE_NAMES.get(role, hex(role))} "
+                "-- WRONG BOARD on this port"
+            )
+        if proto_version is not None and ident["proto_version"] != proto_version:
+            return f"protocol v{ident['proto_version']}, wanted v{proto_version}"
+        return None
+
+    bits = []
+    if role is not None:
+        bits.append(f"role={ROLE_NAMES.get(role, hex(role))}")
+    if proto_version is not None:
+        bits.append(f"proto=v{proto_version}")
+    return _Expect("IDENTITY" + (" " + " ".join(bits) if bits else ""), check)
+
+
 def crc16_ccitt(data: bytes) -> int:
     """CRC-16/CCITT-FALSE, must match crc16_ccitt() in Core/Src/protocol.c."""
     crc = 0xFFFF
@@ -323,6 +377,21 @@ def move_joint_payload(position: int, pan_deg: float, tilt_deg: float) -> bytes:
         + pan_cdeg.to_bytes(2, "little", signed=True)
         + tilt_cdeg.to_bytes(2, "little", signed=True)
     )
+
+
+def parse_identity_payload(payload: bytes):
+    """Decodes a CMD_IDENTITY payload into a dict.
+
+    Layout is [role][fw_major][fw_minor][fw_patch][proto_version], identical on
+    both boards -- deliberately, since a client has to be able to read the reply
+    from the board it did not want before it can reject it."""
+    role = payload[0]
+    return {
+        "role": role,
+        "role_name": ROLE_NAMES.get(role, hex(role)),
+        "firmware": f"{payload[1]}.{payload[2]}.{payload[3]}",
+        "proto_version": payload[4],
+    }
 
 
 def read_frame(ser: serial.Serial, timeout_s: float = 1.0):
@@ -430,6 +499,12 @@ def _print_response(resp):
             tilt_cdeg = int.from_bytes(body[i + 2 : i + 4], "little", signed=True)
             joints[JOINT_POS_NAMES.get(pos, pos)] = (pan_cdeg / 100.0, tilt_cdeg / 100.0)
         print(f"<- {name} estopped={estopped} joints_deg(pan,tilt)={joints}")
+    elif resp_cmd == CMD_IDENTITY and len(resp_payload) >= 5:
+        ident = parse_identity_payload(resp_payload)
+        print(
+            f"<- {name} role={ident['role_name']} (0x{ident['role']:02x}) "
+            f"fw={ident['firmware']} proto=v{ident['proto_version']}"
+        )
     else:
         print(f"<- {name} payload={resp_payload.hex(' ')}")
 
@@ -450,6 +525,24 @@ def open_port(argv=None) -> serial.Serial:
         sys.exit(1)
 
     return open_serial(argv[1])
+
+
+def whoami(ser: serial.Serial, delay_s: float = 0.0, expect=None):
+    """Asks the board what it is and returns the decoded identity, or None.
+
+    Sends no heartbeat, and keep_alive is off: identity has to be answerable
+    while the board sits in its boot-time e-stop, since the Jetson checks it
+    before arming anything (see CMD_WHOAMI in Core/Inc/protocol.h). Arming
+    first would hide a handler that wrongly gated the reply on the e-stop."""
+    resp = send_and_show(
+        ser, "WHOAMI", CMD_WHOAMI, keep_alive=False, delay_s=delay_s, expect=expect
+    )
+    if resp is None:
+        return None
+    resp_cmd, resp_payload = resp
+    if resp_cmd != CMD_IDENTITY or len(resp_payload) < 5:
+        return None
+    return parse_identity_payload(resp_payload)
 
 
 def arm(ser: serial.Serial):
