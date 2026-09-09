@@ -16,15 +16,27 @@ tool (ask "what do you see" and it captures a camera frame, runs it through a
 YOLO object detector, and answers from the real result), and a knowledge-base
 tool (ask what Orio is, what it can do, or anything loaded into its
 deployment-specific knowledge, and it retrieves an answer from a local
-sqlite-vec store instead of improvising). Tools here are query-only. Motion
-(`drive_to`, `move_arm_to`, `stop`, `get_status`) will be a separate,
-deterministic-mediator-routed layer later. **The LLM never talks to hardware
-directly and is never in the control loop.**
+sqlite-vec store instead of improvising), and **drive tools** — ask Orio to move
+forward, back up, turn, stop, or go faster and it actually rolls (see "Driving"
+below).
+
+**The LLM never talks to hardware directly and is never in the control loop.**
+A drive tool call lands in `orio/body.py`, which owns the STM32 links, and every
+move it makes runs under the obstacle-avoidance policy in `orio/avoid.py` — the
+model asks to go forward, the policy decides the heading thirty times a second.
+There is no unguarded path to the wheels and no flag that makes one; if the
+cameras will not open, the drive tools are not offered at all. The board's own
+watchdog e-stops it 500 ms after the last heartbeat regardless. The model
+chooses *what*; nothing it can say chooses *how*.
 
 ```
-mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools (vision: camera → YOLO; knowledge base: sqlite-vec RAG) → TTS (ElevenLabs) → speaker
-                          │  later: motion tool calls
-                     deterministic mediator → STM32 → motors/servos
+mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools → TTS (ElevenLabs) → speaker
+                                                          ├ vision: camera → YOLO
+                                                          ├ knowledge base: sqlite-vec RAG
+                                                          └ drive: body.py (bounded hop)
+                                                                └ avoid.py ⇄ stereo (30 Hz)
+                                                              → STM32 drivetrain → FSESCs → motors
+                                                              → STM32 motion → neck servos
 ```
 
 ## Layout
@@ -36,7 +48,13 @@ mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools (vision: ca
 | `orio/audio_input.py` | Cross-platform mic capture (`sounddevice`) shared by ASR + wake word |
 | `orio/asr.py` | RMS voice-activity gate + ElevenLabs Scribe (cloud) transcription |
 | `orio/llm.py` | Chat wrapper (LangChain, `ChatAnthropic` or `ChatOllama`): history, streaming, tool-call loop |
-| `orio/tools.py` | LLM-callable tools (vision, knowledge base) — vision degrades away on missing deps |
+| `orio/tools.py` | LLM-callable tools (drive, vision, knowledge base) — each degrades away if its hardware/deps are missing |
+| `orio/body.py` | Owns the boards and cameras for the session: holds the neck pose, runs each drive tool's guarded hop |
+| `orio/avoid.py` | The avoidance policy (`Avoider`) + the stereo thread feeding it (`Sensor`) — shared by the app and the teleop tool |
+| `orio/seek.py` | The "go to that" behaviour: scan with the head, face the target, close the distance, all closed-loop |
+| `orio/drivetrain.py` | Framed serial link to the drivetrain board (WHOAMI handshake, heartbeat, `set_drive`) |
+| `orio/motion.py` | Framed serial link to the motion board (neck + arm servos) |
+| `orio/stereo.py` | Stereo depth from the IMX219-83 pair, reduced to per-sector obstacle distances |
 | `orio/vision.py` | Camera capture (OpenCV) + YOLO (`ultralytics`) object detection |
 | `orio/knowledge.py` | Per-profile RAG knowledge base (sqlite-vec + local ONNX embeddings) |
 | `orio/kb_ingest.py` | CLI to ingest `.md`/`.txt` documents into a knowledge-base profile |
@@ -44,6 +62,7 @@ mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools (vision: ca
 | `orio/conversation.py` | The interactive talk loop (voice or keyboard) |
 | `orio/eyes.py` | Animated face (`EyesController`), subscribes to FSM state changes |
 | `tools/eyes_demo.py` | Cycles the eyes through every state, no mic/LLM needed |
+| `tools/teleop_guarded.py` | WASD teleop on the same `orio/avoid.py` policy — keeps the CLI flags for sweeping its tunables |
 | `settings.example.json` | Template for local `settings.json` (gitignored) — non-secret config, no env vars needed |
 
 ## One-time setup
@@ -181,6 +200,8 @@ orio" or press Ctrl-C to stop.
 | Dedicated wake-word model (openWakeWord) | `ORIO_WAKE_ENGINE=oww uv run main.py` | `$env:ORIO_WAKE_ENGINE="oww"; uv run main.py` |
 | Always-on listening, no wake word | `ORIO_WAKE=0 uv run main.py` | `$env:ORIO_WAKE="0"; uv run main.py` |
 | No tools (no camera, or don't want vision) | `ORIO_TOOLS=0 uv run main.py` | `$env:ORIO_TOOLS="0"; uv run main.py` |
+| Talk only — don't open the boards or cameras | `ORIO_DRIVE=0 ORIO_NECK=0 uv run main.py` | `$env:ORIO_DRIVE="0"; $env:ORIO_NECK="0"; uv run main.py` |
+| Drive gently (first run on a new floor) | `ORIO_DRIVE_SPEED_PERCENT=15 ORIO_DRIVE_MAX_STEP_S=1 uv run main.py` | `$env:ORIO_DRIVE_SPEED_PERCENT="15"; $env:ORIO_DRIVE_MAX_STEP_S="1"; uv run main.py` |
 | Pin a specific camera | `ORIO_CAMERA_INDEX=1 uv run main.py` | `$env:ORIO_CAMERA_INDEX="1"; uv run main.py` |
 
 PowerShell env vars set with `$env:` persist for the rest of that terminal
@@ -232,6 +253,43 @@ way.
 | `ORIO_STEREO_MIN_VALID_FRAC` | `0.10` | Valid-pixel floor before a sector reports a distance |
 | `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.35` / `0.71` | Image band that can hold a collidable obstacle |
 | `ORIO_STEREO_CALIBRATION` | `models/stereo/calibration.npz` | Calibration from `tools/calibrate_stereo.py` |
+| `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
+| `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
+| `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |
+| `ORIO_DRIVE_SPEED_PERCENT` | `5` | Starting duty; `set_speed` moves it within the min/max below |
+| `ORIO_DRIVE_SPEED_MIN_PERCENT` / `_MAX_PERCENT` | `5` / `60` | Speed window the LLM cannot drive outside of |
+| `ORIO_DRIVE_STEP_S` | `1.5` | How long one forward/backward hop lasts when the model doesn't say |
+| `ORIO_TURN_STEP_S` | `0.7` | Same, for a turn in place |
+| `ORIO_DRIVE_MAX_STEP_S` | `4.0` | Hard ceiling on a single hop — the bound on one wrong command |
+| `ORIO_NECK` | `1` | `0` to leave the head alone and not open the motion board |
+| `ORIO_NECK_PAN_DEG` / `_TILT_DEG` | `175` / `40` | Pose the neck is held at (vendor scale). **Tilt is the avoidance policy's aim — usable window is ~35–45, see `config.py`** |
+| `ORIO_AVOID_STOP_M` | `0.50` | Never drive forward with anything known nearer than this |
+| `ORIO_AVOID_CLEAR_M` | `1.20` | Beyond this the way ahead counts as open and Orio goes straight |
+| `ORIO_AVOID_MIN_SCALE` | `0.35` | Duty scale at `STOP_M`, ramping to full at `CLEAR_M` |
+| `ORIO_AVOID_STALE_S` | `0.50` | A reading older than this stops the robot — in every direction |
+| `ORIO_AVOID_HALF_WIDTH_M` | `0.40` | Half the chassis plus margin — how wide the corridor that must stay clear is |
+| `ORIO_AVOID_TURN_PENALTY` | `1.0` | Metres a 45° detour must be worth before it's taken |
+| `ORIO_AVOID_TURN_GAIN` | `0.9` | Steering strength |
+| `ORIO_AVOID_SMOOTH` | `0.35` | Steering low-pass (0–1]; lower is smoother, slower to react |
+| `ORIO_AVOID_HYSTERESIS_M` | `0.30` | Bonus for staying on the side already turning toward |
+| `ORIO_AVOID_RELEASE_M` | `0.12` | How far past `STOP_M` the way must clear before driving resumes |
+| `ORIO_AVOID_COMMIT_CLEAR_S` | `0.8` | Clear road before Orio stops favouring the side it was turning to |
+| `ORIO_AVOID_PIVOT_TIMEOUT_S` | `2.0` | Pivoting longer than this without clearing triggers a back-off |
+| `ORIO_AVOID_BACKOFF_S` | `1.0` | How long the back-off reverses for — **reverses blind, no rear sensor** |
+| `ORIO_AVOID_TICK_S` | `0.03` | How often a move asks the policy for a fresh decision |
+| `ORIO_SEEK_SCAN_OFFSETS_DEG` | `0,-30,30,-55,55` | Head pan offsets swept looking for a target (+ is left) |
+| `ORIO_SEEK_SCAN_TILTS_DEG` | `40,26,13` | Tilts swept at each pan; driving tilt first |
+| `ORIO_LOOK_TILT_SWEEP_DEG` | `13,26,40,48` | Tilts a plain look samples (0 = up, ~50 = floor/stop) |
+| `ORIO_LOOK_TILT_UP_DEG` | `0,13,26` | Tilts for "look up" |
+| `ORIO_LOOK_TILT_DOWN_DEG` | `40,48` | Tilts for "look down" |
+| `ORIO_LOOK_PAN_DEG` | `35` | How far the head turns for "look left" / "look right" |
+| `ORIO_SEEK_SETTLE_S` | `0.7` | Wait after a head move before trusting the frame (servo + auto-exposure) |
+| `ORIO_SEEK_TIMEOUT_S` | `60` | Hard bound on one `go_to` |
+| `ORIO_SEEK_ARRIVE_M` | `= AVOID_CLEAR_M` | How close counts as arrived — set by the guard, not a free choice |
+| `ORIO_SEEK_CENTRE_DEG` | `9` | Target within this of straight ahead counts as lined up |
+| `ORIO_SEEK_TURN_BURST_S` | `0.3` | One pivot burst while lining up (timed, corrected by looking again) |
+| `ORIO_SEEK_HOP_S` | `0.8` | One forward step of an approach |
+| `ORIO_SEEK_MAX_LOST` | `4` | Frames the target may be missing before Orio gives up |
 | `ORIO_KB_PROFILE` | `orio` | Knowledge-base profile to query (see Knowledge base below) |
 | `ORIO_KB_TOP_K` | `3` | Max chunks retrieved per knowledge-base query |
 | `ORIO_KB_DIR` | `kb/` | Where sqlite-vec profile databases live |
@@ -294,6 +352,129 @@ uv run python -c "from orio.vision import ObjectDetector; print(ObjectDetector()
 The first run downloads the YOLO nano checkpoint (~6 MB) into `models/yolo/`
 (gitignored, like `voices/`).
 
+## Driving
+
+Ask Orio to move and it moves. Eight tools: `move_forward`, `move_backward`,
+`turn_left`, `turn_right`, `stop_moving`, `set_speed`, `look_around`, and
+`go_to`. The first four take an optional `seconds`; the model normally leaves it
+out and gets the default hop.
+
+**`go_to` is the one that matters for "come here".** Reaching a person is not a
+move, and asking an LLM to do it by emitting moves makes it guess a distance it
+cannot measure and a heading it cannot see, one blind hop at a time. So the
+model picks the target and nothing else; `orio/seek.py` does the rest, closed
+loop: sweep the head across `ORIO_SEEK_SCAN_OFFSETS_DEG` running the detector at
+each stop, pivot the chassis in short bursts until the target is within
+`ORIO_SEEK_CENTRE_DEG` of straight ahead, then guarded forward hops with a
+re-detect between each one. Nothing integrates — every decision comes from the
+picture in front of it, because the robot drifts off heading (no odometry) and
+the target walks about.
+
+The bearing is exact rather than estimated: `stereo.obstacles()` splits the
+frame into equal-width columns, so the sector a bounding box's centre falls into
+is `int(cx / width * n)` and its range comes from the same depth map the policy
+is steering on. That only holds if the box and the depth came from the same
+frame, which is what `Sensor.snapshot()` is for.
+
+**Approaching and avoiding are the same manoeuvre.** A person is an obstacle;
+the policy steers around anything nearer than `AVOID_CLEAR_M` and won't drive
+forward at all inside `AVOID_STOP_M`. Past that range "go to them" and "don't
+hit them" are opposite instructions, and the guard wins — `go_to` gets no
+exemption. So `ORIO_SEEK_ARRIVE_M` defaults to `AVOID_CLEAR_M`: Orio stops about
+a metre short, which is where you'd stop in front of someone anyway.
+
+**Looking is two-dimensional.** One tilt is one horizontal slice of the room,
+and the tilt that finds a *person* is much higher than intuition suggests
+because the cameras sit low — someone standing a metre away is mostly above the
+driving eyeline. Measured on the robot: a person at 0.77 m was invisible at the
+driving tilt across every pan, and found immediately at 26°. So both
+`what_do_you_see` and `look_around` pan to where they were told and then tilt
+through `ORIO_LOOK_TILT_SWEEP_DEG`, merging what they find by label and noting
+whether it was above or below eyeline. `go_to`'s scan walks the same grid,
+tilt-major, stopping the moment it finds the target — one stop in the common
+case, fifteen worst case.
+
+The tilt scale runs 0 = up, measured by sweeping the joint and looking at the
+frames: 0 is the ceiling, 13–26 is a standing person's head and shoulders, 40 is
+the ground ahead (the driving pose), and ~50 is the mechanical stop, past which
+the joint ignores further commands while STATUS keeps reporting the angle it was
+asked for.
+
+`look_around` moves only the head (`left`/`right`/`ahead`/`up`/`down`) and
+reports what it then sees. **Positive pan turns the head left** — measured on
+the robot, not assumed. It leaves the head where you pointed it; driving re-aims
+to the driving pose first (`Body._ensure_driving_pose`), so a move can never
+inherit a look's aim.
+
+**A move is a bounded hop, not a latch.** The teleop tool holds a direction down
+at 30 Hz while a key is pressed; the LLM issues one command and then goes back
+to talking, so `body.move()` commands the wheels, waits, and stops them in a
+`finally` — the wheels cannot outlive the tool call that started them. Two
+numbers bound how wrong one command can go: `ORIO_DRIVE_MAX_STEP_S` (how long)
+and `ORIO_DRIVE_SPEED_MAX_PERCENT` (how fast). `set_speed` clamps into that
+window and reports the clamped value, so the model cannot talk its way past it.
+
+**Avoidance is not optional.** Every hop runs the policy in `orio/avoid.py`,
+which reads the stereo sector map at ~30 Hz on its own thread and picks the
+heading each tick: cruise straight, steer around, pivot to find a way through,
+back off when boxed in, or halt. There is no toggle, no direction that bypasses
+it, and no path from a tool call to `set_drive()` that skips it. It's
+non-optional in a second sense too — if the cameras don't open, or the neck
+won't hold the pose those distances are measured through, `can_drive` is False,
+the drive tools are never bound, and Orio says it can't move. Blind and moving
+isn't a reachable state.
+
+Be exact about what a forward-facing sensor can cover, though:
+
+| Direction | Covered by |
+|---|---|
+| Forward | The full policy — heading chosen every tick |
+| Turns | Nothing; a pivot translates nowhere, and the sides aren't sensed |
+| **Reverse** | **Nothing. There is no rear sensor — reversing is blind** |
+
+The one guard that applies to *all four* is sight itself: a move refuses to
+start, and stops mid-hop, whenever the reading is missing, failed, or staler
+than `ORIO_AVOID_STALE_S`. A wedged camera stops the robot in every direction
+rather than leaving it driving on a frozen picture of an empty corridor.
+
+Because the policy often does something other than what was asked, each tool
+returns what *actually* happened — "steering around something in the way",
+"couldn't go forward", "stopped: no known clearance in any sector" — and the
+system prompt tells Orio to report that rather than claim a clean success.
+
+**The cameras are shared, not duplicated.** Stereo needs both sensors, and Argus
+won't open a third handle on one it already owns. So with avoidance armed the
+`what_do_you_see` tool is handed the stereo pair's rectified left frame
+(`ObjectDetector.detect_in`) instead of opening its own capture. That frame is
+`ORIO_STEREO_WIDTH`×`_HEIGHT` (320×240) rather than 1280×720, so expect the
+model to miss small or distant objects it would otherwise catch. For the same
+reason `ORIO_VISION_DEBUG=1` is refused while the body holds the cameras — use
+`tools/stereo_debug.py` instead.
+
+**The head is aimed at startup and held there.** `body.start()` puts the neck at
+`ORIO_NECK_PAN_DEG` / `_TILT_DEG` before anything else: pan 175 makes the
+cameras' "straight ahead" the chassis's, and tilt sets what ground the policy
+measures. That tilt window is narrow and was measured on the robot — 30° looks
+at the upper wall and cannot see the floor at all, 45° sees only floor closer
+than `AVOID_CLEAR_M` so the robot never cruises, and past ~50° the joint is
+against its stop. 40° is the middle. `config.py` carries the sweep. It has to be *held*,
+not merely placed: the motion board's e-stop cuts the servo PWM rather than
+freezing it, and it e-stops 500 ms after the last heartbeat, so a released neck
+sags. That's why the motion link stays open for the whole session and the head
+goes slack, deliberately, on the way out.
+
+Each board is independent and neither is fatal. A drivetrain that won't open
+costs the drive tools and swaps the movement half of the system prompt for one
+that says Orio can't move (`config.NO_DRIVE_PROMPT`) — it never claims a
+capability it doesn't have. A neck that won't pose is a warning today, but
+becomes fatal once driving depends on seeing.
+
+Both boards are found by their udev symlinks (`/dev/orio_drive`,
+`/dev/orio_motion`), never a raw `/dev/ttyACM*` — the number is USB enumeration
+order and swaps between boots, and both boards share the same framing, so a
+drive frame sent to the motion board decodes cleanly as a joint angle. Each link
+also confirms the board's identity on the wire before arming it.
+
 ## Stereo depth & obstacle detection
 
 `orio/stereo.py` turns the IMX219-83's two sensors into depth, and reduces that
@@ -316,10 +497,11 @@ uv run python tools/stereo_debug.py
 Left pane is the camera with per-sector distance and valid-pixel percentage,
 right pane is the depth map (warm near, cool far, black unknown).
 
-**Perception only.** `ObstacleMap` carries distances, never velocities. Nothing
-here decides how fast to go, when to stop, or which way to turn, and nothing
-here talks to the STM32 — the `CMD_DRIVE` side of obstacle avoidance is
-deliberately not implemented yet.
+**Perception only, still.** `ObstacleMap` carries distances, never velocities.
+Nothing in `stereo.py` decides how fast to go, when to stop, or which way to
+turn, and nothing here talks to the STM32. Those decisions live one layer up in
+`orio/avoid.py`, which is what the drive tools and the teleop tool both steer
+with — this file only ever describes the world.
 
 ### Calibrate before trusting the numbers
 
@@ -455,9 +637,11 @@ procedural code in `orio/eyes.py`, not asset files.
 The system prompt in `config.py` keeps the small local model on-task: it talks
 only about what Orio can do (driving, looking, moving arms/head, status) and
 declines off-topic requests. Vision is real (see above) — it uses the tool and
-reports the actual result instead of guessing. Motion still isn't wired up: it
-won't pretend to physically drive or move its arms, and says it'll be able to
-once its controls are connected.
+reports the actual result instead of guessing, and so is driving. Arms still
+aren't wired up: it won't pretend to pick anything up, and says it'll be able to
+once those controls are connected. The movement half of the prompt is chosen at
+startup from the tools that actually bound, so what Orio claims about moving
+always matches what it can really do.
 
 Small local models (llama3.2:3b, the previous default) were occasionally
 over-eager about invoking the tool, or invoked one that doesn't exist, on
@@ -470,8 +654,13 @@ code, if you see it recur on `ORIO_LLM_PROVIDER=ollama`.
 
 ## Next
 
-Motion tools: define `drive_to`/`move_arm_to`/`stop`/`get_status` the same way
-vision was added (a LangChain `@tool` in `orio/tools.py`), but route their
-execution through the deterministic mediator over the STM32 serial link
-instead of running locally like vision does — the LLM must stay out of the
-control loop. See the `orio_kb` notes (`orio_llm_command_layer.md`).
+**Rear sensing.** The one hole the current guard cannot cover: reverse is blind,
+including the policy's own back-off. Everything else is bounded by something;
+this is bounded only by keeping it short.
+
+**Give the vision tool its resolution back.** It currently reads the 320×240
+stereo frame because both sensors are spoken for. Either run YOLO on a
+full-resolution grab between hops, or accept the smaller frame and say so.
+
+After that: arm tools (`move_arm_to`) on the motion board, and `get_status`
+telemetry. See the `orio_kb` notes (`orio_llm_command_layer.md`).

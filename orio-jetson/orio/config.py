@@ -181,6 +181,235 @@ DRIVETRAIN_PORT = _env("ORIO_DRIVETRAIN_PORT", "/dev/orio_drive")
 MOTION_PORT = _env("ORIO_MOTION_PORT", "/dev/orio_motion")
 
 
+# ── Body: the neck pose and driving ───────────────────────────────────────────
+# The operator layer opens both boards at startup (see orio/body.py) and holds
+# them for the session. Either can be switched off for a bench run; a board that
+# fails to open disables only its own tools and never stops the conversation.
+
+# Aim the neck at startup and hold it there. Holding is not optional: an e-stop
+# on the motion board cuts the servo PWM rather than freezing it, and the board
+# e-stops itself 500 ms after the last heartbeat, so a released neck sags.
+NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Where the head is put, on the vendor's scale (pan 0..270, tilt 0..180, each
+# from that servo's own zero end). Pan 175 is a few degrees off the neck's 180
+# home, so "straight ahead" for the cameras is straight ahead for the chassis.
+#
+# TILT IS THE AVOIDANCE POLICY'S AIM AND IT IS NARROW. Measured on the robot,
+# 2026-09-09, by sweeping the joint and reading the sector map at each angle:
+#
+#     tilt 30   straight ahead 2.87 m   the UPPER WALL and ceiling. No floor in
+#                                       frame at all, so an obstacle standing on
+#                                       the ground is not merely far, it is
+#                                       invisible. This was the default, taken
+#                                       from the teleop tool, and it was wrong.
+#     tilt 40   straight ahead 2.27 m   floor ahead plus the wall beyond it; a
+#                                       person at 0.90 m read correctly
+#     tilt 45   straight ahead 1.06 m   mostly floor — and note this is already
+#                                       BELOW AVOID_CLEAR_M, so the ground
+#                                       itself reads as an obstacle and the
+#                                       robot would never cruise, only steer
+#     tilt 50+  straight ahead ~1.15 m  unchanged from 50 to 80: the joint is
+#                                       against a mechanical stop and commanding
+#                                       further just stalls the servo
+#
+# So the usable window is roughly 35-45, and 40 is the middle of it: far enough
+# out to see past AVOID_CLEAR_M and cruise, low enough to see what is on the
+# floor. Re-measure after ANY change to the head geometry or the camera mount —
+# a head pointing somewhere else measures somewhere else while reporting the
+# same numbers, and nothing downstream can tell.
+#
+# The firmware validates both angles against kJointLimits[] and NACKs anything
+# outside, moving nothing; that table is still being characterised, so a pose
+# that works today can start being refused.
+NECK_PAN_DEG = float(_env("ORIO_NECK_PAN_DEG", "175"))
+NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "40"))
+
+# Open the drivetrain and give the LLM the tools to move. Off means Orio says it
+# cannot drive rather than pretending it can (see DRIVE_PROMPT / NO_DRIVE_PROMPT).
+DRIVE_ENABLED = _env("ORIO_DRIVE", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# Duty as a percent of full scale, sent to the board as permille. The LLM's
+# set_speed tool moves this within the MIN/MAX window and cannot leave it: the
+# ceiling is a limit on the robot, not a preference, since nothing is watching
+# for obstacles yet.
+DRIVE_SPEED_PERCENT = float(_env("ORIO_DRIVE_SPEED_PERCENT", "5"))
+DRIVE_SPEED_MIN_PERCENT = float(_env("ORIO_DRIVE_SPEED_MIN_PERCENT", "5"))
+DRIVE_SPEED_MAX_PERCENT = float(_env("ORIO_DRIVE_SPEED_MAX_PERCENT", "60"))
+
+# Every LLM-commanded move is a bounded hop: these are how long one lasts when
+# the model does not say, and the hard ceiling when it does. Turns are shorter
+# than drives because a pivot at 30% covers a lot of heading in a second.
+# DRIVE_MAX_STEP_S is the safety: with no avoidance policy yet it bounds how far
+# a single wrong command can take the robot.
+DRIVE_STEP_S = float(_env("ORIO_DRIVE_STEP_S", "1.5"))
+TURN_STEP_S = float(_env("ORIO_TURN_STEP_S", "0.7"))
+DRIVE_MAX_STEP_S = float(_env("ORIO_DRIVE_MAX_STEP_S", "4.0"))
+
+
+# ── Obstacle avoidance ────────────────────────────────────────────────────────
+# Not a feature and not a toggle: driving goes through the policy in
+# orio/avoid.py or it does not happen. If the stereo pair will not open, or the
+# neck will not hold the pose those distances are measured through, the drive
+# tools are not offered at all and Orio says it cannot move (see body.py).
+#
+# The defaults below are the values tools/teleop_guarded.py was tuned to; that
+# tool still owns the CLI flags for sweeping them. Every threshold is a distance
+# measured through the head at NECK_PAN_DEG/NECK_TILT_DEG — re-aim the head and
+# they describe different ground while reporting the same numbers.
+
+# Never drive forward with anything known nearer than this; beyond CLEAR_M the
+# way ahead counts as open and the robot goes straight. Keep STOP_M at or above
+# half_width / sin(31.8 deg) — the radius inside which turning cannot clear the
+# corridor at all, because the outermost sector centre is only 31.8 deg off-axis
+# — or every close encounter ends in a blind back-off instead of a turn.
+AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.50"))
+AVOID_CLEAR_M = float(_env("ORIO_AVOID_CLEAR_M", "1.20"))
+
+# Duty scale at STOP_M, ramping to full at CLEAR_M — the robot slows as it
+# closes rather than driving flat out into the last half metre.
+AVOID_MIN_SCALE = float(_env("ORIO_AVOID_MIN_SCALE", "0.35"))
+
+# A reading older than this halts forward motion, against a ~30 Hz sensor
+# thread. This is what makes a wedged camera stop the robot instead of leaving
+# it driving on a frozen picture of an empty corridor.
+AVOID_STALE_S = float(_env("ORIO_AVOID_STALE_S", "0.50"))
+
+# Metres of extra clearance a 45 deg detour has to be worth before it is taken,
+# and how hard the robot steers once it picks one.
+AVOID_TURN_PENALTY = float(_env("ORIO_AVOID_TURN_PENALTY", "1.0"))
+AVOID_TURN_GAIN = float(_env("ORIO_AVOID_TURN_GAIN", "0.9"))
+
+# Steering low-pass in (0, 1]; lower is smoother and slower to react. With
+# HYSTERESIS_M (the bonus for staying on the side already turning toward) this
+# is what stops the robot oscillating between two equally good gaps and making
+# no progress through either.
+AVOID_SMOOTH = float(_env("ORIO_AVOID_SMOOTH", "0.35"))
+AVOID_HYSTERESIS_M = float(_env("ORIO_AVOID_HYSTERESIS_M", "0.30"))
+
+# Half the robot's width plus a margin — how wide the corridor is that must stay
+# clear. Orio measures 0.70 m across the drive wheels. Widening this also moves
+# the radius inside which turning cannot clear the corridor (see AVOID_STOP_M).
+AVOID_HALF_WIDTH_M = float(_env("ORIO_AVOID_HALF_WIDTH_M", "0.40"))
+
+# How far past STOP_M the way must clear before driving resumes. Blocking is a
+# Schmitt trigger, not a comparison: without this, depth noise flips the branch
+# every other tick and the robot dithers in place instead of turning.
+AVOID_RELEASE_M = float(_env("ORIO_AVOID_RELEASE_M", "0.12"))
+
+# Seconds of clear road before the robot stops favouring the side it was turning
+# toward, how long it may pivot without clearing before backing off, and how long
+# that back-off reverses for. The back-off REVERSES BLIND — there is no rear
+# sensor — which is why it is slow, brief, and entered only once truly stuck.
+AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
+AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
+AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
+
+# Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
+# the move loop asks the policy for a fresh decision.
+AVOID_TICK_S = float(_env("ORIO_AVOID_TICK_S", "0.03"))
+
+
+# ── Going to something (orio/seek.py) ────────────────────────────────────────
+# "Go to the person in front of you" is one behaviour, not a move: look for the
+# thing, point the robot at it, then close the distance under the avoidance
+# policy, re-checking every step because the target moves and so does the robot.
+# The LLM picks the target; everything below is deterministic.
+
+# Head pan offsets swept while looking for a target, in order — straight ahead
+# first, then out. POSITIVE PAN TURNS THE HEAD LEFT (measured on the robot
+# 2026-09-09: at pan 205 scene content sitting at the left edge of the pan-175
+# view has moved to centre). Tilt stays at NECK_TILT_DEG throughout: it is the
+# avoidance policy's aim and the one angle that must not wander.
+SEEK_SCAN_OFFSETS_DEG = tuple(
+    float(x) for x in _env("ORIO_SEEK_SCAN_OFFSETS_DEG", "0,-30,30,-55,55").split(",") if x
+)
+
+# Looking is two-dimensional, and panning alone misses things by height. The
+# cameras' vertical field is narrow enough that one tilt is one horizontal slice
+# of the room: at the driving tilt a standing person reads fine at 1-3 m, but
+# their head at arm's length does not, and neither does anything on a shelf.
+#
+# Measured on the robot, 2026-09-09, by sweeping the joint and looking at the
+# frames (the tilt scale runs 0 = up):
+#
+#     tilt  0     the ceiling
+#     tilt 13-26  upper wall; a standing person's head and shoulders
+#     tilt 40     the ground ahead — the driving pose, and the policy's aim
+#     tilt 48-50  floor close in; ~50 is the mechanical stop, past which the
+#                 joint does not move however far it is commanded
+#
+# The tilt that finds a PERSON is higher than intuition suggests, because the
+# cameras sit low: someone standing a metre away is mostly above the driving
+# eyeline. Measured the same day — a person at 0.77 m was invisible at tilt 40
+# across every pan and found immediately at 26, and one standing closer was
+# found only at 13. Hence both lists reach well above the driving pose.
+#
+# The scan tries the driving tilt across every pan first, because that is where
+# something on the floor is, and stops the moment it finds the target.
+SEEK_SCAN_TILTS_DEG = tuple(
+    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "40,26,13").split(",") if x
+)
+
+# Tilts sampled by a plain look ("what do you see", "look left"). Three stops
+# span ceiling-ish to floor without making a look take all day — each costs
+# SEEK_SETTLE_S plus one detector pass.
+LOOK_TILT_SWEEP_DEG = tuple(
+    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "13,26,40,48").split(",") if x
+)
+LOOK_TILT_UP_DEG = tuple(
+    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "0,13,26").split(",") if x
+)
+LOOK_TILT_DOWN_DEG = tuple(
+    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "40,48").split(",") if x
+)
+
+# How far the head turns for a plain "look left" / "look right".
+LOOK_PAN_DEG = float(_env("ORIO_LOOK_PAN_DEG", "35"))
+
+# After a head move has FINISHED, how long before the frame is worth looking
+# at — the camera's auto-exposure still has to catch up with wherever the head
+# now points. Too short and the detector reads a badly exposed frame.
+#
+# The travel itself is not in here: `Body.look()` waits that out on its own,
+# from the distance the head actually moved (see `motion.travel_time_s`). It
+# used to be lumped in, which never really worked — one flat number cannot
+# cover both a 5° nudge and the 110° hop from one end of SEEK_SCAN_OFFSETS_DEG
+# to the other, and at 0.7 s it was under even the old travel time for the big
+# ones, so the detector read those frames mid-sweep.
+SEEK_SETTLE_S = float(_env("ORIO_SEEK_SETTLE_S", "0.7"))
+
+# The whole behaviour is bounded: a target that keeps being lost, or that walks
+# away as fast as Orio approaches, must end the tool call rather than run on.
+SEEK_TIMEOUT_S = float(_env("ORIO_SEEK_TIMEOUT_S", "60"))
+
+# How close counts as arrived. This is NOT a free choice — it is set by the
+# avoidance policy, which steers around anything nearer than AVOID_CLEAR_M and
+# refuses to drive forward at all inside AVOID_STOP_M. A person is an obstacle
+# like any other, so approaching one and avoiding one are the same manoeuvre
+# below that range, and the seek behaviour would be fighting the guard for the
+# last metre. Arriving at CLEAR_M is where the two agree.
+SEEK_ARRIVE_M = float(_env("ORIO_SEEK_ARRIVE_M", str(AVOID_CLEAR_M)))
+
+# A target within this many degrees of straight ahead counts as lined up; wider
+# than that and Orio pivots before driving. One burst is short deliberately —
+# there is no odometry, so heading is corrected by looking again, not by
+# calculating how long to turn.
+SEEK_CENTRE_DEG = float(_env("ORIO_SEEK_CENTRE_DEG", "9"))
+SEEK_TURN_BURST_S = float(_env("ORIO_SEEK_TURN_BURST_S", "0.3"))
+
+# One step of the approach. Short, so the target is re-checked often.
+SEEK_HOP_S = float(_env("ORIO_SEEK_HOP_S", "0.8"))
+
+# How many consecutive frames the target may be missing before Orio gives up
+# and says so, rather than wandering after something that has left.
+SEEK_MAX_LOST = int(_env("ORIO_SEEK_MAX_LOST", "4"))
+
+
 # ── Vision (camera / object detection) ─────────────────────────────────────────
 # Lets the LLM call a "what do you see" tool: capture one frame from the
 # camera and run it through YOLO. A query tool only — it answers questions,
@@ -503,15 +732,14 @@ How to behave:
 - Stay strictly within what a small home/lab robot like you can do: moving \
 around, looking at things, moving your arms and head, reporting your status, \
 and chatting briefly about yourself and your surroundings.
-- You CANNOT yet physically move or manipulate anything — driving and arm \
-motion have no tools wired up yet. If asked to do something physical (drive \
-somewhere, pick something up), acknowledge the request and say you'll be able \
-to do it once your controls are connected. Do not pretend you actually moved.
+- You cannot pick anything up or move your arms — those have no controls \
+wired up yet. If asked to manipulate something, acknowledge it and say you'll \
+be able to once those controls are connected. Do not pretend you did it.
 - If asked about things outside your world (general trivia, coding, the news, \
 math homework, etc.), briefly and politely say that's outside what you handle as \
 Orio, and steer back to robot matters.
-- You have two tools, and only two: one to actually see through your camera, \
-and one to recall facts — about yourself or about wherever you're deployed \
+- You have a tool to actually see through your camera, and one to recall \
+facts — about yourself or about wherever you're deployed \
 (a store, a lab, whatever it is). Use the right one silently when a question \
 calls for it, then just answer — never narrate that you're checking, \
 looking something up, or searching first; go straight to the answer as if \
@@ -528,4 +756,47 @@ asked directly or repeatedly. Stay in character, answer warmly, and steer \
 back to what you can actually help with instead.
 - Your replies are spoken out loud. Keep them to one or two short sentences, \
 plain and direct underneath the personality. No markdown, no lists, no emoji.
+"""
+
+# Appended to SYSTEM_PROMPT by llm.py according to whether the drive tools
+# actually bound this run. Whether Orio can move is a fact about this run's
+# hardware — a drivetrain that did not open, or ORIO_DRIVE=0 — not a fact about
+# Orio, so it is chosen from the live tool list rather than baked in above.
+DRIVE_PROMPT = """
+About moving:
+- You CAN drive. You have real tools to move forward, move backward, turn \
+left, turn right, stop, and change your speed. When someone asks you to move, \
+call the tool, then say what you did in one short sentence. Never narrate that \
+you are about to move, and never claim a movement you did not actually make.
+- Each move is one short hop that ends on its own. If someone wants to go \
+further, move again — don't ask for a long one.
+- To go to something — a person, a chair, anything you can see — use the \
+go-to tool with what to walk to, and let it do the whole job. It looks around, \
+turns to face the thing, and drives to it, checking as it goes. NEVER try to \
+do this with the move and turn tools instead: those cannot see where they are \
+going, so you would be guessing at a distance and a direction you have no way \
+to know. Going somewhere takes a few seconds, and it stops about a metre short \
+of whatever it walked to.
+- You can turn your head to look around without moving your body. Do that \
+when asked to look somewhere, or to check off to one side before deciding \
+what to do. Your head straightens itself out again whenever you drive.
+- You watch where you are going, always. You steer around whatever is in \
+front of you on your own, and you stop rather than drive into something you \
+cannot see. This is simply how you move — it is not a setting, you cannot turn \
+it off, and you should never offer to.
+- What a move gives back describes what you ACTUALLY did, which is often not \
+quite what was asked: you may have steered around something, turned on the \
+spot without getting anywhere, backed away, or stopped early. Say what really \
+happened, in your own warm and brief words. Never report a clean success when \
+the result says you stopped, were refused, or could not get through.
+- You only see forwards. Backing up is blind, so keep reverse short, and say \
+so if someone asks you to reverse a long way.
+"""
+
+# The same subject when the wheels are not there — Orio must not offer to drive.
+NO_DRIVE_PROMPT = """
+About moving:
+- You CANNOT drive right now: your wheels aren't connected to you this time. \
+If asked to move, acknowledge the request warmly and say you can't move at the \
+moment. Do not pretend you moved, and do not promise to move in a minute.
 """

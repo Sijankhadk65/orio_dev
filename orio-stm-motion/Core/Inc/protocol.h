@@ -68,11 +68,13 @@ typedef enum
    * that servo's own zero end, matching the vendor's datasheet and example
    * code. Mid-travel is 13500 for pan and 9000 for tilt.
    * Each joint additionally restricts these; see kJointLimits in servo_joint.c.
-   * The joint ramps to these angles at SERVO_JOINT_SLEW_CDEG_PER_S rather
-   * than snapping to them, so the ACK means "accepted and under way", not
-   * "arrived" -- travel takes roughly (angle delta / slew rate). Nothing
-   * reports arrival yet; a controller that needs to know must wait out the
-   * ramp itself. */
+   * The joint runs a motion profile out to these angles rather than
+   * snapping to them -- accelerating, cruising at SERVO_JOINT_SLEW_CDEG_PER_S
+   * and braking to a stop -- so the ACK means "accepted and under way", not
+   * "arrived". Travel takes roughly (angle delta / cruise rate) plus the two
+   * ramps, or less for a move short enough never to reach cruise. Nothing
+   * reports arrival yet; a controller that needs to know must wait the move
+   * out itself. */
   CMD_MOVE_JOINT_TO = 0x02,
   CMD_STOP         = 0x03,
   CMD_GET_STATUS   = 0x04,

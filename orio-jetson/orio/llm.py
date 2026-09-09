@@ -2,9 +2,12 @@
 
 Holds the rolling chat history (seeded with the scope-limiting system prompt),
 streams assistant replies, and executes any tool calls the model makes (see
-tools.py). This is the cognition layer: it produces words, and now query-only
-tool calls (e.g. "what do you see"). It never talks to hardware directly —
-tools here only ever answer questions, they don't actuate the robot.
+tools.py). This is the cognition layer: it decides *what* to do and says it in
+words. It still never touches hardware itself — the drive tools it can now call
+go through body.py, which owns the boards.
+
+The system prompt is finished here rather than in config, because the half of
+it about moving depends on whether the drive tools actually bound this run.
 
 The backend is pluggable (config.LLM_PROVIDER): "anthropic" (Claude, cloud) or
 "ollama" (a local model). Provider-specific imports are local to _build_llm so
@@ -18,7 +21,7 @@ from collections.abc import Iterator
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from . import config
-from .tools import get_tools
+from .tools import DRIVE_TOOL_NAMES, get_tools
 
 # Guard against a runaway tool-call loop (a confused model calling tools
 # forever without ever producing a final answer).
@@ -79,7 +82,13 @@ class Conversation:
         llm = _build_llm(provider, model, host)
         self._llm = llm.bind_tools(self._tools) if self._tools else llm
 
-        self._system = SystemMessage(system_prompt)
+        # What Orio says about moving is taken from the tools it really has, not
+        # from config: a drivetrain that failed to open would otherwise leave it
+        # promising to drive and then silently doing nothing.
+        can_drive = bool(DRIVE_TOOL_NAMES & set(self._tools_by_name))
+        self._system = SystemMessage(
+            system_prompt + (config.DRIVE_PROMPT if can_drive else config.NO_DRIVE_PROMPT)
+        )
         self._history: list[BaseMessage] = []
 
     def preflight(self) -> None:

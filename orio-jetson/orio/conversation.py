@@ -6,14 +6,19 @@ Ties the mic/ASR input (`asr`) and keyboard input to the LLM brain
 machine (`fsm`) as it goes. In voice mode Orio is wake-word gated: it stays
 ASLEEP until it hears "Hey Orio", then takes commands — with a short follow-up
 window so you can chain commands without re-waking it (see `config.WAKE_*`).
-Tools come later — for now this is purely conversational, scoped by the system
-prompt.
+
+`run()` also owns the robot's body (`body.py`): the boards are opened, and the
+neck aimed, BEFORE the `Conversation` is built, because the tool list — and
+with it what Orio says it can do — is decided from what actually opened. They
+are released in the outermost `finally`, so the wheels stop and the head is let
+go on every exit path, including a failed LLM preflight.
 """
 
 from __future__ import annotations
 
 import sys
 
+from . import body
 from . import config
 from .fsm import State, StateMachine
 from .llm import Conversation, LLMUnavailable
@@ -21,7 +26,7 @@ from .tts import TTS, get_tts
 
 BANNER = """\
 ╭──────────────────────────────────────────────╮
-│  Orio — operator layer (conversation only)    │
+│  Orio — operator layer (chat · see · drive)   │
 │  model: {model:<37}│
 │  input: {inp:<37}│
 │  tts:   {tts:<37}│
@@ -177,36 +182,53 @@ def run() -> None:
         )
     )
 
-    convo = Conversation()
+    # The body comes first: opening the boards is what decides whether the
+    # drive tools exist, and Conversation() reads that tool list as it is built.
+    _start_body()
     try:
-        convo.preflight()
-    except LLMUnavailable as exc:
-        print(f"✗ {exc}")
-        return
+        convo = Conversation()
+        try:
+            convo.preflight()
+        except LLMUnavailable as exc:
+            print(f"✗ {exc}")
+            return
 
-    tts = get_tts()
-    fsm = StateMachine()  # single source of truth for what Orio is doing
+        tts = get_tts()
+        fsm = StateMachine()  # single source of truth for what Orio is doing
 
-    eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
-    vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
+        eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
+        vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
 
-    try:
-        if config.INPUT_MODE == "voice":
-            _run_voice(convo, tts, fsm)
-        else:
-            _run_text(convo, tts, fsm)
-    except KeyboardInterrupt:
-        pass
+        try:
+            if config.INPUT_MODE == "voice":
+                _run_voice(convo, tts, fsm)
+            else:
+                _run_text(convo, tts, fsm)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            if eyes is not None:
+                eyes.stop()
+            if vision_debug is not None:
+                vision_debug.stop()
+            from .tools import close_tools
+
+            close_tools()  # release the camera, if it was opened
     finally:
-        if eyes is not None:
-            eyes.stop()
-        if vision_debug is not None:
-            vision_debug.stop()
-        from .tools import close_tools
-
-        close_tools()  # release the camera, if it was opened
+        # Stops the wheels and lets the head go, on every exit path.
+        body.close()
 
     print("\nOrio: powering down. Bye!")
+
+
+def _start_body() -> None:
+    """Open the STM32 boards and aim the head, reporting what came up.
+
+    Never raises: a board that will not open only costs Orio the tools that
+    board provides (see body.Body.start), and the app should still talk.
+    """
+    for note in body.start().notes:
+        print(f"  {note}")
 
 
 def _start_vision_debug():
@@ -219,6 +241,14 @@ def _start_vision_debug():
     `what_do_you_see` tool calls (see tools.get_detector), not a second one.
     """
     if not config.VISION_DEBUG:
+        return None
+    live = body.get()
+    if live is not None and live.sensor is not None:
+        # The preview opens its own handle on a CSI sensor, which the avoidance
+        # thread already holds. Argus lets the second open succeed and then
+        # starves one of them at read time, so this has to be a refusal rather
+        # than a race to find out which.
+        print("⚠ vision debug preview disabled: obstacle avoidance is using both cameras")
         return None
     try:
         from .tools import get_detector

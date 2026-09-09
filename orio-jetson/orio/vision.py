@@ -9,6 +9,11 @@ The camera handle and model are opened lazily on first use and kept open
 the camera. `_lock` serializes access to the camera/model so an on-demand
 `detect_once()` (from a tool call) and the continuous `VisionDebugWindow`
 loop below never read the same camera concurrently.
+
+On the robot the camera is usually NOT this class's to open: obstacle avoidance
+holds both CSI sensors whenever Orio can drive, so the tool calls `detect_in()`
+with the stereo pair's left frame instead. `detect_once()` remains the path for
+a run with no driving (`ORIO_DRIVE=0`) and for bench use off the robot.
 """
 
 from __future__ import annotations
@@ -95,12 +100,15 @@ class ObjectDetector:
         self._model = None
         self._lock = threading.Lock()
 
-    def _ensure_open(self) -> None:
+    def _ensure_model(self) -> None:
         if self._model is None:
             from ultralytics import YOLO  # heavy import (torch), kept lazy
 
             self._model_path.parent.mkdir(parents=True, exist_ok=True)
             self._model = YOLO(str(self._model_path))
+
+    def _ensure_open(self) -> None:
+        self._ensure_model()
 
         if self._cap is None:
             import cv2  # heavy import, kept lazy
@@ -139,7 +147,10 @@ class ObjectDetector:
         if not ok:
             raise RuntimeError(f"could not read a frame from {self._source}")
         self._warn_if_blank(frame)
+        return self._detect_frame(frame), frame
 
+    def _detect_frame(self, frame):
+        """Run the model over one frame. Caller must hold `_lock`."""
         h, w = frame.shape[:2]
         result = self._model.predict(frame, conf=self._confidence, verbose=False)[0]
         detections: list[Detection] = []
@@ -153,7 +164,7 @@ class ObjectDetector:
                     bbox=(x1, y1, x2, y2),
                 )
             )
-        return detections, frame
+        return detections
 
     def _warn_if_blank(self, frame) -> None:
         """One-shot guard against a silently broken capture path.
@@ -177,10 +188,41 @@ class ObjectDetector:
             )
 
     def detect_once(self) -> list[Detection]:
-        """Capture one frame and return the objects detected in it."""
+        """Capture one frame from this class's own camera and detect in it."""
         with self._lock:
             detections, _frame = self._detect_locked()
         return detections
+
+    def detect_in(self, frame) -> list[Detection]:
+        """Detect in a frame captured by somebody else — opens no camera.
+
+        Whenever Orio can drive, the stereo thread in `avoid.py` holds BOTH CSI
+        sensors for the whole session, and Argus will not open a third handle on
+        a sensor it already owns. So the vision tool is handed the stereo pair's
+        left eye instead of opening a camera of its own.
+
+        That frame is smaller than this class's own capture would be
+        (`config.STEREO_WIDTH` x `STEREO_HEIGHT`, against `CAMERA_WIDTH` x
+        `CAMERA_HEIGHT`) and it is rectified rather than raw, so expect the model
+        to miss small or distant objects it would otherwise catch. Sharing the
+        one frame there is beats reporting that Orio cannot see at all.
+        """
+        with self._lock:
+            self._ensure_model()
+            return self._detect_frame(frame)
+
+    def labels(self) -> list[str]:
+        """Every class this model can recognise.
+
+        Used to refuse "go to the X" up front when X is not something the
+        detector has ever heard of — otherwise the behaviour sweeps the head
+        looking for it, finds nothing, and reports "couldn't find one", which
+        reads as "it isn't here" rather than "I can't see those".
+        """
+        with self._lock:
+            self._ensure_model()
+            names = getattr(self._model, "names", None) or {}
+        return list(names.values()) if isinstance(names, dict) else list(names)
 
     def close(self) -> None:
         with self._lock:

@@ -82,13 +82,29 @@ extern "C" {
 #define TILT_SERVO_CALIB_MIN_CDEG (0)     /*   0.00 deg -> 500 us */
 #define TILT_SERVO_CALIB_MAX_CDEG (18000) /* 180.00 deg -> 2500 us */
 
-/* Max angular speed ServoJoint_Update() steps current angle toward target,
- * for both axes of every joint. Fixed and global rather than per-joint or
- * per-command: no bracket currently needs a different travel speed, and
- * nothing yet exposes a per-move speed over the wire (CMD_MOVE_JOINT_TO's
- * payload has no speed field). Tune this if a joint's servos turn out to
- * need a slower/faster default. */
-#define SERVO_JOINT_SLEW_CDEG_PER_S 12000 /* 120.00 deg/s */
+/* The motion profile ServoJoint_Update() runs both axes of every joint
+ * along: a trapezoid, accelerating at SERVO_JOINT_ACCEL_CDEG_PER_S2 up to a
+ * cruise of SERVO_JOINT_SLEW_CDEG_PER_S, then braking back down so the axis
+ * arrives at rest. A move too short to reach cruise is all ramp and the
+ * trapezoid degenerates to a triangle.
+ *
+ * The acceleration limit is what makes a move look smooth, and it is the
+ * half that used to be missing: an earlier revision stepped at the cruise
+ * speed flat, which means the axis went from stopped to 120 deg/s between
+ * two consecutive 1 ms ticks and back to stopped the instant it arrived --
+ * unbounded acceleration at both ends of every move. The neck is where that
+ * showed worst, since the head is the heaviest thing hung on any of these
+ * joints.
+ *
+ * At the values below a move spends 0.30 s and 18.00 deg on each ramp, so
+ * anything shorter than 36.00 deg never reaches cruise. Both constants are
+ * fixed and global rather than per-joint or per-command: no bracket
+ * currently needs a different profile, and nothing yet exposes a per-move
+ * speed over the wire (CMD_MOVE_JOINT_TO's payload has no speed field).
+ * Lower the cruise to make a joint travel slower; lower the acceleration to
+ * make it start and stop more gently at the same travel speed. */
+#define SERVO_JOINT_SLEW_CDEG_PER_S   12000 /* cruise, 120.00 deg/s */
+#define SERVO_JOINT_ACCEL_CDEG_PER_S2 40000 /* 400.00 deg/s^2 */
 
 /**
   * @brief  Which body position a ServoJoint_t occupies. The robot has (or
@@ -128,8 +144,12 @@ typedef struct
   * @brief  One 2-DOF joint: a pan (bottom) and tilt (top) servo moved together.
   * @note   target_*_cdeg is where ServoJoint_SetAngles() wants the joint;
   *         current_*_cdeg is where the PWM outputs are actually set right
-  *         now. ServoJoint_Update() steps current toward target over time
+  *         now. ServoJoint_Update() walks current toward target over time
   *         instead of jumping there in one call -- see servo_joint.c.
+  *         *_vel_cdeg_per_s is the speed each axis is travelling at, and is
+  *         state rather than something derivable from the two angles: the
+  *         profile's next step depends on the speed the axis is already
+  *         carrying, which is exactly what lets it ramp instead of switch.
   */
 typedef struct
 {
@@ -140,6 +160,8 @@ typedef struct
   int16_t target_tilt_cdeg;
   int16_t current_pan_cdeg;
   int16_t current_tilt_cdeg;
+  int32_t pan_vel_cdeg_per_s;  /* signed: negative travels toward 0 deg */
+  int32_t tilt_vel_cdeg_per_s;
 } ServoJoint_t;
 
 /**
@@ -174,10 +196,13 @@ void ServoJoint_Init(ServoJoint_t *joint, ServoJointPosition_t position,
 void ServoJoint_SetAngles(ServoJoint_t *joint, int16_t pan_cdeg, int16_t tilt_cdeg);
 
 /**
-  * @brief  Steps both axes toward their target angle by up to
-  *         SERVO_JOINT_SLEW_CDEG_PER_S * elapsed_ms / 1000 hundredths of a
-  *         degree, then re-maps whichever axes moved to a pulse width and
-  *         applies it. A no-op for any axis already at its target.
+  * @brief  Advances both axes along their motion profile by elapsed_ms:
+  *         each axis's speed moves toward the cruise rate -- or toward zero
+  *         once the target is close enough that it needs the room to brake
+  *         -- by at most SERVO_JOINT_ACCEL_CDEG_PER_S2 * elapsed_ms / 1000,
+  *         and the axis then travels at whatever speed that leaves it with.
+  *         Whichever axes moved are re-mapped to a pulse width and applied.
+  *         A no-op for any axis already stopped on its target.
   * @param  joint      Instance, already initialized with ServoJoint_Init().
   * @param  elapsed_ms Milliseconds since the last call (0 is a safe no-op).
   * @retval None
@@ -186,8 +211,9 @@ void ServoJoint_Update(ServoJoint_t *joint, uint32_t elapsed_ms);
 
 /**
   * @brief  Disables both PWM outputs (signal lines go idle/low) and
-  *         abandons the rest of any in-flight ramp, so the joint's target
-  *         becomes wherever it had actually travelled to when it stopped.
+  *         abandons the rest of any in-flight move -- target and speed both
+  *         reset to a joint standing still wherever it had actually
+  *         travelled to when it stopped.
   * @note   Use for e-stop; see Servo_Stop().
   * @param  joint Instance, already initialized with ServoJoint_Init().
   * @retval None
