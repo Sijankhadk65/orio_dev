@@ -1,0 +1,88 @@
+{
+  "board": {
+    "design_settings": {
+      "rules": {
+        "min_clearance": 0.2,
+        "min_track_width": 0.2,
+        "min_through_hole_diameter": 0.3
+      }
+    }
+  },
+  "net_settings": {
+    "classes": [
+      {
+        "name": "Default",
+        "clearance": 0.2,
+        "track_width": 0.25,
+        "via_diameter": 0.8,
+        "via_drill": 0.4,
+        "nets": []
+      },
+      {
+        "name": "HighCurrent",
+        "clearance": 0.4,
+        "track_width": 3.0,
+        "via_diameter": 1.2,
+        "via_drill": 0.6,
+        "nets": [
+          "VIN_RAW",
+          "VIN_FUSED",
+          "V19V5",
+          "V19V5_JETSON",
+          "V19V5_J2",
+          "V7V4",
+          "V7V4_FUSED",
+          "SW_7V4",
+          "GND"
+        ]
+      },
+      {
+        "name": "Power",
+        "clearance": 0.3,
+        "track_width": 1.0,
+        "via_diameter": 1.2,
+        "via_drill": 0.6,
+        "nets": [
+          "V12",
+          "V12_FUSED",
+          "V5",
+          "V5_FUSED",
+          "SW_12",
+          "SW_5",
+          "SERVO1_V",
+          "SERVO2_V",
+          "SERVO3_V",
+          "SERVO4_V",
+          "SERVO5_V",
+          "SERVO6_V"
+        ]
+      }
+    ]
+  },
+  "sheets": [
+    [
+      "5c6db435-0cf8-5901-8c86-d37ced73e565",
+      "Input Protection and Jetson Feed"
+    ],
+    [
+      "736969e6-c5fc-51d1-8772-c26cd299cbe3",
+      "7.4 V Servo Rail"
+    ],
+    [
+      "1af620f0-9f67-5200-b7ef-7f3fde91251d",
+      "12 V and 5 V Rails"
+    ],
+    [
+      "cad2b8d8-8349-5396-b124-7050395f55dd",
+      "Motion I/O -- Servos, ARGB, Fan"
+    ],
+    [
+      "1209a44f-70b6-5222-a16c-422c62a0216b",
+      "Drivetrain I/O -- Isolated ESC Links, E-stop"
+    ]
+  ],
+  "meta": {
+    "filename": "orio-carrier.kicad_pro",
+    "version": 1
+  }
+}

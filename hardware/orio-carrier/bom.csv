@@ -1,0 +1,67 @@
+Qty,Value,Footprint,Populate,References
+1,1000uF/10V,Capacitor_THT:CP_Radial_D12.5mm_P5.00mm,yes,C39
+2,1000uF/16V,Capacitor_THT:CP_Radial_D12.5mm_P5.00mm,yes,C18 C19
+10,100R,Resistor_SMD:R_0805_2012Metric,yes,R20 R21 R22 R23 R24 R25 R28 R29 R30 R31
+5,100k,Resistor_SMD:R_0805_2012Metric,yes,R1 R10 R13 R17 R3
+8,100nF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C10 C24 C30 C36 C37 C45 C50 C51
+2,100nF/50V,Capacitor_SMD:C_0805_2012Metric,yes,C1 C9
+5,100pF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C40 C41 C42 C46 C47
+1,100uF/35V,Capacitor_THT:CP_Radial_D10.0mm_P5.00mm,yes,C8
+8,10k,Resistor_SMD:R_0805_2012Metric,yes,R12 R14 R16 R18 R27 R32 R6 R9
+12,10uF/50V,Capacitor_SMD:C_1210_3225Metric,yes,C14 C15 C16 C17 C26 C27 C32 C33 C4 C5 C6 C7
+1,12 V aux / lights,"TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2_1x02_P5.00mm_Horizontal",yes,J3
+1,140k,Resistor_SMD:R_0805_2012Metric,yes,R11
+1,15uH 4A,Inductor_SMD:L_Bourns-SRN6045TA,yes,L2
+6,1812L300/16,Resistor_SMD:R_1812_4532Metric,yes,PTC1 PTC2 PTC3 PTC4 PTC5 PTC6
+1,1nF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C13
+2,1uF/16V,Capacitor_SMD:C_0805_2012Metric,yes,C44 C49
+1,2.2uF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C11
+1,22nF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C12
+4,22uF/16V,Capacitor_SMD:C_1210_3225Metric,yes,C20 C21 C22 C23
+1,25k,Resistor_SMD:R_0805_2012Metric,yes,R5
+2,3 A slow,Fuse:Fuse_1812_4532Metric,yes,F4 F5
+2,3.3nF/25V,Capacitor_SMD:C_0805_2012Metric,yes,C25 C31
+1,3.3uH 20A,Inductor_SMD:L_Bourns_SRP1265A,yes,L1
+1,330R,Resistor_SMD:R_0805_2012Metric,yes,R26
+2,4.7uF/16V,Capacitor_SMD:C_0805_2012Metric,yes,C43 C48
+1,470uF/16V,Capacitor_THT:CP_Radial_D10.0mm_P5.00mm,yes,C38
+2,470uF/35V,Capacitor_THT:CP_Radial_D12.5mm_P5.00mm,yes,C2 C3
+4,47uF/25V,Capacitor_SMD:C_1210_3225Metric,yes,C28 C29 C34 C35
+1,49k9,Resistor_SMD:R_0805_2012Metric,yes,R7
+1,52k3,Resistor_SMD:R_0805_2012Metric,yes,R15
+1,6.8uH 5A,Inductor_SMD:L_Bourns-SRN6045TA,yes,L3
+1,600R@100MHz 6A,Inductor_SMD:L_1812_4532Metric,yes,FB1
+1,6k04,Resistor_SMD:R_0805_2012Metric,yes,R8
+2,8k06,Resistor_SMD:R_0805_2012Metric,yes,R2 R4
+2,AP2112K-3.3,Package_TO_SOT_SMD:SOT-23-5,yes,U11 U12
+1,ARGB chain (16 LED),Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J16
+2,ATO 15 A,Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical,yes,F1 F3
+1,ATO 5 A,Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical,yes,F2
+2,B0505S-1WR3,Converter_DCDC:Converter_DCDC_MORNSUN_B0505S-1WR3_SIP,yes,PS1 PS2
+1,Barrel 5.5x2.5 to Jetson,Connector_BarrelJack:BarrelJack_Horizontal,yes,J2
+2,CSD18540Q5B,Package_TO_SOT_SMD:TO-263-2,yes,Q2 Q3
+1,E-stop (NC),Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical,yes,J22
+2,E5V ONLY - DNP,Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical,DNP,JP1 JP2
+1,FSESC L,Connector_JST:JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,yes,J20
+1,FSESC R,Connector_JST:JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical,yes,J21
+1,IPB057N06N,Package_TO_SOT_SMD:TO-263-2,yes,Q1
+2,ISO7721DR,Package_SO:SOIC-8_3.9x4.9mm_P1.27mm,yes,U10 U9
+1,LM5145,Package_DFN_QFN:VQFN-24-1EP_4x4mm_P0.5mm_EP2.6x2.6mm,yes,U2
+1,LM74700-Q1,Package_TO_SOT_SMD:SOT-23-6,yes,U1
+1,NUCLEO-C031C6 CN10,Connector_PinSocket_2.54mm:PinSocket_2x19_P2.54mm_Vertical,yes,JM2
+1,NUCLEO-C031C6 CN7,Connector_PinSocket_2.54mm:PinSocket_2x19_P2.54mm_Vertical,yes,JM1
+1,NUCLEO-L152RE CN10,Connector_PinSocket_2.54mm:PinSocket_2x19_P2.54mm_Vertical,yes,JD2
+1,NUCLEO-L152RE CN7,Connector_PinSocket_2.54mm:PinSocket_2x19_P2.54mm_Vertical,yes,JD1
+1,PC fan x2 daisy,Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical,yes,J17
+2,PESD3V3L4UG,Package_TO_SOT_SMD:SOT-23-6,yes,D4 D5
+1,SMCJ22A,Diode_SMD:D_SMC,yes,D1
+1,SN74AHCT244PWR,Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm,yes,U7
+2,SS5H10 5A/100V,Diode_SMD:D_SMC,yes,D2 D3
+2,TPS54360B,Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3.0mm,yes,U3 U4
+1,XT60 20 V in,Connector_Wire:SolderWirePad_1x02_P5.08mm_Drill1.5mm,yes,J1
+1,left arm pan servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J12
+1,left arm tilt servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J13
+1,neck pan servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J10
+1,neck tilt servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J11
+1,right arm pan servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J14
+1,right arm tilt servo,Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical,yes,J15

@@ -8,8 +8,10 @@
   *          period (Prescaler = 0, Period = 59 on the 48 MHz APB timer clock
   *          -> 48 MHz / 60 = 800 kHz), with DMA linked to the PWM channel's
   *          capture/compare event.
-  * @note    ARGB_LED_COUNT defaults to 8, a common count for ARGB case fans;
-  *          set it to match your fan's actual LED count. Byte order is GRB,
+  * @note    ARGB_LED_COUNT is 16: two 8-LED ARGB fans daisy-chained on one
+  *          data line. Set it to match your chain's actual LED count -- the
+  *          DMA buffer is sized from it, so LEDs past the count stay dark,
+  *          and a count larger than the chain just wastes RAM. Byte order is GRB,
   *          the standard for WS2812B/SK6812 -- if colors come out swapped,
   *          your chain uses a different order.
   */
@@ -22,7 +24,7 @@
 extern "C" {
 #endif
 
-#define ARGB_LED_COUNT 8u
+#define ARGB_LED_COUNT 16u
 
 /**
   * @brief  Binds the driver to its timer/channel. Does not transmit
