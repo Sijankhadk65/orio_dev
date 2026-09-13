@@ -49,8 +49,10 @@ FP = dict(
     ptc="Resistor_SMD:R_1812_4532Metric",
     fuse_smd="Fuse:Fuse_1812_4532Metric",
     fuse_ato="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
-    l_big="Inductor_SMD:L_Bourns_SRP1265A",
-    l_sml="Inductor_SMD:L_Bourns-SRN6045TA",
+    # SRP1245A and the SRP1265A this design calls for share the 12.5x12.5 mm
+    # SRP12xx land pattern; only height differs. Verify before fab.
+    l_big="Inductor_SMD:L_Bourns_SRP1245A",
+    l_sml="Inductor_SMD:L_Bourns_SRN6045TA",
     ferrite="Inductor_SMD:L_1812_4532Metric",
     sod123="Diode_SMD:D_SOD-123",
     smc="Diode_SMD:D_SMC",
@@ -59,21 +61,31 @@ FP = dict(
     sot23_5="Package_TO_SOT_SMD:SOT-23-5",
     sot23="Package_TO_SOT_SMD:SOT-23",
     dpak="Package_TO_SOT_SMD:TO-263-2",
-    qfn24="Package_DFN_QFN:VQFN-24-1EP_4x4mm_P0.5mm_EP2.6x2.6mm",
-    soic8ep="Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3.0mm",
+    qfn24="Package_DFN_QFN:HVQFN-24-1EP_4x4mm_P0.5mm_EP2.6x2.6mm_ThermalVias",
+    soic8ep="Package_SO:SOIC-8-1EP_3.9x4.9mm_P1.27mm_EP2.29x3mm_ThermalVias",
     soic8="Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
     tssop20="Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm",
-    sip4="Converter_DCDC:Converter_DCDC_MORNSUN_B0505S-1WR3_SIP",
+    # PLACEHOLDER: KiCad ships no MORNSUN footprint and the B0505S-1WR3 is a
+    # SIP-4 whose pin arrangement is not a 2.54 mm inline row. Draw the real
+    # land pattern from the datasheet before fab -- see FP_PLACEHOLDER below.
+    sip4="Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
     hdr2="Connector_PinHeader_2.54mm:PinHeader_1x02_P2.54mm_Vertical",
     hdr3="Connector_PinHeader_2.54mm:PinHeader_1x03_P2.54mm_Vertical",
     hdr4="Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical",
     xh4="Connector_JST:JST_XH_B4B-XH-A_1x04_P2.50mm_Vertical",
-    xt60="Connector_Wire:SolderWirePad_1x02_P5.08mm_Drill1.5mm",
+    # XT60 pigtail soldered to wire pads: 4 sqmm is ~12 AWG, what XT60 leads use.
+    xt60="Connector_Wire:SolderWire-4sqmm_1x02_P12mm_D3mm_OD6mm",
     barrel="Connector_BarrelJack:BarrelJack_Horizontal",
     screw2="TerminalBlock_Phoenix:TerminalBlock_Phoenix_MKDS-1,5-2_1x02_P5.00mm_Horizontal",
     morpho="Connector_PinSocket_2.54mm:PinSocket_2x19_P2.54mm_Vertical",
     tp="TestPoint:TestPoint_Pad_D2.0mm",
 )
+
+# Footprints that are deliberate stand-ins, not choices. generate.py reports
+# these alongside the unverified pin tables so they cannot be forgotten.
+FP_PLACEHOLDER = {
+    FP["sip4"]: "B0505S-1WR3 needs a custom SIP-4 land pattern",
+}
 
 PARTS = []
 

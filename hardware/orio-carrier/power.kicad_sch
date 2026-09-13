@@ -234,7 +234,7 @@
     (uuid "0c8131ce-41c1-548c-81da-8bfaf4503a32")
     (property "Reference" "J1" (at 66.04 41.91 0) (effects (font (size 1.27 1.27)) (justify left)))
     (property "Value" "XT60 20 V in" (at 66.04 54.61 0) (effects (font (size 1.27 1.27)) (justify left)))
-    (property "Footprint" "Connector_Wire:SolderWirePad_1x02_P5.08mm_Drill1.5mm" (at 66.04 48.26 0) (effects (font (size 1.27 1.27)) (hide yes)))
+    (property "Footprint" "Connector_Wire:SolderWire-4sqmm_1x02_P12mm_D3mm_OD6mm" (at 66.04 48.26 0) (effects (font (size 1.27 1.27)) (hide yes)))
     (pin "1" (uuid "b4938f83-8092-568d-a5c2-7ecc7faac0f7"))
     (pin "2" (uuid "392dd327-34e0-51a6-a98c-bfe96bcda10b"))
     (instances (project "orio-carrier" (path "/b38965fc-f4bc-5cfd-9de1-e43fd466b7e1/5c6db435-0cf8-5901-8c86-d37ced73e565" (reference "J1") (unit 1))))

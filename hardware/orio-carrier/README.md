@@ -37,6 +37,22 @@ on every run. Once the pin tables are verified and you start laying out the
 board in KiCad, the `.kicad_pcb` becomes the thing you edit by hand and the
 generator's job is finished.
 
+## Opening it
+
+Open `orio-carrier.kicad_pro` — the project, not an individual sheet.
+
+**Schematic.** Page 1 is a table of contents: five boxes, nothing else. The
+parts are in the child sheets, reached by double-clicking a box or picking one
+from the Schematic Hierarchy panel. Press **Home** (Zoom to Fit) on arrival —
+the sheets are A1 and the symbols sit in a tall column, so the default view can
+land on empty paper. The sheet boxes carry no pins because connectivity runs on
+global labels, which cross sheets without them.
+
+**PCB.** `orio-carrier.kicad_pcb` holds only the outline, four M3 holes, the
+4-layer stackup and the net classes. Run **Tools → Update PCB from Schematic
+(F8)** to pull in the 151 footprints with their ratsnest. Placement is a job
+KiCad does far better than a generator, which is why the board ships empty.
+
 ## How the netlist is built
 
 Every pin gets a 2.54 mm wire stub ending in a global label carrying its net
@@ -62,10 +78,13 @@ something nice to look at is a job for KiCad, after verification.
 3. **Confirm the Jetson's DC input range** for your Orin Nano carrier revision.
    The board feeds it directly from the protected bus with no conversion stage,
    which is only sound if 19.5 V sits comfortably inside that window.
-4. **Resolve footprints in KiCad.** The references in `design.py`'s `FP` table
-   are standard-library names chosen by inspection; KiCad will flag any that
-   don't resolve when you open the project. The XT60 is mapped to solder wire
-   pads rather than a connector footprint — KiCad has no XT60.
+4. **Draw the `B0505S-1WR3` land pattern.** It is the one placeholder footprint:
+   KiCad ships no MORNSUN library, and the part is a SIP-4 whose pins are not a
+   2.54 mm inline row, so `PS1`/`PS2` currently sit on a generic 4-pin header.
+   Everything else resolves against KiCad's own libraries — the generator checks
+   all 28 on every run and lists any that don't, so this can't rot silently.
+   (The XT60 is mapped to 4 mm² solder wire pads; KiCad has no XT60 footprint,
+   and an XT60 pigtail is 12 AWG anyway.)
 5. **Confirm the FSESC UART connector** matches `J20`/`J21` (currently JST-XH
    4-pin). On those headers pin 2 is the ESC's *RX* — we drive it — and pin 3 is
    the ESC's *TX*.

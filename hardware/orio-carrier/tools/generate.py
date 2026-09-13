@@ -403,6 +403,43 @@ def emit_bom(parts):
 
 
 # ---------------------------------------------------------------------------
+def kicad_footprint_dir():
+    """Find a local KiCad footprint library, or None if KiCad isn't installed."""
+    import glob
+    for var in os.environ:
+        if var.startswith("KICAD") and var.endswith("FOOTPRINT_DIR"):
+            if os.path.isdir(os.environ[var]):
+                return os.environ[var]
+    patterns = [
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\KiCad\*\share\kicad\footprints"),
+        r"C:\Program Files\KiCad\*\share\kicad\footprints",
+        "/usr/share/kicad/footprints",
+        "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
+    ]
+    for pat in patterns:
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+def check_footprints():
+    """Every footprint must resolve, or F8 in the PCB editor fails on it.
+
+    Silently skipped when KiCad isn't installed -- the generator still has to
+    run on a machine that only has Python.
+    """
+    root = kicad_footprint_dir()
+    if not root:
+        return None
+    missing = []
+    for fp in sorted({p["fp"] for p in design.PARTS if p["fp"]}):
+        lib, _, name = fp.partition(":")
+        if not os.path.exists(os.path.join(root, lib + ".pretty", name + ".kicad_mod")):
+            missing.append(fp)
+    return missing
+
+
 def banner():
     bad = []
     if not morpho_map.VERIFIED:
@@ -453,6 +490,22 @@ def main():
             print(f"  {k:<18} {v[0]}")
     else:
         print("no floating nets")
+
+    missing_fp = check_footprints()
+    if missing_fp is None:
+        print("footprints: not checked (no local KiCad install found)")
+    elif missing_fp:
+        print(f"\nUNRESOLVED FOOTPRINTS ({len(missing_fp)}) - 'Update PCB from "
+              f"Schematic' will fail on these:")
+        for fp in missing_fp:
+            print(f"  {fp}")
+    else:
+        print("footprints: all resolve against the local KiCad libraries")
+
+    if design.FP_PLACEHOLDER:
+        print("\nPLACEHOLDER FOOTPRINTS - correct land pattern still to be drawn:")
+        for fp, why in sorted(design.FP_PLACEHOLDER.items()):
+            print(f"  {fp}\n    {why}")
 
     if morpho_map.VERIFIED and not part_pinouts.unverified():
         print("\npin tables verified - board is fabricable")
