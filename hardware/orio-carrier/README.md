@@ -21,6 +21,7 @@ hardware/orio-carrier/
   tools/part_pinouts.py  IC pinouts from datasheets  <- UNVERIFIED
   tools/generate.py      emits everything below
   orio-carrier.kicad_pro / .kicad_sch / .kicad_sym / .kicad_pcb
+  sym-lib-table          registers the project symbol library
   power / conv7v4 / conv12_5 / motion / drivetrain .kicad_sch
   bom.csv
 ```

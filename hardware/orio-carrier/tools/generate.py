@@ -370,6 +370,23 @@ def emit_project():
     write(f"{PROJECT}.kicad_pro", json.dumps(pro, indent=2))
 
 
+def emit_lib_table():
+    """Register the project symbol library.
+
+    Without this KiCad cannot resolve any `orio-carrier:` lib_id and opens the
+    schematic as a field of missing-symbol placeholders. ${KIPRJMOD} keeps it
+    relative, so the project works from any checkout path. Footprints come from
+    KiCad's own global libraries and need no table of their own.
+    """
+    write("sym-lib-table",
+          "(sym_lib_table\n"
+          "  (version 7)\n"
+          f'  (lib (name "{PROJECT}")(type "KiCad")'
+          f'(uri "${{KIPRJMOD}}/{PROJECT}.kicad_sym")(options "")'
+          '(descr "Orio carrier board project symbols"))\n'
+          ")")
+
+
 def emit_bom(parts):
     rows = {}
     for p in parts:
@@ -424,6 +441,7 @@ def main():
 
     emit_pcb(nets)
     emit_project()
+    emit_lib_table()
     emit_bom(design.PARTS)
 
     # A net with one pin on it is a wiring mistake, not a style question.

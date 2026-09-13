@@ -1,0 +1,4 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "orio-carrier")(type "KiCad")(uri "${KIPRJMOD}/orio-carrier.kicad_sym")(options "")(descr "Orio carrier board project symbols"))
+)
