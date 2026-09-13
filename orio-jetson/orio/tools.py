@@ -46,11 +46,20 @@ def get_detector():
     return _detector
 
 
+# Half-width of the "same height as the driving view" band, in degrees. Must
+# stay UNDER the spacing between adjacent stops in the LOOK_TILT_* lists, or
+# neighbouring stops fall in the same band and every sighting reads as level.
+# Those stops sit ~5-7 degrees apart now that the neck tilt window is only 20
+# wide (it was 6 against stops 13-14 apart, which collapsed all but the two
+# extremes to no band at all).
+_BAND_HALF_WIDTH_DEG = 2
+
+
 def _band(tilt: float) -> str:
     """Where a tilt is looking, relative to the pose Orio drives on."""
-    if tilt < config.NECK_TILT_DEG - 6:
+    if tilt < config.NECK_TILT_DEG - _BAND_HALF_WIDTH_DEG:
         return "above"
-    if tilt > config.NECK_TILT_DEG + 6:
+    if tilt > config.NECK_TILT_DEG + _BAND_HALF_WIDTH_DEG:
         return "below"
     return ""
 
@@ -350,6 +359,14 @@ DRIVE_TOOLS = [
     move_forward, move_backward, turn_left, turn_right, stop_moving, set_speed, go_to,
 ]
 DRIVE_TOOL_NAMES = frozenset(t.name for t in DRIVE_TOOLS)
+
+# Tools Orio uses without saying so. Everything else is something it does with
+# its body, which takes visible seconds and is announced before it happens (see
+# llm._respond). Recall is instant and answering "let me check first" only
+# sounds like stalling — the system prompt says the same thing, but a small
+# model generalizes the announce rule across every tool it has, so the split is
+# enforced here too rather than left to the wording.
+SILENT_TOOL_NAMES = frozenset({search_knowledge_base.name})
 
 
 def get_tools() -> list:

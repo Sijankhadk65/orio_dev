@@ -84,10 +84,11 @@ TILT_SERVO_CALIB = (0, 18000, 500, 2500)
 # against a neck tilt window (30..90) the firmware had already stopped
 # having.
 JOINT_LIMITS_DEG = {
-    # TEMPORARY: neck tilt opened to full travel for calibration, mirroring
-    # the same temporary row in kJointLimits[]. Restore to (85.0, 95.0), or to
-    # whatever sweep_axis.py measures, once the stops are known.
-    JOINT_POS_NECK: {"pan": (0.0, 270.0), "tilt": (0.0, 180.0)},
+    # The neck is a narrow window on BOTH axes: ten degrees either side of
+    # its default pose (pan 175, tilt 30). Tilt 30 is not level -- the neck
+    # bracket sits on an inclined body, so the aiming pose is well below the
+    # servo's own mid-travel.
+    JOINT_POS_NECK: {"pan": (165.0, 185.0), "tilt": (20.0, 40.0)},
     JOINT_POS_LEFT_ARM: {"pan": (0.0, 270.0), "tilt": (30.0, 90.0)},
     JOINT_POS_RIGHT_ARM: {"pan": (0.0, 270.0), "tilt": (30.0, 90.0)},
 }
@@ -96,11 +97,13 @@ JOINT_LIMITS_DEG = {
 # s_reset_tilt_cdeg[] in Core/Src/protocol.c. CMD_RESET_JOINTS drives every
 # joint here, and CMD_GET_STATUS reads these back afterwards.
 #
-# Note this is NOT simply the midpoint of each window: the neck's pan homes
-# to 180.00, well off its 135.00 centre, because that is the pose the bracket
-# was measured at. Only the tilt axes happen to home to their window midpoint.
+# Every axis now homes to the midpoint of its own window, so these equal
+# axis_mid() throughout. That is not a coincidence to rely on blindly: the
+# firmware keeps the two as separate tables and clamps one against the other,
+# so a future joint may well home off-centre again. The neck's pan used to be
+# exactly that case, homing to 180.0 against a window centred on 135.0.
 JOINT_HOME_DEG = {
-    JOINT_POS_NECK: {"pan": 180.0, "tilt": 90.0},
+    JOINT_POS_NECK: {"pan": 175.0, "tilt": 30.0},
     JOINT_POS_LEFT_ARM: {"pan": 135.0, "tilt": 60.0},
     JOINT_POS_RIGHT_ARM: {"pan": 135.0, "tilt": 60.0},
 }

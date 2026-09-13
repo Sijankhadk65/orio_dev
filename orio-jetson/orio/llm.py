@@ -21,11 +21,27 @@ from collections.abc import Iterator
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from . import config
-from .tools import DRIVE_TOOL_NAMES, get_tools
+from .tools import DRIVE_TOOL_NAMES, SILENT_TOOL_NAMES, get_tools
 
 # Guard against a runaway tool-call loop (a confused model calling tools
 # forever without ever producing a final answer).
 _MAX_TOOL_HOPS = 3
+
+
+class _TurnBreak:
+    """Marker yielded where a reply pauses to actually do something."""
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # readable in tracebacks / debugging
+        return "<TURN_BREAK>"
+
+
+# Yielded by `send` between what Orio said it was about to do and the doing of
+# it. Everything streamed before the break is a complete spoken thought, and the
+# caller is meant to speak it *before* asking for the next piece — asking is
+# what resumes the generator and runs the tools (see `_respond`).
+TURN_BREAK = _TurnBreak()
 
 
 class LLMUnavailable(RuntimeError):
@@ -138,18 +154,23 @@ class Conversation:
         except Exception as exc:  # a broken tool must not crash the turn
             return f"error running {call['name']}: {exc}"
 
-    def send(self, user_text: str) -> Iterator[str]:
+    def send(self, user_text: str) -> Iterator[str | _TurnBreak]:
         """Send a user turn and yield the assistant reply token-by-token.
 
-        If the model calls a tool, it's executed locally and the result is
-        fed back for a follow-up (streamed) reply — invisible to the caller
-        beyond a short pause; only the final natural-language text is yielded.
-        The full reply is appended to history once streaming completes.
+        A reply that uses tools comes out in segments rather than as one block
+        of text: whatever Orio says before reaching for a tool is yielded, then
+        `TURN_BREAK`, and only then are the tools run and the follow-up reply
+        streamed. Because this is a generator, the tools do not run until the
+        caller asks for the piece after the break — so a caller that speaks each
+        segment as it arrives gets "here's what I'm about to do" out loud while
+        the doing is still ahead of it, not after.
+
+        Each segment is appended to history as it completes.
         """
         self._history.append(HumanMessage(user_text))
         yield from self._respond()
 
-    def _respond(self, depth: int = 0) -> Iterator[str]:
+    def _respond(self, depth: int = 0) -> Iterator[str | _TurnBreak]:
         full = None
         parts: list[str] = []
         for chunk in self._llm.stream(self._messages()):
@@ -164,6 +185,14 @@ class Conversation:
 
         if full.tool_calls and depth < _MAX_TOOL_HOPS:
             self._history.append(full)
+            announced = any(c["name"] not in SILENT_TOOL_NAMES for c in full.tool_calls)
+            if announced and "".join(parts).strip():
+                # Something was said on the way to a tool worth waiting for;
+                # hand it over to be spoken before the tools run. No break when
+                # the model went straight for the tool (nothing to say) or when
+                # the only tool is a silent one — an instant lookup shouldn't
+                # get its own "let me check" utterance.
+                yield TURN_BREAK
             for call in full.tool_calls:
                 result = self._run_tool(call)
                 self._history.append(ToolMessage(content=result, tool_call_id=call["id"]))

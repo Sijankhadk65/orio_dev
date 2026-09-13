@@ -46,14 +46,19 @@ class State(Enum):
 #
 # The wake-gated flow is ASLEEP →(wake word)→ LISTENING → THINKING → SPEAKING,
 # then either LISTENING again (follow-up window) or back to ASLEEP when it
-# lapses. IDLE is the resting state when wake-gating is off (always-on) and in
-# text mode.
+# lapses. A turn that uses a tool cycles THINKING → SPEAKING → THINKING →
+# SPEAKING within itself: say what you're about to do, do it, report back.
+# IDLE is the resting state when wake-gating is off (always-on) and in text
+# mode.
 _TRANSITIONS: dict[State, set[State]] = {
     State.ASLEEP: {State.LISTENING, State.IDLE, State.ERROR},
     State.IDLE: {State.ASLEEP, State.LISTENING, State.THINKING, State.ERROR},
     State.LISTENING: {State.THINKING, State.ASLEEP, State.IDLE, State.ERROR},
     State.THINKING: {State.SPEAKING, State.IDLE, State.ERROR},
-    State.SPEAKING: {State.LISTENING, State.ASLEEP, State.IDLE, State.ERROR},
+    # SPEAKING → THINKING is the announce-then-act flow: Orio speaks what it is
+    # about to do, then goes back to THINKING to actually run the tool and work
+    # out what to report (see conversation._handle_turn).
+    State.SPEAKING: {State.THINKING, State.LISTENING, State.ASLEEP, State.IDLE, State.ERROR},
     State.ERROR: {State.IDLE, State.ASLEEP},
 }
 

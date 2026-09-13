@@ -46,20 +46,24 @@ static int16_t s_tilt_cdeg[PROTO_JOINT_COUNT];
 /* Reset ("home") pose per joint position, on the same centered command
  * scale as CMD_MOVE_JOINT_TO: the vendor scale, pan 0..270 and tilt
  * 0..180, measured from each servo's own zero end (see servo_joint.h).
- * Each joint's tilt homes to the midpoint of its own window: 9000 cdeg
- * (90.00 deg -- level) for the neck's 85..95 window, 6000 cdeg (60.00
- * deg) for the arms' 30..90 one. Keep these in step with kJointLimits --
- * a stale value here is silently clamped, not flagged, so the joint would
- * just quietly home somewhere other than its midpoint.
- *   neck pan: 180.00 deg on the pan servo's 0..270 scale -> 18000 cdeg.
- * left-arm/right-arm pan default to pan mid-travel (13500 cdeg = 135.00
- * deg) until their actual reset pose is measured on the physical
- * brackets and tuned like neck's.
+ * Every joint now homes to the midpoint of BOTH its windows:
+ *   neck:  17500 / 3000 cdeg (175.00 / 30.00 deg) -- the centre of the
+ *          165..185 and 20..40 windows in kJointLimits[]. Tilt 30.00 is
+ *          not level; the neck bracket sits on an inclined body, so the
+ *          pose that aims the head is well below the servo's own
+ *          mid-travel. This axis used to home to 18000 / 9000, which was
+ *          pan a few degrees off centre and tilt at mechanical level.
+ *   arms:  13500 / 6000 cdeg (135.00 / 60.00 deg) -- pan mid-travel and
+ *          the centre of the 30..90 tilt window, until their actual reset
+ *          pose is measured on the physical brackets.
+ * Keep these in step with kJointLimits -- a stale value here is silently
+ * clamped, not flagged, so the joint would just quietly home somewhere
+ * other than its midpoint.
  * handle_reset_joints() still clamps these against each joint's live
  * limit before latching/applying, so a future limit change can't desync
  * CMD_GET_STATUS from what's actually commanded to hardware. */
-static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 18000, 13500, 13500 }; /* neck, left-arm, right-arm */
-static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 9000, 6000, 6000 };
+static const int16_t s_reset_pan_cdeg[PROTO_JOINT_COUNT]  = { 17500, 13500, 13500 }; /* neck, left-arm, right-arm */
+static const int16_t s_reset_tilt_cdeg[PROTO_JOINT_COUNT] = { 3000, 6000, 6000 };
 
 /**
   * @brief  Computes CRC-16/CCITT-FALSE (poly 0x1021, init 0xFFFF) over a buffer.

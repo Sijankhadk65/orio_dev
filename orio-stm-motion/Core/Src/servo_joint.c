@@ -35,38 +35,32 @@
   *         0..270, tilt 0..180, both from the servo's own zero end. Tilt
   *         mid-travel -- level, for a bracket mounted square -- is 90.00.
   *
-  *         Pan is the pan servo's full 270 deg travel on every joint.
-  *         Tilt differs by joint and is always a restricted window:
-  *           neck:      85.00 .. 95.00 deg -- a 10 deg band centred on
-  *                      level. The head is bolted to this axis, so the
-  *                      window is what the head clears, not what the servo
-  *                      can reach.
-  *           arms:      30.00 .. 90.00 deg -- from well below level up to
-  *                      level. Untested against real brackets; nothing is
-  *                      mounted yet.
-  *         These are the numbers this table has always held. They were
-  *         being read as offsets from mid-travel rather than vendor
-  *         angles, which put the neck's window at 175..185 -- against the
-  *         servo's top end stop -- and is what made the head stall.
+  *         The arms take the pan servo's full 270 deg travel; the neck
+  *         does not. Every window here is a restricted one except those:
+  *           neck:      pan 165.00 .. 185.00, tilt 20.00 .. 40.00 -- ten
+  *                      degrees either side of the neck's default pose
+  *                      (pan 175.00, tilt 30.00) on each axis. The default
+  *                      is not written anywhere as a constant: it is what
+  *                      ServoJoint_NeutralAngles() derives as each
+  *                      window's midpoint, so a symmetric window IS the
+  *                      way the default is expressed. Widening one end
+  *                      alone moves the default with it.
+  *                      Tilt 30.00 is NOT level. The neck bracket sits on
+  *                      an inclined body, not a square one, so the servo's
+  *                      own zero-referenced scale reads well below
+  *                      mid-travel at the pose that actually points the
+  *                      head where the cameras need it. The head is bolted
+  *                      to this axis, so the window is what the head
+  *                      clears, not what the servo can reach.
+  *           arms:      pan 0.00 .. 270.00 (full travel), tilt 30.00 ..
+  *                      90.00 deg -- from well below level up to level.
+  *                      Untested against real brackets; nothing is mounted
+  *                      yet.
   *         Edit a row here if one joint's bracket needs a different limit.
   */
-/* !! TEMPORARY CALIBRATION BUILD -- DO NOT SHIP !!
- * The neck's tilt row is opened to the tilt servo's FULL 0..180 travel so
- * tools/sweep_axis.py can walk the axis out to its real mechanical stops and
- * measure them. That removes the very protection the row exists to provide:
- * with this flashed, a tilt command drives the axis wherever it is told,
- * including into whatever the head would otherwise foul on.
- *
- * Only run this with the head unbolted. Once the stops are measured, put the
- * measured numbers back in place of { 0, 18000 } and reflash before mounting
- * anything to the axis. The previous value was { 8500, 9500 } -- a 10 deg
- * band centred on level -- if you need to restore it unchanged.
- *
- * Nothing else is affected: the axis still parks at 9000 (90.00 deg, level,
- * 1500 us) because that is the midpoint of this wider window too. */
 static const ServoJointLimits_t kJointLimits[SERVO_JOINT_POSITION_COUNT] =
 {
-  /* JOINT_POS_NECK */      { .pan = { 0, 27000 }, .tilt = { 0, 18000 } }, /* TEMPORARY -- see below */
+  /* JOINT_POS_NECK */      { .pan = { 16500, 18500 }, .tilt = { 2000, 4000 } },
   /* JOINT_POS_LEFT_ARM */  { .pan = { 0, 27000 }, .tilt = { 3000, 9000 } },
   /* JOINT_POS_RIGHT_ARM */ { .pan = { 0, 27000 }, .tilt = { 3000, 9000 } },
 };
@@ -80,7 +74,7 @@ static const ServoJointLimits_t kJointLimits[SERVO_JOINT_POSITION_COUNT] =
  * here so the next such row fails the build instead. */
 _Static_assert(PAN_SERVO_CALIB_MIN_CDEG <= 0 && 27000 <= PAN_SERVO_CALIB_MAX_CDEG,
                "a joint's pan window reaches outside the pan servo's rated travel");
-_Static_assert(TILT_SERVO_CALIB_MIN_CDEG <= 0 && 18000 <= TILT_SERVO_CALIB_MAX_CDEG,
+_Static_assert(TILT_SERVO_CALIB_MIN_CDEG <= 0 && 9000 <= TILT_SERVO_CALIB_MAX_CDEG,
                "a joint's tilt window reaches outside the tilt servo's rated travel");
 
 /**

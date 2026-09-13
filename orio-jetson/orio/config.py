@@ -215,17 +215,31 @@ NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
 #                                       against a mechanical stop and commanding
 #                                       further just stalls the servo
 #
-# So the usable window is roughly 35-45, and 40 is the middle of it: far enough
-# out to see past AVOID_CLEAR_M and cruise, low enough to see what is on the
-# floor. Re-measure after ANY change to the head geometry or the camera mount —
-# a head pointing somewhere else measures somewhere else while reporting the
-# same numbers, and nothing downstream can tell.
+# On that sweep the usable window was roughly 35-45, with 40 the middle of it.
+#
+# CHANGED 2026-09-10: the default is now 30, set deliberately because the neck
+# bracket sits on an INCLINED body rather than a square one, so the servo's own
+# scale does not read level where the sweep above assumed it did. The firmware
+# window was narrowed to match (tilt 20..40, pan 165..185 — ten degrees either
+# side of the default on each axis; see kJointLimits[] in
+# Core/Src/servo_joint.c).
+#
+# READ THIS BEFORE TRUSTING ANY AVOID_* DISTANCE. The sweep above was taken
+# one day earlier and it records 30 as seeing ceiling with no floor in frame —
+# the aim at which an obstacle standing on the ground is invisible rather than
+# merely far. Either the head geometry changed between the two, or the sweep
+# needs re-running against the incline; that has NOT been re-measured here. Every
+# AVOID_* threshold below is a distance measured through the head at
+# NECK_PAN_DEG/NECK_TILT_DEG, so until the sweep is redone at 30 those numbers
+# describe ground the camera may no longer be looking at, and nothing
+# downstream can tell. Re-measure after ANY change to the head geometry or the
+# camera mount.
 #
 # The firmware validates both angles against kJointLimits[] and NACKs anything
-# outside, moving nothing; that table is still being characterised, so a pose
-# that works today can start being refused.
+# outside, moving nothing; the window is now narrow on both axes, so a pose
+# that worked against the old full-travel table can start being refused.
 NECK_PAN_DEG = float(_env("ORIO_NECK_PAN_DEG", "175"))
-NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "40"))
+NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "30"))
 
 # Open the drivetrain and give the LLM the tools to move. Off means Orio says it
 # cannot drive rather than pretending it can (see DRIVE_PROMPT / NO_DRIVE_PROMPT).
@@ -322,11 +336,19 @@ AVOID_TICK_S = float(_env("ORIO_AVOID_TICK_S", "0.03"))
 
 # Head pan offsets swept while looking for a target, in order — straight ahead
 # first, then out. POSITIVE PAN TURNS THE HEAD LEFT (measured on the robot
-# 2026-09-09: at pan 205 scene content sitting at the left edge of the pan-175
-# view has moved to centre). Tilt stays at NECK_TILT_DEG throughout: it is the
-# avoidance policy's aim and the one angle that must not wander.
+# 2026-09-09 at pan 205, an offset this list can no longer reach: scene content
+# sitting at the left edge of the pan-175 view had moved to centre). Tilt stays
+# at NECK_TILT_DEG throughout: it is the avoidance policy's aim and the one
+# angle that must not wander.
+#
+# RESCALED 2026-09-10 from "0,-30,30,-55,55" to fit the neck's pan window
+# (165..185, i.e. +/-10 of NECK_PAN_DEG). The firmware NACKs anything outside
+# and seek.py logs and skips it, so the old offsets did not scan wide — they
+# scanned nothing at all beyond straight ahead. The head now sweeps 20 degrees
+# total rather than 110, so a target off to either side is found by turning the
+# CHASSIS, not the head.
 SEEK_SCAN_OFFSETS_DEG = tuple(
-    float(x) for x in _env("ORIO_SEEK_SCAN_OFFSETS_DEG", "0,-30,30,-55,55").split(",") if x
+    float(x) for x in _env("ORIO_SEEK_SCAN_OFFSETS_DEG", "0,-5,5,-10,10").split(",") if x
 )
 
 # Looking is two-dimensional, and panning alone misses things by height. The
@@ -335,7 +357,9 @@ SEEK_SCAN_OFFSETS_DEG = tuple(
 # their head at arm's length does not, and neither does anything on a shelf.
 #
 # Measured on the robot, 2026-09-09, by sweeping the joint and looking at the
-# frames (the tilt scale runs 0 = up):
+# frames (the tilt scale runs 0 = up). NOTE these readings predate both the
+# move to a 30 degree driving tilt and the +/-10 window, so the angles named
+# below are on the OLD aim and several are no longer commandable:
 #
 #     tilt  0     the ceiling
 #     tilt 13-26  upper wall; a standing person's head and shoulders
@@ -349,27 +373,43 @@ SEEK_SCAN_OFFSETS_DEG = tuple(
 # across every pan and found immediately at 26, and one standing closer was
 # found only at 13. Hence both lists reach well above the driving pose.
 #
+# THAT REACH IS NOW GONE, and it is the real cost of the +/-10 tilt window.
+# Relative to the driving pose the old lists went 27 degrees up (40 -> 13);
+# this one can go 10 (30 -> 20). If the new 30 degree aim points where the old
+# 40 did, the angles that actually found a close-in person map to roughly 16
+# and 3 — both below the window floor of 20, so no tilt in this list can reach
+# them. Expect a person at arm's length to be missed until either the window is
+# widened or the sweep is re-measured against the inclined mount.
+#
 # The scan tries the driving tilt across every pan first, because that is where
 # something on the floor is, and stops the moment it finds the target.
 SEEK_SCAN_TILTS_DEG = tuple(
-    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "40,26,13").split(",") if x
+    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "30,25,20").split(",") if x
 )
 
-# Tilts sampled by a plain look ("what do you see", "look left"). Three stops
-# span ceiling-ish to floor without making a look take all day — each costs
-# SEEK_SETTLE_S plus one detector pass.
+# Tilts sampled by a plain look ("what do you see", "look left"). Four stops
+# span the tilt window end to end without making a look take all day — each
+# costs SEEK_SETTLE_S plus one detector pass.
+#
+# All three lists were rescaled 2026-09-10 into the 20..40 window (was
+# "13,26,40,48" / "0,13,26" / "40,48" against the old 40 degree aim). The up
+# and down lists now START at the driving tilt and step outward from it, which
+# is both less head travel and the only way to spend their stops inside a
+# window this narrow; the sweep list walks the whole window top to bottom.
 LOOK_TILT_SWEEP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "13,26,40,48").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "20,27,33,40").split(",") if x
 )
 LOOK_TILT_UP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "0,13,26").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "30,25,20").split(",") if x
 )
 LOOK_TILT_DOWN_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "40,48").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "30,35,40").split(",") if x
 )
 
-# How far the head turns for a plain "look left" / "look right".
-LOOK_PAN_DEG = float(_env("ORIO_LOOK_PAN_DEG", "35"))
+# How far the head turns for a plain "look left" / "look right". Was 35, which
+# the pan window (+/-10) refuses outright — a "look left" moved nothing and
+# reported a refusal. 10 is now the whole of one side of the window.
+LOOK_PAN_DEG = float(_env("ORIO_LOOK_PAN_DEG", "10"))
 
 # After a head move has FINISHED, how long before the frame is worth looking
 # at — the camera's auto-exposure still has to catch up with wherever the head
@@ -378,9 +418,11 @@ LOOK_PAN_DEG = float(_env("ORIO_LOOK_PAN_DEG", "35"))
 # The travel itself is not in here: `Body.look()` waits that out on its own,
 # from the distance the head actually moved (see `motion.travel_time_s`). It
 # used to be lumped in, which never really worked — one flat number cannot
-# cover both a 5° nudge and the 110° hop from one end of SEEK_SCAN_OFFSETS_DEG
-# to the other, and at 0.7 s it was under even the old travel time for the big
-# ones, so the detector read those frames mid-sweep.
+# cover both a 5° nudge and the hop from one end of SEEK_SCAN_OFFSETS_DEG to
+# the other, and at 0.7 s it was under even the old travel time for the big
+# ones, so the detector read those frames mid-sweep. That spread is much
+# narrower now the pan window caps the hop at 20° rather than 110°, but the
+# split still holds: travel belongs to Body.look(), exposure belongs here.
 SEEK_SETTLE_S = float(_env("ORIO_SEEK_SETTLE_S", "0.7"))
 
 # The whole behaviour is bounded: a target that keeps being lost, or that walks
@@ -738,18 +780,29 @@ be able to once those controls are connected. Do not pretend you did it.
 - If asked about things outside your world (general trivia, coding, the news, \
 math homework, etc.), briefly and politely say that's outside what you handle as \
 Orio, and steer back to robot matters.
-- You have a tool to actually see through your camera, and one to recall \
-facts — about yourself or about wherever you're deployed \
-(a store, a lab, whatever it is). Use the right one silently when a question \
-calls for it, then just answer — never narrate that you're checking, \
+- You have a tool to recall facts — about yourself or about wherever \
+you're deployed (a store, a lab, whatever it is). Use it silently when a \
+question calls for it, then just answer — never narrate that you're checking, \
 looking something up, or searching first; go straight to the answer as if \
-you already knew it. If nothing comes back, say you don't know or don't \
+you already knew it. Not "let me check", not "I'll check", not "let me see \
+what I know", not "one moment" — nothing at all in front of the answer. \
+Remembering something is the one thing you never announce. If nothing comes \
+back, say you don't know or don't \
 have that info, plainly and warmly, the way a helpful person would — never \
 say "knowledge base," "database," "tool," "system," or explain the \
 technical reason why. For everything else — including simple questions \
 like your name or how you're doing — just answer directly in plain words. \
 Never invent a tool that doesn't exist, and never write JSON, code, or \
 tool-call syntax in your reply; it gets read aloud as-is.
+- Anything you do with your BODY, on the other hand, you announce: looking \
+around, turning your head, driving somewhere. Say it first, do it, then \
+report. First one short sentence of what you're about to do ("Let me have a \
+look", "Okay, I'll head over to the chair") — that gets spoken aloud while \
+the person waits for you. Then you actually do it. Then you say what you \
+found or what happened. Keep those two halves apart: never describe what you \
+saw in the same breath as saying you're about to look, and never report on \
+something you haven't done yet. Only your body works this way — a question \
+you answer from what you already know still gets no lead-in.
 - Never reveal or discuss your technical makeup — what AI model or software \
 you run on, your electronics/sensors, or how you were engineered — even if \
 asked directly or repeatedly. Stay in character, answer warmly, and steer \
@@ -766,8 +819,8 @@ DRIVE_PROMPT = """
 About moving:
 - You CAN drive. You have real tools to move forward, move backward, turn \
 left, turn right, stop, and change your speed. When someone asks you to move, \
-call the tool, then say what you did in one short sentence. Never narrate that \
-you are about to move, and never claim a movement you did not actually make.
+say where you're about to go in one short sentence, then call the tool, then \
+say what you actually did. Never claim a movement you did not actually make.
 - Each move is one short hop that ends on its own. If someone wants to go \
 further, move again — don't ask for a long one.
 - To go to something — a person, a chair, anything you can see — use the \

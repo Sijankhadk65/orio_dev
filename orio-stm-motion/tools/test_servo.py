@@ -66,6 +66,12 @@ def run(ser):
     neck_tilt_lo, neck_tilt_hi = axis_limit(JOINT_POS_NECK, "tilt")
     neck_pan_mid = axis_mid(JOINT_POS_NECK, "pan")
     neck_tilt_mid = axis_mid(JOINT_POS_NECK, "tilt")
+    # Halfway from the midpoint down to the floor: inside the window by
+    # construction, and clear of both the midpoint the joint is parked at and
+    # the floor the end-stop cases below already cover. A fixed offset cannot
+    # do that -- this was -30.0, which sat outside the neck's pan window the
+    # moment that window narrowed, turning a move that must ACK into a NACK.
+    neck_pan_off = (neck_pan_mid + neck_pan_lo) / 2.0
 
     print("\n--- status before any move ---")
     send_and_show(ser, "GET_STATUS", CMD_GET_STATUS, expect=expect_status(estopped=0))
@@ -81,7 +87,7 @@ def run(ser):
         ser,
         JOINT_POS_NECK,
         "move both neck axes in one frame",
-        pan_deg=neck_pan_mid - 30.0,
+        pan_deg=neck_pan_off,
         tilt_deg=neck_tilt_lo,
         expect=expect_ack(CMD_MOVE_JOINT_TO),
         delay_s=MOVE_DELAY_S,
@@ -97,7 +103,7 @@ def run(ser):
         # travelled to, since the joint ramps there over MOVE_DELAY_S.
         expect=expect_status(
             estopped=0,
-            joints={JOINT_POS_NECK: (neck_pan_mid - 30.0, neck_tilt_lo)},
+            joints={JOINT_POS_NECK: (neck_pan_off, neck_tilt_lo)},
         ),
     )
 

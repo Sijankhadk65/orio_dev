@@ -32,11 +32,12 @@ Usage:
     python tools/sweep_axis.py <port> <joint> <pan|tilt> <from> <to> [step]
 
 Examples:
-    # neck pan, from mid-travel outward toward the 270 end, 5 deg at a time
-    python tools/sweep_axis.py COM3 neck pan 135 270 5
+    # neck pan, from its default outward toward the 270 end, 5 deg at a time
+    # (past 185 this needs the neck's kJointLimits[] row widened first)
+    python tools/sweep_axis.py COM3 neck pan 175 270 5
 
-    # neck tilt, from level downward, 2 deg at a time
-    python tools/sweep_axis.py COM3 neck tilt 90 60 2
+    # neck tilt, from its default downward, 2 deg at a time
+    python tools/sweep_axis.py COM3 neck tilt 30 60 2
 """
 import argparse
 import sys

@@ -21,7 +21,7 @@ import sys
 from . import body
 from . import config
 from .fsm import State, StateMachine
-from .llm import Conversation, LLMUnavailable
+from .llm import TURN_BREAK, Conversation, LLMUnavailable
 from .tts import TTS, get_tts
 
 BANNER = """\
@@ -46,17 +46,39 @@ def _is_stop(text: str) -> bool:
 def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) -> None:
     """Generate (THINKING) then speak (SPEAKING) a reply to `user`.
 
+    A reply that uses a tool arrives in segments split by `TURN_BREAK` (see
+    llm.Conversation.send), and each segment is spoken as it lands rather than
+    at the end. That ordering is the point: the stream stops at the break, so
+    "let me have a look" is out of the speaker before the head starts turning,
+    and the person hears what Orio is doing while it does it instead of after.
+    A turn can therefore cycle THINKING → SPEAKING → THINKING → SPEAKING.
+
     Leaves the machine in SPEAKING on success so the caller picks the next
     resting state (LISTENING follow-up, ASLEEP, or IDLE); on an LLM failure it
     recovers through ERROR back to IDLE itself.
     """
     fsm.to(State.THINKING)
     print("orio › ", end="", flush=True)
-    reply_parts: list[str] = []
+    segment: list[str] = []
+
+    def say() -> None:
+        """Speak the segment streamed so far and start a fresh one."""
+        text = "".join(segment).strip()
+        segment.clear()
+        fsm.to(State.SPEAKING)  # entered even when silent, so the turn always ends here
+        if text:
+            tts.speak(text)
+
     try:
         for piece in convo.send(user):
+            if piece is TURN_BREAK:
+                print()
+                say()
+                fsm.to(State.THINKING)  # back to work: the tools run next
+                print("orio › ", end="", flush=True)
+                continue
             print(piece, end="", flush=True)
-            reply_parts.append(piece)
+            segment.append(piece)
     except Exception as exc:  # daemon died mid-stream, etc.
         fsm.to(State.ERROR)
         print(f"\n✗ LLM error: {exc}")
@@ -64,8 +86,7 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
         return
     print()
 
-    fsm.to(State.SPEAKING)
-    tts.speak("".join(reply_parts))
+    say()
 
 
 def _make_waker(stt):

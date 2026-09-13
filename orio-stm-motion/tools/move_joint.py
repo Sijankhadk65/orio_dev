@@ -13,7 +13,9 @@ Usage:
 
 Angles are on the vendor scale: pan 0..270, tilt 0..180, measured from each
 servo's own zero end, the same numbers the vendor's datasheet and example
-sketches use. Tilt 90 is mid-travel -- level for a square bracket.
+sketches use. Tilt 90 is mid-travel -- level for a square bracket, which the
+neck is not: it sits on an inclined body and aims at tilt 30, so mid-travel is
+nowhere near its window.
 
 The firmware rejects the whole frame with NACK OUT_OF_RANGE if either axis
 falls outside that joint's commandable window, and the windows differ by
@@ -21,7 +23,7 @@ joint. See JOINT_LIMITS_DEG in proto_client.py for the current values.
 
 Examples:
     python tools/move_joint.py COM5 neck pan 180
-    python tools/move_joint.py COM5 neck tilt 90
+    python tools/move_joint.py COM5 neck tilt 30
     python tools/move_joint.py COM5 left-arm tilt 60
 """
 import argparse
