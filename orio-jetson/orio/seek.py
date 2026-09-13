@@ -14,7 +14,7 @@ deterministic and closed-loop:
                        running the detector at each stop, nearest instance wins
     point at it        pivot the chassis in short bursts until the target sits
                        within `SEEK_CENTRE_DEG` of straight ahead
-    close the distance  guarded forward hops, re-detecting between each one
+    close the distance  one guarded drive, re-detecting while it rolls
     stop               when the target is inside `SEEK_ARRIVE_M`, or lost, or
                        the policy will not go nearer, or the clock runs out
 
@@ -22,6 +22,23 @@ Every step re-checks, because both ends of the problem move: the robot drifts
 off heading (no odometry, and a pivot is timed rather than measured) and a
 person does not stand still. Nothing here integrates; each decision is made
 from the picture in front of it.
+
+## The approach cruises; the pivots still do not
+
+Closing the distance used to be a run of bounded hops, which meant the wheels
+were zeroed once per look — the robot walked up to people in a stutter, rolling
+for `SEEK_HOP_S` and then standing still for as long as the detector took. It
+now latches `body.Cruise` forward and leaves it latched while it looks, so
+looking no longer costs motion and the guard keeps ticking through the pass
+(see `Cruise`, which is where that safety argument lives).
+
+Pivots are deliberately NOT cruised, and the reason is the same one that makes
+them short: a pivot is timed, not measured, and the correction comes from
+looking again. Held down, a pivot would keep swinging through each detector
+pass, so the robot would answer every look with a turn made partly stale by the
+turn itself — the classic way to oscillate around `SEEK_CENTRE_DEG` instead of
+settling into it. They stay bursts: latch, `SEEK_TURN_BURST_S`, stop, look.
+Turns are also where the guard is thinnest, since nothing senses the sides.
 
 ## Where the bearing comes from
 
@@ -51,7 +68,7 @@ import time
 from dataclasses import dataclass
 
 from . import config
-from .body import DIRECTIONS
+from .body import NO_WHEELS
 
 log = logging.getLogger(__name__)
 
@@ -164,57 +181,91 @@ class Seeker:
         blocked = 0
         last: Sighting | None = seen
 
-        while time.monotonic() < deadline:
-            seen = self.sight(label)
+        # Every exit from here — arrived, lost, blocked, timed out, or an
+        # exception nobody expected — leaves through the context manager, which
+        # stops the wheels. That is the whole of why the latch is safe to leave
+        # standing across a look.
+        with self._body.cruise() as cruise:
+            while time.monotonic() < deadline:
+                looked_at = time.monotonic()
+                seen = self.sight(label)
 
-            if seen is None:
-                lost += 1
-                if lost > config.SEEK_MAX_LOST:
-                    if last is not None and last.distance_m is not None:
-                        return (
-                            f"lost sight of the {label} — last saw it "
-                            f"{_describe_distance(last.distance_m)} to the {last.side}"
-                        )
-                    return f"lost sight of the {label}"
-                # Turn toward where it last was and look again.
-                self._turn(hint)
-                continue
+                if seen is None:
+                    lost += 1
+                    if lost > config.SEEK_MAX_LOST:
+                        if last is not None and last.distance_m is not None:
+                            return (
+                                f"lost sight of the {label} — last saw it "
+                                f"{_describe_distance(last.distance_m)} to the {last.side}"
+                            )
+                        return f"lost sight of the {label}"
+                    # Turn toward where it last was and look again.
+                    self._turn(cruise, hint)
+                    continue
 
-            lost = 0
-            last = seen
-            hint = seen.side
+                lost = 0
+                last = seen
+                hint = seen.side
 
-            if abs(seen.bearing_deg) > config.SEEK_CENTRE_DEG:
-                self._turn(seen.side)
-                continue
+                if abs(seen.bearing_deg) > config.SEEK_CENTRE_DEG:
+                    self._turn(cruise, seen.side)
+                    continue
 
-            if seen.distance_m is not None and seen.distance_m <= config.SEEK_ARRIVE_M:
-                return (
-                    f"went to the {label} — standing {seen.distance_m:.1f} m away, "
-                    f"facing them"
-                )
-
-            hop = self._body.hop("forward", DIRECTIONS["forward"], config.SEEK_HOP_S)
-            if hop.halted == "the wheels aren't connected right now":
-                return hop.halted
-            if hop.blocked:
-                blocked += 1
-                # The policy would not take it any nearer. Once is a moment of
-                # noise and worth retrying; three times running is an answer.
-                if blocked >= 3:
-                    where = _describe_distance(seen.distance_m)
-                    reason = hop.halted or "something is in the way"
+                if seen.distance_m is not None and seen.distance_m <= config.SEEK_ARRIVE_M:
                     return (
-                        f"got as close to the {label} as it could — {where}, "
-                        f"and then {reason}"
+                        f"went to the {label} — standing {seen.distance_m:.1f} m away, "
+                        f"facing them"
                     )
-            else:
-                blocked = 0
+
+                # Renew rather than start: on every pass but the first the
+                # wheels are already turning, and have been throughout the look
+                # that just happened.
+                cruise.go("forward")
+
+                # What the policy did over the stretch just driven — which is
+                # the look, not a hop, but the question asked of it is the one
+                # a hop used to answer.
+                drive = cruise.drain()
+                if drive.halted == NO_WHEELS:
+                    return drive.halted
+                if drive.blocked:
+                    blocked += 1
+                    # The policy would not take it any nearer. Once is a moment
+                    # of noise and worth retrying; three times running is an
+                    # answer.
+                    if blocked >= 3:
+                        where = _describe_distance(seen.distance_m)
+                        reason = drive.halted or "something is in the way"
+                        return (
+                            f"got as close to the {label} as it could — {where}, "
+                            f"and then {reason}"
+                        )
+                else:
+                    blocked = 0
+
+                # Pace the detector, not the robot: it keeps rolling through
+                # this, and a look any sooner would be at much the same picture.
+                remaining = config.SEEK_LOOK_PERIOD_S - (time.monotonic() - looked_at)
+                if remaining > 0:
+                    time.sleep(remaining)
 
         where = _describe_distance(last.distance_m) if last else ""
         return f"gave up going to the {label} after {config.SEEK_TIMEOUT_S:g} seconds — {where}"
 
-    def _turn(self, side: str) -> None:
+    def _turn(self, cruise, side: str) -> None:
         """One short pivot toward `side`. Timed, not measured — hence "short":
-        the correction comes from looking again, not from turning accurately."""
-        self._body.hop(side, DIRECTIONS[side], config.SEEK_TURN_BURST_S)
+        the correction comes from looking again, not from turning accurately.
+
+        Through the cruise rather than a hop of its own, so the control loop
+        this behaviour is driving stays the one loop throughout — but still a
+        burst that ends in `hold()`, because a pivot held down through a look
+        oscillates (see the module docstring).
+        """
+        cruise.go(side)
+        time.sleep(config.SEEK_TURN_BURST_S)
+        cruise.hold()
+        # A pivot's states are not the approach's. Dropping them keeps the next
+        # window purely forward, so `blocked` still answers the question it
+        # answered when turns were hops of their own and their states went
+        # nowhere: is the policy refusing to take the robot any NEARER.
+        cruise.drain()

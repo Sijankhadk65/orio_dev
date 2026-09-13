@@ -101,6 +101,10 @@ _BARELY_MOVED_S = 0.15
 
 NO_WHEELS = "the wheels aren't connected right now"
 
+# A cruise whose caller stopped renewing the latch — it wedged, or died
+# somewhere its context manager could not see. See Cruise's deadman.
+NOT_RENEWED = "nothing was steering any more, so Orio stopped"
+
 
 @dataclass(frozen=True)
 class Hop:
@@ -142,6 +146,9 @@ class Body:
         self._neck: Motion | None = None
         self._sensor: Sensor | None = None
         self._avoider = avoider_from_config()
+        # The cruise currently running, if any — at most one, since there is one
+        # set of wheels. See cruise().
+        self._cruise: "Cruise | None" = None
         # Where the head actually is, as far as this object knows: the pose the
         # last accepted move_to() commanded. None until one has been accepted.
         self._head: tuple[float, float] | None = None
@@ -308,6 +315,7 @@ class Body:
 
     def close(self) -> None:
         """Stop the wheels, release the cameras, and let the head go."""
+        self._end_cruise()  # before the lock, for the reason stop() gives
         with self._lock:
             if self._drive is not None:
                 self._drive.close()  # zeroes the wheels and latches the e-stop
@@ -455,25 +463,12 @@ class Body:
             deadline = started + span
             try:
                 while time.monotonic() < deadline:
-                    reading = sensor.reading
-                    halted = self._blind(reading)
-                    if halted is not None:
-                        break
-
-                    decision = self._avoider.decide(signs, duty, reading)
-                    if not states or states[-1] != decision.state:
-                        states.append(decision.state)
-                    if decision.state == "halted":
-                        halted = decision.reason
-                        break
-
-                    command = (decision.left, decision.right)
-                    if command != last_sent:
-                        link.set_drive(*command)
-                        last_sent = command
-
-                    rejection = link.take_rejection()
-                    if rejection is not None:
+                    state, halted, rejection, last_sent = self._drive_tick(
+                        link, sensor, signs, duty, last_sent
+                    )
+                    if state is not None and (not states or states[-1] != state):
+                        states.append(state)
+                    if halted is not None or rejection is not None:
                         break
                     time.sleep(config.AVOID_TICK_S)
             finally:
@@ -485,6 +480,104 @@ class Body:
             elapsed = time.monotonic() - started
 
         return Hop(tuple(states), halted, rejection, elapsed)
+
+    def _drive_tick(self, link, sensor, signs, duty, last_sent):
+        """One pass of the guarded control loop: look, decide, send.
+
+        The whole of what `hop()` and `Cruise` have in common, and the only
+        place a duty pair reaches the board. Returns
+        `(state, halted, rejection, last_sent)` — `state` is the policy's state
+        this tick or None if it never got as far as deciding, and `halted` is
+        set when the robot must not be moving right now.
+
+        Caller-agnostic on purpose: it neither sleeps nor zeroes the wheels, so
+        a bounded hop can break out of its loop and a cruise can keep ticking
+        through the same condition. Both must be holding `self._lock`.
+        """
+        reading = sensor.reading
+        halted = self._blind(reading)
+        if halted is not None:
+            # Sight failed before the policy was consulted, so there is no state
+            # to report — just the reason nothing may move.
+            return None, halted, None, last_sent
+
+        decision = self._avoider.decide(signs, duty, reading)
+        if decision.state == "halted":
+            return decision.state, decision.reason, None, last_sent
+
+        command = (decision.left, decision.right)
+        if command != last_sent:
+            link.set_drive(*command)
+            last_sent = command
+        return decision.state, None, link.take_rejection(), last_sent
+
+    def cruise(self) -> "Cruise":
+        """Start a guarded drive that outlives the call which started it.
+
+        `hop()` is the right shape for the LLM, which issues one command and
+        goes back to talking. It is the wrong shape for a closed-loop behaviour
+        like `seek.py`, where it means the wheels are zeroed once per look and
+        the robot walks in a stutter. A cruise keeps the control loop running on
+        its own thread while the caller perceives, so the latch survives a
+        detector pass instead of being ended by one.
+
+        Only one cruise runs at a time; starting a second ends the first. Use it
+        as a context manager — leaving the block stops the wheels.
+        """
+        self._end_cruise()
+        self._ensure_driving_pose()
+        with self._lock:
+            self._avoider.reset()
+            if self._drive is not None:
+                self._drive.take_rejection()  # this cruise reports its own
+        cruise = Cruise(self)
+        self._cruise = cruise
+        cruise.start()
+        return cruise
+
+    def _cruise_tick(self, signs, last_sent):
+        """One locked tick on a cruise's behalf, including the held case.
+
+        Separate from `_drive_tick` because a cruise, unlike a hop, has to keep
+        ticking through the conditions that end a hop: held with no direction
+        latched, and halted. Both mean the wheels are zeroed and the loop goes
+        round again, because the situation can clear — a stale reading comes
+        back, or the caller latches a new direction — and the caller's own
+        deadline is what ends the drive.
+        """
+        with self._lock:
+            link, sensor = self._drive, self._sensor
+            if link is None or sensor is None:
+                return None, NO_WHEELS, None, last_sent
+            if signs is None:
+                return None, None, None, self._zero(link, last_sent)
+            duty = round(self.speed_percent * 10)  # permille, what the board takes
+            state, halted, rejection, last_sent = self._drive_tick(
+                link, sensor, signs, duty, last_sent
+            )
+            if halted is not None:
+                last_sent = self._zero(link, last_sent)
+            return state, halted, rejection, last_sent
+
+    @staticmethod
+    def _zero(link, last_sent):
+        """Stop the wheels, without re-sending a stop that is already standing."""
+        if last_sent != (0, 0):
+            link.set_drive(0, 0)
+        return (0, 0)
+
+    def _end_cruise(self) -> None:
+        """Stop whatever cruise is running, if any. Never call holding the lock:
+        `Cruise.close()` joins a thread that takes it every tick."""
+        cruise, self._cruise = self._cruise, None
+        if cruise is not None:
+            cruise.close()
+
+    def _stop_wheels(self) -> None:
+        """Zero the wheels, for a cruise winding itself up."""
+        with self._lock:
+            if self._drive is not None:
+                self._drive.set_drive(0, 0)
 
     def _describe(self, direction: str, span: float, hop: "Hop") -> str:
         """Turn a hop into the sentence the model will read back to the person."""
@@ -521,7 +614,13 @@ class Body:
 
         Mostly belt-and-braces — every hop stops itself — but it is what "stop"
         has to mean, and it covers a hop left running by a crash.
+
+        A cruise is ended first, and deliberately before the lock is taken: its
+        thread commands the wheels every tick, so zeroing them underneath one
+        would last until its next tick, and joining it from inside the lock it
+        wants would not finish at all.
         """
+        self._end_cruise()
         with self._lock:
             if self._drive is None:
                 return NO_WHEELS
@@ -543,6 +642,186 @@ class Body:
                 f"the {low:g}–{high:g}% range Orio is allowed to drive at"
             )
         return f"speed set to {self.speed_percent:g}%"
+
+
+class Cruise:
+    """A guarded drive that keeps running while its caller looks at something.
+
+    The wheels are latched by direction rather than commanded for a span:
+    `go()` says which way and `hold()` says not right now, and the control loop
+    on this thread keeps deciding at `config.AVOID_TICK_S` regardless of what
+    the caller is doing. That is the whole point — a behaviour that re-detects
+    between moves stutters if perceiving ends the move, and detection is slow
+    enough to be visible in the robot's gait.
+
+    ## The guard runs more, not less
+
+    Nothing about the avoidance policy is relaxed here. Every tick goes through
+    the same `Body._drive_tick` a hop does, so the same staleness check stops
+    the robot on a wedged camera and the same `Avoider` picks every heading. The
+    difference is that it now also runs *during* the caller's detector pass,
+    where a hop-shaped approach has the robot standing still and nothing
+    watching at all.
+
+    One thing does change behaviourally: the `Avoider`'s commitment and stuck
+    timers now survive a look. A hop reset them on every call, so an approach
+    that looked every 0.8 s wiped them far more often than the manoeuvres they
+    exist to hold together, and a policy already committed to steering around
+    something could forget it was mid-detour. A cruise resets them once, when it
+    starts. Pivots still clear them — `Avoider.decide` resets on any latch that
+    is not straight forward — so what is preserved is commitment across a run of
+    forward looks, which is exactly where it was being lost.
+
+    ## The deadman
+
+    A latch that outlives its caller is the failure this shape introduces: if
+    the caller wedges — a detector that never returns, a behaviour that throws
+    somewhere the context manager cannot see — the last direction would stand
+    and the robot would keep driving, guarded but unsupervised. So a latch
+    expires `config.CRUISE_DEADMAN_S` after the `go()` that set it, and the
+    wheels stop until something renews it. Callers re-latch every pass around
+    their own loop, which costs them nothing and makes the renewal the proof
+    that they are still there.
+
+    It is the same bargain twice more below this: the firmware re-sends the duty
+    to the FSESCs every 200 ms or their own timeout cuts the motor, and the
+    Jetson heartbeats the board every 200 ms or its watchdog e-stops. Motion
+    here is something that has to be continuously re-earned.
+    """
+
+    def __init__(self, body: "Body") -> None:
+        self._body = body
+        # Guards the latch and everything drain() reports. Held only to read or
+        # write those fields, never across a tick: the tick takes Body's lock,
+        # and close() is called by a thread holding neither.
+        self._lock = threading.Lock()
+        self._signs: tuple[int, int] | None = None
+        self._renewed = 0.0
+        self._direction: str | None = None
+        self._states: list[str] = []
+        self._halted: str | None = None
+        self._rejection = None
+        self._since = time.monotonic()
+        self._stop = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def start(self) -> "Cruise":
+        self._thread = threading.Thread(target=self._loop, daemon=True, name="cruise")
+        self._thread.start()
+        return self
+
+    # ── the latch ────────────────────────────────────────────────────────────
+
+    def go(self, direction: str) -> None:
+        """Drive `direction` until told otherwise, or until the deadman expires.
+
+        Idempotent and cheap: call it every pass around a perception loop. The
+        wheels do not restart on each call — the loop is already running and the
+        board is already holding the duty — so this only renews the latch.
+        """
+        signs = DIRECTIONS.get(direction)
+        if signs is None:
+            log.warning("cruise asked for unknown direction %r; holding", direction)
+            self.hold()
+            return
+        with self._lock:
+            self._signs = signs
+            self._direction = direction
+            self._renewed = time.monotonic()
+
+    def hold(self) -> None:
+        """Stop the wheels, keep the loop running. The robot stands still until
+        the next `go()`, with the policy still ticking underneath it."""
+        with self._lock:
+            self._signs = None
+            self._direction = None
+
+    @property
+    def direction(self) -> str | None:
+        """What is latched right now, or None if the robot is holding."""
+        with self._lock:
+            return self._direction
+
+    # ── what happened ────────────────────────────────────────────────────────
+
+    def drain(self) -> Hop:
+        """Everything the policy did since the last drain, and clear it.
+
+        Reported as a `Hop` so a caller can ask the same questions of a window
+        of a cruise that it used to ask of one hop — `blocked` in particular
+        means exactly what it did before, over the stretch between two looks
+        rather than over a 0.8 s move.
+        """
+        with self._lock:
+            now = time.monotonic()
+            window = Hop(tuple(self._states), self._halted, self._rejection, now - self._since)
+            self._states = []
+            self._halted = None
+            self._rejection = None
+            self._since = now
+            return window
+
+    def _record(self, state, halted, rejection) -> None:
+        with self._lock:
+            if state is not None and (not self._states or self._states[-1] != state):
+                self._states.append(state)
+            if halted is not None:
+                self._halted = halted
+            if rejection is not None:
+                self._rejection = rejection
+
+    def _latched(self) -> tuple[int, int] | None:
+        """The current direction, or None if held or the deadman has expired."""
+        with self._lock:
+            if self._signs is None:
+                return None
+            if time.monotonic() - self._renewed <= config.CRUISE_DEADMAN_S:
+                return self._signs
+            self._signs = None
+            self._direction = None
+        # Reported outside the lock, which _record takes for itself. The caller
+        # is gone or stuck, so this is the last thing said about the drive.
+        log.warning("cruise latch expired after %gs unrenewed", config.CRUISE_DEADMAN_S)
+        self._record(None, NOT_RENEWED, None)
+        return None
+
+    # ── the loop ─────────────────────────────────────────────────────────────
+
+    def _loop(self) -> None:
+        last_sent: tuple[int, int] | None = None
+        try:
+            while not self._stop.wait(config.AVOID_TICK_S):
+                state, halted, rejection, last_sent = self._body._cruise_tick(
+                    self._latched(), last_sent
+                )
+                self._record(state, halted, rejection)
+                if halted == NO_WHEELS:
+                    break
+        except Exception:
+            log.exception("cruise loop died; the wheels are being stopped")
+            self._record(None, "the drive loop failed", None)
+        finally:
+            # The same promise hop() makes in its own finally, and for the same
+            # reason: nothing below this layer ever stops on its own while the
+            # heartbeat keeps the board armed.
+            self._body._stop_wheels()
+
+    def close(self) -> None:
+        """End the cruise and leave the wheels stopped. Safe to call twice."""
+        self._stop.set()
+        thread, self._thread = self._thread, None
+        if thread is not None:
+            thread.join(timeout=2.0)
+            if thread.is_alive():
+                log.error("cruise thread would not stop; stopping the wheels anyway")
+        self._body._stop_wheels()
+
+    def __enter__(self) -> "Cruise":
+        return self
+
+    def __exit__(self, *exc_info) -> bool:
+        self.close()
+        return False
 
 
 # ── the one body this process has ────────────────────────────────────────────
