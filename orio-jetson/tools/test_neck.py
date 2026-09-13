@@ -4,7 +4,7 @@
     uv run python tools/test_neck.py                    # /dev/orio_motion
     uv run python tools/test_neck.py --dry-run          # print the plan, move nothing
     uv run python tools/test_neck.py --port /dev/ttyACM0
-    uv run python tools/test_neck.py --pan-span 30 --tilt-span 8
+    uv run python tools/test_neck.py --pan-span 10 --tilt-span 10
     uv run python tools/test_neck.py --hold 5           # sit on each pose to look at it
 
 Run it after flashing `orio-stm-motion` to confirm the neck still moves the way
@@ -30,31 +30,35 @@ job.
 catches a link that dropped, a NACK, and a pose that never got applied; it cannot
 catch a joint that did not move. Use --hold to give yourself time to look.
 
-## Why the safe band is enforced here rather than by the firmware
+## The firmware owns the range, and this script keeps no copy of it
 
-Normally range is the firmware's business: `handle_move_joint_to` validates
-against `kJointLimits[]` and answers NACK_OUT_OF_RANGE without moving anything,
-which is why `motion.py` deliberately keeps no copy of those limits.
+Range is the firmware's business: `handle_move_joint_to` validates against
+`kJointLimits[]` and answers NACK_OUT_OF_RANGE without moving anything, which is
+why `motion.py` deliberately keeps no copy of those limits — and neither does
+this script. A step that asks for an angle outside the neck's window fails on
+the board's own refusal, with the reason printed, before the joint turns.
 
-The neck is the exception, right now. Its row in `kJointLimits[]` is opened to
-the servos' full travel (pan 0..270, tilt 0..180) and marked TEMPORARY, for
-calibration — so the firmware currently accepts *every* neck angle and protects
-nothing. Meanwhile `config.py` records what was measured on the robot on
-2026-09-09: from tilt 50 onward the joint is against a mechanical stop, and
-commanding further just stalls the servo, which then heats and draws
-locked-rotor current until something gives.
+That window is a real one again: pan 165..185 and tilt 20..40, ten degrees
+either side of the neck's pose on each axis. It used to be the servos' full
+travel (pan 0..270, tilt 0..180), marked TEMPORARY so sweep_axis.py could walk
+out to the mechanical stops, and while it was, the firmware ACKed every neck
+angle and protected nothing. This script therefore carried its own guard band,
+to stay clear of the stop `config.py` measured at tilt 50 on 2026-09-09 — where
+commanding further just stalls the servo, which heats and draws locked-rotor
+current until something gives.
 
-A test that walked the neck to the edge of the window the firmware advertises
-would therefore drive it into that stop, and get an ACK for doing it. Hence the
-guard below, and hence --allow-unsafe to defeat it deliberately rather than by
-accident. Once the stops are characterised and written back into
-`kJointLimits[]`, the firmware becomes the authority again and this guard should
-shrink to nothing — delete it then rather than letting two tables disagree.
+The guard is gone with the reason for it. Tilt 50 is now far outside what the
+board will accept, so the stop is unreachable through this link, and a second
+table of limits here could only ever drift out of step with the one that
+actually decides. The default spans still stop a couple of degrees short of the
+window rather than walking up to it, so a failing run says something about the
+joint and not about arithmetic on the end stops; --pan-span / --tilt-span reach
+the edges if you want them, and the board refuses what is past.
 
-**This script never sends CMD_RESET_JOINTS.** Home is the midpoint of the
-commandable window, so while that window is the full travel the neck's home is
-tilt 90 — a good 40 deg past the measured stop. Homing the neck is not safe
-until the real limits are in the firmware.
+**This script still never sends CMD_RESET_JOINTS.** It no longer has to be
+careful about that — home is the midpoint of the commandable window, which is
+now exactly the nominal pose every run already starts and ends on (pan 175,
+tilt 30) — it simply has nothing to add.
 
 ## The head goes slack at the end
 
@@ -85,35 +89,22 @@ from orio.motion import JOINT_NECK, IdentityError, Motion, travel_time_s
 DEFAULT_PORT = config.MOTION_PORT
 
 # The pose the robot actually runs at, and the centre this test works around.
-# Pan 175 is a few degrees off the neck's 180 home so the cameras point where
-# the chassis does; tilt 40 is the middle of the usable window measured on
-# 2026-09-09 (see the long note in config.py).
+# Both are the midpoint of the neck's window on their axis, which is also where
+# CMD_RESET_JOINTS homes: pan 175, tilt 30. Tilt 30 is NOT level — the neck
+# bracket sits on an inclined body, so the pose that aims the head reads well
+# below the servo's own mid-travel (see the long note in config.py).
 NOMINAL_PAN_DEG = config.NECK_PAN_DEG
 NOMINAL_TILT_DEG = config.NECK_TILT_DEG
 
-# Guard band — the angles this script will command without --allow-unsafe.
-#
-# TILT_GUARD_MAX is the load-bearing one and it is a measurement, not a margin:
-# at tilt 50 the joint is already against its mechanical stop (config.py,
-# 2026-09-09 — 50 through 80 all read the same distance because the head stopped
-# moving at 50). Staying below it is the difference between a test and a stall.
-#
-# The other three are conservative rather than measured. Nothing has swept the
-# neck's pan stops or its downward tilt stop yet, so they bound the test to
-# angles the robot is known to have held: pan 175 and 180 in normal operation,
-# tilt 30 as the previous default. Widen them from a sweep_axis.py measurement,
-# not from a guess.
-PAN_GUARD_MIN, PAN_GUARD_MAX = 150.0, 210.0
-TILT_GUARD_MIN, TILT_GUARD_MAX = 28.0, 48.0
-
-# How far each axis moves either side of nominal by default. Kept well inside
-# the guard so the default run has room, and so widening a span is a decision
-# rather than something that silently clips.
-DEFAULT_PAN_SPAN_DEG = 20.0
-# 5 deg either side of nominal keeps the default run inside 35..45 — exactly the
-# usable window measured on 2026-09-09, and a comfortable 5 deg clear of the
-# stop at 50 rather than creeping up on it.
-DEFAULT_TILT_SPAN_DEG = 5.0
+# How far each axis moves either side of nominal by default. The neck's window
+# reaches ten degrees either side of the nominal pose on both axes, so eight
+# leaves two degrees of room at each end: the default run exercises nearly the
+# whole of what the joint is allowed without ever landing on the number the
+# firmware compares against. Ask for more and the board refuses the step — that
+# is a clean failure, not a stall, and the window is the same on both axes now,
+# so one value serves both.
+DEFAULT_PAN_SPAN_DEG = 8.0
+DEFAULT_TILT_SPAN_DEG = 8.0
 
 # Added to the predicted travel before reading the pose back. travel_time_s()
 # runs up to ~33 ms short of the firmware's real travel (it integrates the ramp
@@ -153,9 +144,9 @@ def build_plan(pan: float, tilt: float, pan_span: float, tilt_span: float) -> li
         centre,
         Step("pan right", pan + pan_span, tilt),
         centre,
-        # Lower tilt looks UP: tilt 30 frames the ceiling, tilt 45 the floor
-        # ahead. Worth naming, because the number moving down while the head
-        # moves up reads backwards on the console otherwise.
+        # Lower tilt looks UP: 20 is the top of the neck's window and 40 the
+        # bottom of it. Worth naming, because the number moving down while the
+        # head moves up reads backwards on the console otherwise.
         Step("tilt up", pan, tilt - tilt_span),
         centre,
         Step("tilt down", pan, tilt + tilt_span),
@@ -163,28 +154,6 @@ def build_plan(pan: float, tilt: float, pan_span: float, tilt_span: float) -> li
         Step("diagonal", pan - pan_span, tilt + tilt_span),
         Step("return to nominal", pan, tilt),
     ]
-
-
-def guard_violations(plan: list[Step]) -> list[str]:
-    """Which steps leave the guard band, described well enough to act on."""
-    problems = []
-    for step in plan:
-        if not PAN_GUARD_MIN <= step.pan_deg <= PAN_GUARD_MAX:
-            problems.append(
-                f"{step.label}: pan {step.pan_deg:g}° is outside the "
-                f"{PAN_GUARD_MIN:g}..{PAN_GUARD_MAX:g}° guard"
-            )
-        if not TILT_GUARD_MIN <= step.tilt_deg <= TILT_GUARD_MAX:
-            problems.append(
-                f"{step.label}: tilt {step.tilt_deg:g}° is outside the "
-                f"{TILT_GUARD_MIN:g}..{TILT_GUARD_MAX:g}° guard"
-                + (
-                    " — the joint is against its mechanical stop from 50° and stalls there"
-                    if step.tilt_deg >= 50.0
-                    else ""
-                )
-            )
-    return problems
 
 
 def run_step(link: Motion, step: Step, previous: Step, settle_s: float, hold_s: float) -> bool:
@@ -256,13 +225,7 @@ def parse_args() -> argparse.Namespace:
         "--hold", type=float, default=0.0, help="seconds to sit on each pose so you can watch it"
     )
     parser.add_argument(
-        "--dry-run", action="store_true", help="print the plan and guard check, move nothing"
-    )
-    parser.add_argument(
-        "--allow-unsafe",
-        action="store_true",
-        help="command angles outside the guard band (see the module docstring — "
-        "tilt 50+ stalls the servo against its stop)",
+        "--dry-run", action="store_true", help="print the plan, move nothing"
     )
     return parser.parse_args()
 
@@ -272,20 +235,6 @@ def main() -> int:
     plan = build_plan(args.pan, args.tilt, args.pan_span, args.tilt_span)
 
     print(f"neck test plan — {len(plan)} steps, nominal pan {args.pan:g}°, tilt {args.tilt:g}°")
-
-    problems = guard_violations(plan)
-    if problems:
-        for problem in problems:
-            print(f"  ! {problem}")
-        if not args.allow_unsafe:
-            print(
-                "\nRefusing to run. The firmware's neck window is temporarily opened to\n"
-                "full travel, so it would ACK these angles and drive the joint into its\n"
-                "stop. Narrow the spans, or pass --allow-unsafe if you know the head is\n"
-                "unloaded and you are watching it."
-            )
-            return 2
-        print("\n--allow-unsafe given: running anyway. Keep a hand on the power.")
 
     if args.dry_run:
         print()
