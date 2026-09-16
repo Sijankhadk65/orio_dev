@@ -1,0 +1,3 @@
+Updated PWR_FLAG from PWR_L to PWR_L1.
+Updated PWR_FLAG from PWR_R to PWR_R1.
+Annotation complete.
