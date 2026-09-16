@@ -7,6 +7,7 @@
 #include "servo_joint.h"
 #include "fan.h"
 #include "argb.h"
+#include "lights.h"
 
 typedef enum
 {
@@ -330,6 +331,31 @@ static void handle_set_fan_rgb(const uint8_t *payload, uint8_t len)
 }
 
 /**
+  * @brief  Validates and applies a CMD_SET_LIGHTS command.
+  * @note   Not gated by e-stop, for the reasons given at CMD_SET_LIGHTS in
+  *         protocol.h.
+  * @param  payload Payload bytes: [mask], one bit per light.
+  * @param  len     Number of bytes in payload (must be exactly 1).
+  * @retval None
+  */
+static void handle_set_lights(const uint8_t *payload, uint8_t len)
+{
+  if (len != 1u)
+  {
+    send_nack(CMD_SET_LIGHTS, NACK_BAD_LENGTH);
+    return;
+  }
+  if ((payload[0] & (uint8_t)~LIGHTS_ALL_MASK) != 0u)
+  {
+    send_nack(CMD_SET_LIGHTS, NACK_OUT_OF_RANGE);
+    return;
+  }
+
+  Lights_SetMask(payload[0]);
+  send_ack(CMD_SET_LIGHTS);
+}
+
+/**
   * @brief  Stops every bound joint's servos.
   * @retval None
   */
@@ -401,6 +427,10 @@ static void handle_frame(uint8_t cmd, const uint8_t *payload, uint8_t payload_le
 
     case CMD_SET_FAN_RGB:
       handle_set_fan_rgb(payload, payload_len);
+      break;
+
+    case CMD_SET_LIGHTS:
+      handle_set_lights(payload, payload_len);
       break;
 
     default:

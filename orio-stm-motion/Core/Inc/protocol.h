@@ -20,6 +20,7 @@
 #include <stdint.h>
 #include "stm32c0xx_hal.h"
 #include "servo_joint.h"
+#include "lights.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -37,7 +38,7 @@ extern "C" {
  * only when the wire format changes in a way an existing client cannot
  * parse, never for a firmware change that merely adds behaviour. */
 #define FW_VERSION_MAJOR 1u
-#define FW_VERSION_MINOR 0u
+#define FW_VERSION_MINOR 1u
 #define FW_VERSION_PATCH 0u
 #define PROTO_VERSION    1u
 
@@ -93,6 +94,17 @@ typedef enum
    * before arming, so gating it on the e-stop would deadlock startup.
    * 0x08 is free on both boards (motion uses 0x01-0x07, drivetrain 0x01-0x04). */
   CMD_WHOAMI        = 0x08,
+  /* payload: [mask]. One bit per chassis light, bit N addressing LightId_t
+   * value N -- 1 lights that lamp, 0 extinguishes it -- so all four are set
+   * in a single frame and a client never has to read-modify-write to change
+   * one. A mask with bits above LIGHTS_ALL_MASK set is rejected rather than
+   * quietly truncated, so a client built against a future five-light board
+   * finds out instead of silently lighting four.
+   * Not gated by the e-stop, exactly like CMD_SET_FAN_RGB: lighting is not a
+   * motion-safety concern, and cutting the lights the instant the link drops
+   * would blind the cameras at precisely the wrong moment. Whatever was lit
+   * when the heartbeat stopped stays lit. */
+  CMD_SET_LIGHTS    = 0x09,
 
   CMD_ACK         = 0x80,
   CMD_NACK        = 0x81,

@@ -91,6 +91,14 @@ void Error_Handler(void);
 #define DEBUG_SWDIO_GPIO_Port GPIOA
 #define DEBUG_SWCLK_Pin GPIO_PIN_14
 #define DEBUG_SWCLK_GPIO_Port GPIOA
+#define LIGHT_TRAILER_Pin GPIO_PIN_4
+#define LIGHT_TRAILER_GPIO_Port GPIOB
+#define LIGHT_DRL_LEFT_Pin GPIO_PIN_5
+#define LIGHT_DRL_LEFT_GPIO_Port GPIOB
+#define LIGHT_DRL_RIGHT_Pin GPIO_PIN_6
+#define LIGHT_DRL_RIGHT_GPIO_Port GPIOB
+#define LIGHT_CHEST_Pin GPIO_PIN_7
+#define LIGHT_CHEST_GPIO_Port GPIOB
 
 /* USER CODE BEGIN Private defines */
 

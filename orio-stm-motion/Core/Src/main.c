@@ -25,6 +25,7 @@
 #include "servo_joint.h"
 #include "fan.h"
 #include "argb.h"
+#include "lights.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -118,6 +119,7 @@ int main(void)
   ServoJoint_Init(&s_rightArmJoint, JOINT_POS_RIGHT_ARM, &htim1, TIM_CHANNEL_1, &htim1, TIM_CHANNEL_2);
   Fan_Init(&htim14, TIM_CHANNEL_1);
   ARGB_Init(&htim16, TIM_CHANNEL_1);
+  Lights_Init(); /* all four start off; nothing else drives these pins */
   Protocol_BindJoint(JOINT_POS_NECK, &s_neckJoint); /* bind before Protocol_Init() so it can hold the joint stopped */
   Protocol_BindJoint(JOINT_POS_LEFT_ARM, &s_leftArmJoint);
   Protocol_BindJoint(JOINT_POS_RIGHT_ARM, &s_rightArmJoint);
@@ -492,6 +494,7 @@ static void MX_DMA_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -501,6 +504,16 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, LIGHT_TRAILER_Pin|LIGHT_DRL_LEFT_Pin|LIGHT_DRL_RIGHT_Pin|LIGHT_CHEST_Pin, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : LIGHT_TRAILER_Pin LIGHT_DRL_LEFT_Pin LIGHT_DRL_RIGHT_Pin LIGHT_CHEST_Pin */
+  GPIO_InitStruct.Pin = LIGHT_TRAILER_Pin|LIGHT_DRL_LEFT_Pin|LIGHT_DRL_RIGHT_Pin|LIGHT_CHEST_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 

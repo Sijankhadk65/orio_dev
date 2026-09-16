@@ -18,6 +18,7 @@ import sys
 
 import test_fan
 import test_heartbeat
+import test_lights
 import test_rgb
 import test_servo
 import test_whoami
@@ -45,6 +46,7 @@ def main():
             ("servo / joints", test_servo),
             ("fan", test_fan),
             ("RGB", test_rgb),
+            ("lights", test_lights),
         ):
             print(f"\n{'=' * 20} {label} {'=' * 20}")
             module.run(ser)

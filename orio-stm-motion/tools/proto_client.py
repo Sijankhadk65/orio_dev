@@ -32,6 +32,7 @@ CMD_SET_FAN_SPEED = 0x05
 CMD_SET_FAN_RGB = 0x06
 CMD_RESET_JOINTS = 0x07
 CMD_WHOAMI = 0x08
+CMD_SET_LIGHTS = 0x09
 
 CMD_ACK = 0x80
 CMD_NACK = 0x81
@@ -52,6 +53,42 @@ ROLE_NAMES = {
 # Core/Inc/protocol.h), and the wire-protocol version it reports.
 EXPECTED_ROLE = ROLE_MOTION
 EXPECTED_PROTO_VERSION = 1
+
+# Must match LightId_t in Core/Inc/lights.h. This order IS the bit order in
+# a CMD_SET_LIGHTS mask -- bit 0 is the trailer bar, bit 3 the chest ring --
+# so these constants and that enum have to move together or a mask sent from
+# here lights the wrong lamp.
+LIGHT_TRAILER = 0
+LIGHT_DRL_LEFT = 1
+LIGHT_DRL_RIGHT = 2
+LIGHT_CHEST = 3
+
+LIGHT_NAMES = {
+    LIGHT_TRAILER: "trailer",
+    LIGHT_DRL_LEFT: "DRL-left",
+    LIGHT_DRL_RIGHT: "DRL-right",
+    LIGHT_CHEST: "chest",
+}
+
+# Mirrors LIGHTS_ALL_MASK in Core/Inc/lights.h. The firmware NACKs any mask
+# with a bit above this set rather than masking it off.
+LIGHTS_ALL_MASK = 0x0F
+
+
+def lights_mask(*ids: int) -> int:
+    """Builds a CMD_SET_LIGHTS mask from LIGHT_* ids. lights_mask() with no
+    arguments is 0 -- everything off."""
+    mask = 0
+    for i in ids:
+        mask |= 1 << i
+    return mask
+
+
+def describe_mask(mask: int) -> str:
+    """Renders a mask as the lamp names it lights, for log lines."""
+    lit = [LIGHT_NAMES[i] for i in sorted(LIGHT_NAMES) if mask & (1 << i)]
+    return "+".join(lit) if lit else "none"
+
 
 # Must match ServoJointPosition_t in Core/Inc/servo_joint.h.
 JOINT_POS_NECK = 0
@@ -138,6 +175,7 @@ CMD_NAMES = {
     CMD_SET_FAN_RGB: "SET_FAN_RGB",
     CMD_RESET_JOINTS: "RESET_JOINTS",
     CMD_WHOAMI: "WHOAMI",
+    CMD_SET_LIGHTS: "SET_LIGHTS",
     CMD_ACK: "ACK",
     CMD_NACK: "NACK",
     CMD_STATUS: "STATUS",
