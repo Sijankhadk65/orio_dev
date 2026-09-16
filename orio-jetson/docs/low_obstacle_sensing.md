@@ -133,6 +133,57 @@ elevation) into (height above floor, azimuth, ground distance). Write that once
 — `points_to_sectors()` — and feed it from both. If it ends up written twice,
 the two will drift and only one will get the bug fix.
 
+### Where the sensors connect: the Jetson, not either STM32
+
+Asked and settled 2026-09-16. **The VL53L5CX pair hangs off the Jetson's 40-pin
+I2C (pins 3/5, `/dev/i2c-7`).** Neither microcontroller gets the sensors, and
+the reasons are worth keeping because the question will come back.
+
+| | drivetrain | motion |
+|---|---|---|
+| MCU | STM32L152RET6 | STM32C031C6T3 |
+| Flash | 512 KB | 32 KB |
+| RAM | 80 KB | 12 KB |
+| in use | USART1/2/3 (both VESCs + VCP) | TIM1/3/14/16 — six servos, fan, ARGB, DMA |
+| free I2C | PB6/PB7 (I2C1) | none spare |
+
+**The motion board cannot host it at all.** The part has no flash of its own, so
+ST's ULD driver carries the ~84 KB firmware blob as `const` data and pushes it
+over I2C at every power-on. 84 KB does not fit in 32 KB, and ST's documented
+~16 KB RAM for 8x8 mode does not fit in 12 KB either. Two independent hard
+failures, each off by roughly 3x — not a tight fit to be optimised. (Both
+figures are ST's, from the ULD documentation; they have not been verified
+against a build here, and do not need to be at this margin.)
+
+**The drivetrain board could hold the driver and still should not.** The
+blocker there is the wire, not the silicon:
+
+* `PROTO_MAX_PAYLOAD` is **24 bytes**. One 8x8 frame is 64 zones x (int16
+  distance + uint8 status) = 192 bytes per sensor, 384 for the pair. Fragmenting
+  that is about 17 frames per sensor-reading, roughly 62% of the 115200 baud
+  link at 15 Hz — on the same line as the 5 Hz e-stop heartbeat and the ~33 Hz
+  drive commands. Raising the cap is a wire-format change, and `protocol.h` is
+  explicit that `PROTO_VERSION` is the same value on both boards, so it bumps on
+  **both** and `drivetrain.py` moves with it.
+* Reducing to a sector map on the MCU *does* fit — 7 sectors x (uint16 + uint8)
+  = 21 bytes, under the cap with room to spare. But that puts the geometry and
+  the height classification in C on the microcontroller, a second copy of
+  `points_to_sectors()`, which is precisely the duplication the paragraph above
+  rules out.
+* The ULD's 84 KB upload is a blocking I2C transfer of seconds. On the board
+  that owns the e-stop and the watchdog, that is a stall to be sequenced around
+  arming rather than a detail.
+
+On the Jetson none of this exists: no firmware, no opcodes, no version bump, and
+the ToF points arrive in the same process as the depth map, which is where the
+fusion happens anyway.
+
+**The one argument that survives** is e-stop locality — a guard on the MCU that
+commands the wheels could cut the motors without a round trip through Linux, the
+GIL and `AVOID_STALE_S`. That is a real safety property and it is a *different
+feature*, which does not require the ranging sensors to live there. Noted in
+section 5 rather than built here.
+
 ## 4. Phases
 
 Each phase ends with something demonstrable. Do not start Phase 2 before Phase 1
@@ -276,6 +327,13 @@ in `fuse()`.
 the robot is pushing against something. No new hardware, one link message, and
 it catches the case every forward-looking sensor misses. Worth doing early if
 Phase 2 stalls on parts.
+
+**An MCU-side collision cutout.** The e-stop locality argument from section 3,
+kept as its own item because it is a safety feature rather than a perception
+one. The drivetrain board already owns the e-stop and the watchdog; a cutout
+there would not need the ToF sensors on it, only a reason to fire. Worth
+revisiting once the Jetson-side guard has proven what it does and does not
+catch.
 
 **IMU.** Does not detect obstacles and does not belong in this plan. It belongs
 to the *next* one: the `Avoider` docstring's admission that it "wanders rather
