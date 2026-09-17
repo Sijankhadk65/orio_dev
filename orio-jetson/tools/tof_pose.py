@@ -54,8 +54,10 @@ poses are written down.
 ## Frames
 
 Robot frame is x right, y up, z forward, origin under the sensor on the floor.
-Pitch is positive DOWN and yaw positive RIGHT, matching `config.py`. In the
-sensor's own frame the floor plane works out to
+Pitch is positive DOWN and yaw positive RIGHT, matching `config.py`. Distances
+from the ULD are along the sensor's optical AXIS rather than along each zone's
+own ray, which is why `ray_directions` normalises z to 1 rather than returning
+unit vectors. In the sensor's own frame the floor plane works out to
 
     p . (0, cos pitch, -sin pitch) = -height
 
@@ -80,9 +82,20 @@ from orio.tof import ToFSensor, zone_angles
 
 
 def ray_directions(az_deg, el_deg) -> np.ndarray:
-    """Unit direction per zone in the sensor's own frame, as (N, 3)."""
+    """Per-zone direction with **z normalised to 1**, as (N, 3).
+
+    Deliberately not unit vectors. The ULD reports distance along the optical
+    AXIS, not along each zone's line of sight, so multiplying these by a
+    reported distance gives the point directly — the z component of `d * r` is
+    `r`, which is what the sensor actually measured.
+
+    Read the same numbers as slant range along unit rays and a flat wall comes
+    back bowed: measured at 0.86 m, a 44 mm bullseye in the plane residual at
+    25 mm RMS, against 0.4 mm and 3.3 mm here. That bow used to land in the
+    pose as several degrees of phantom pitch. See `orio/tof.py`, `ToFArray`.
+    """
     az, el = np.radians(az_deg), np.radians(el_deg)
-    return np.stack([np.cos(el) * np.sin(az), np.sin(el), np.cos(el) * np.cos(az)], axis=1)
+    return np.stack([np.tan(az), np.tan(el), np.ones_like(az)], axis=1)
 
 
 # Inlier tolerance, and it is NOT slack for sensor noise — it is the width of

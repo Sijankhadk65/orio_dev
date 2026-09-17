@@ -151,10 +151,64 @@ that is a tape measure anyway. Its `--selftest` recovers ten known poses from
 synthetic grids, including 10 mm of simulated range noise, so the maths can be
 trusted before the bracket is.
 
-**Not yet measured.** A run on 2026-09-17 found a plane 1.1 m ahead on 13 zones
-of each sensor, which is an object rather than a wall, with the robot squared
-to nothing in particular. The numbers it produced are not in config and should
-not be: square the robot to a flat wall that fills the field, then rerun.
+### The ULD reports AXIAL distance, and that was worth a wall to find out
+
+`distance_mm` is the distance along the sensor's **optical axis**, not along
+each zone's own line of sight, and the zone grid behaves as a pinhole array
+rather than a fan of equally-spaced rays. Both were measured against a flat
+wall at 0.86 m, and the evidence is not subtle:
+
+| read as | plane residual RMS | centre-minus-edge |
+|---|---|---|
+| line-of-sight range (the old code) | 25 mm | **+44 mm** |
+| axial distance through a pinhole | **3.3 mm** | +0.4 mm |
+
+A flat wall read the wrong way comes back as a bowl, and the residual map is a
+textbook bullseye: flat around the border, 44 mm proud in the middle. Read the
+right way the structure vanishes into 3.3 mm of sensor noise.
+
+Uncorrected, a corner zone's range is **12% short** and its elevation 1.1 deg
+too high — `sin` where the geometry wants `tan`. Twelve per cent reads as an
+obstacle nearer than it is, which sounds like the safe direction and is not:
+this feeds the height-above-floor classification, where a misplaced floor point
+at the edge of the grid becomes an obstacle and the robot refuses to cruise
+down an empty corridor. That is the Phase 5 regression, arrived at through a
+datasheet figure rather than a mistake in the policy.
+
+`stereo.py:_ground_geometry` had this right from the beginning — pinhole ray,
+then `depth * norm` for the line-of-sight range. The ToF path now does the same
+two things, so both sensors finally agree on what a point is.
+
+**The fix is independently confirmed by the sensors themselves.** Before it,
+the pair's fitted plane held 22 and 20 zones of 64 and their pitches disagreed
+by 7 deg. After it: 55-63 zones, and two physically separate parts on the same
+bracket agree on pitch to 0.2 deg. Repeatability over five solves went from
++/-1.45 deg to +/-0.08.
+
+### The measured mount — 2026-09-17, against a wall at 0.86 m
+
+| | pitch (down) | yaw (right) | zones on the plane |
+|---|---|---|---|
+| `tof-left` (bus 7) | +8.13 +/- 0.08 deg | -5.03 +/- 0.21 deg | 55-57 / 64 |
+| `tof-right` (bus 1) | +7.80 +/- 0.05 deg | +2.07 +/- 0.03 deg | 62-63 / 64 |
+
+Two things in this table are not what config assumes.
+
+**The splay is 7.1 deg, not 45.** Config carries `-22.5,+22.5` — the plan's
+intent of two 45 deg squares abutting into ~90 deg of cover. The bracket holds
+them 7.1 deg apart, so the fields overlap almost entirely and the pair spans
+about 52 deg rather than 90. Against the 73.1 deg sector grid that leaves the
+outer sectors with no ToF in them at all, and the middle sectors covered twice.
+Note the splay is the DIFFERENCE between the two yaws, so it survives whatever
+error there was in squaring the robot to the wall — only the absolute yaws move
+with that. The bisector sits at -1.5 deg, which is either the robot being that
+far off square or the bracket being that far off centre, and this measurement
+cannot tell which.
+
+**Both sensors look down about 8 deg**, where config has 0.
+
+Heights are still unmeasured and a wall cannot give them: a vertical plane
+looks identical from every height. Tape measure.
 
 ### The I2C survey, before anything is soldered
 

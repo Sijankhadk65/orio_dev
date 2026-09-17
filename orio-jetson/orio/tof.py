@@ -154,9 +154,10 @@ def zone_angles(rows: int, cols: int, fov_deg: float, flip_h: bool = False,
 
     The zones are treated as equal ANGULAR spans across `fov_deg`, which is how
     ST specifies the array (45 x 45 deg for the 8x8 grid, so 5.625 deg per
-    zone). A strictly pinhole treatment would space them by tangent instead;
-    across a 45 deg field the two differ by well under a zone, and the SPAD
-    array is not a pinhole camera anyway.
+    zone). These are the zone CENTRE ANGLES only — turning them plus a reported
+    distance into a point is `ToFArray`'s job, and it is not the one line it
+    looks like. See `ToFArray.__init__`: the ULD reports distance along the
+    optical axis, not along the zone's own line of sight.
     """
     import numpy as np
 
@@ -287,13 +288,44 @@ class ToFArray:
         self.height_m = height_m
         self.pitch_deg = pitch_deg
         self.yaw_deg = yaw_deg
+        import numpy as np
+
         az, el = zone_angles(sensor.rows, sensor.cols, config.TOF_FOV_DEG,
                              config.TOF_FLIP_H, config.TOF_FLIP_V)
         self.az_deg, self.el_deg = az, el
+
+        # THE ULD REPORTS DISTANCE ALONG THE OPTICAL AXIS, NOT ALONG THE ZONE'S
+        # OWN LINE OF SIGHT, and the array behaves as a pinhole rather than as a
+        # fan of equally-spaced rays. Both were measured, not assumed: against a
+        # flat wall at 0.86 m the line-of-sight reading leaves a textbook
+        # bullseye in the plane residual — dead flat at the edges and 44 mm
+        # proud in the middle, 25 mm RMS — and treating the same numbers as
+        # axial collapses that structure to 0.4 mm and 3.3 mm RMS, which is the
+        # sensor's own noise (2026-09-17, both sensors).
+        #
+        # Uncorrected, a corner zone's range comes out 12% SHORT and its
+        # elevation 1.1 deg too high. Twelve per cent reads as an obstacle
+        # nearer than it is, which sounds like the safe direction and is not:
+        # this feeds the height-above-floor classification, where a misplaced
+        # floor point at the edge of the grid becomes an obstacle and the robot
+        # refuses to cruise down an empty corridor.
+        #
+        # `stereo.py:_ground_geometry` has always done exactly this for the
+        # depth map — pinhole ray, then `depth * norm` to get line-of-sight
+        # range. This is the same two lines, and the two sensors now agree on
+        # what a point is.
+        tx = np.tan(np.radians(az))
+        ty = np.tan(np.radians(el))
+        norm = np.sqrt(tx * tx + ty * ty + 1.0)
+        # Axial -> line-of-sight, applied to every range in `reduce`.
+        self.range_scale = norm.astype(np.float32)
+
         # Fixed at construction: the zones do not move and neither does the
         # bracket, so all of the trigonometry is done exactly once, here.
         self.geometry = SectorGeometry(
-            az, el, height_m=height_m, pitch_deg=pitch_deg, yaw_deg=yaw_deg,
+            np.degrees(np.arctan2(tx, 1.0)),
+            np.degrees(np.arcsin(ty / norm)),
+            height_m=height_m, pitch_deg=pitch_deg, yaw_deg=yaw_deg,
             sectors=sectors, hfov_deg=hfov_deg,
         )
 
@@ -313,10 +345,13 @@ class ToFArray:
         rather than fetching another: `tools/tof_debug.py` draws the grid and
         the sectors side by side, and they have to be the same reading or the
         view is comparing two different moments.
+
+        `ranges` are the ULD's axial distances; `range_scale` turns them into
+        the line-of-sight ranges `SectorGeometry` is defined on.
         """
         return ObstacleMap(
             sectors=self.geometry.reduce(
-                ranges,
+                ranges * self.range_scale,
                 floor_tol_m=config.STEREO_FLOOR_TOL_M,
                 ceiling_m=config.ROBOT_HEIGHT_M,
                 min_valid_frac=config.STEREO_MIN_VALID_FRAC,

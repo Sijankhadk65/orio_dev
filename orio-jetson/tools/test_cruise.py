@@ -440,6 +440,58 @@ def test_tof_pose_lands_in_the_right_sector() -> None:
               (centre < 0) if yaw < 0 else (centre > 0), f"centre {centre:+.1f} deg")
 
 
+def test_tof_axial_distance() -> None:
+    """The ULD reports distance along the OPTICAL AXIS, not along each zone's ray.
+
+    Measured against a flat wall at 0.86 m: read as line-of-sight range the
+    plane residual is a 44 mm bullseye at 25 mm RMS; read as axial it is 0.4 mm
+    and 3.3 mm, the sensor's own noise. `ToFArray` therefore builds pinhole rays
+    and scales by `range_scale`, exactly as stereo.py has always done for the
+    depth map.
+
+    The test that would NOT catch this is the obvious one — synthesise ranges
+    from the geometry and check they come back — because it is self-consistent
+    under either convention. This one states the physics independently: for a
+    LEVEL sensor facing a wall at axial distance D, the point in zone (az, el)
+    sits at height D.tan(el) above the axis and D/cos(az) of ground away. Both
+    are exact, and both are wrong by the sin-for-tan error under the old code —
+    6% at the corner of the grid, and it feeds the floor classification.
+    """
+    print("\nthe ToF grid is axial distance through a pinhole, not slant range")
+    import numpy as np
+
+    from orio.tof import ToFArray, ToFSensor
+
+    mount_h, dist = 0.30, 0.30
+    array = ToFArray(ToFSensor(bus=-1, name="tof-test"), height_m=mount_h,
+                     pitch_deg=0.0, yaw_deg=0.0, sectors=7, hfov_deg=73.1)
+    rays = dist * array.range_scale          # axial -> line-of-sight
+    heights = mount_h + rays * array.geometry.up
+    grounds = rays * array.geometry.ground
+
+    want_h = mount_h + dist * np.tan(np.radians(array.el_deg))
+    want_g = dist / np.cos(np.radians(array.az_deg))
+    check("a flat wall lands at the right height in every zone",
+          bool(np.allclose(heights, want_h, atol=1e-4)),
+          f"worst {np.abs(heights - want_h).max() * 1000:.2f} mm")
+    check("and at the right ground distance in every zone",
+          bool(np.allclose(grounds, want_g, atol=1e-4)),
+          f"worst {np.abs(grounds - want_g).max() * 1000:.2f} mm")
+
+    # The old convention got the centre right and the corners wrong, so a test
+    # that only looked straight ahead would have passed throughout.
+    naive = mount_h + dist * np.sin(np.radians(array.el_deg))
+    corner = int(np.argmax(np.abs(array.el_deg) + np.abs(array.az_deg)))
+    # Stated as a FRACTION of the range, because that is what it is: tan - sin
+    # at the corner elevation, so 2% of the distance to whatever is there. At
+    # 0.3 m that is 6 mm and easy to wave away; at 2 m it is 4 cm.
+    error_frac = abs(naive[corner] - want_h[corner]) / dist
+    check("reading it as slant range misplaces the corner by 2% of the range",
+          error_frac > 0.02,
+          f"{error_frac * 100:.1f}% ({abs(naive[corner] - want_h[corner]) * 1000:.1f} mm "
+          f"at {dist:.2f} m)")
+
+
 def test_tof_stale_drops_out() -> None:
     """A quiet ToF must leave the fusion, not age the map and halt the robot."""
     print("\na stale ToF map drops out of the fusion")
@@ -636,6 +688,7 @@ def main() -> int:
         test_clear_is_not_an_obstacle,
         test_ground_plane_geometry,
         test_tof_pose_lands_in_the_right_sector,
+        test_tof_axial_distance,
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
         test_approach,
