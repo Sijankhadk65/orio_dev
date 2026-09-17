@@ -187,10 +187,13 @@ bracket agree on pitch to 0.2 deg. Repeatability over five solves went from
 
 ### The measured mount — 2026-09-17, against a wall at 0.86 m
 
-| | pitch (down) | yaw (right) | zones on the plane |
-|---|---|---|---|
-| `tof-left` (bus 7) | +8.13 +/- 0.08 deg | -5.03 +/- 0.21 deg | 55-57 / 64 |
-| `tof-right` (bus 1) | +7.80 +/- 0.05 deg | +2.07 +/- 0.03 deg | 62-63 / 64 |
+| | height | pitch (down) | yaw (right) | zones on the plane |
+|---|---|---|---|---|
+| `tof-left` (bus 7) | 0.64 m | +8.13 +/- 0.08 deg | -5.03 +/- 0.21 deg | 55-57 / 64 |
+| `tof-right` (bus 1) | 0.64 m | +7.80 +/- 0.05 deg | +2.07 +/- 0.03 deg | 62-63 / 64 |
+
+Heights are tape-measured; pitch and yaw are solved from the wall over five
+repeats each. These are now in `config.py`.
 
 Two things in this table are not what config assumes.
 
@@ -207,8 +210,37 @@ cannot tell which.
 
 **Both sensors look down about 8 deg**, where config has 0.
 
-Heights are still unmeasured and a wall cannot give them: a vertical plane
-looks identical from every height. Tape measure.
+### What the mount costs, in the units the plan cares about
+
+The fan sits at 0.64 m looking 8 deg down, not 3-6 cm looking level. Its lowest
+zone therefore does not reach the floor until **1.22 m** ahead, and nearer than
+that it flies over everything short (computed from the configured geometry, not
+by hand):
+
+| distance ahead | nothing below this height is in the beam |
+|---|---|
+| 0.25 m | 0.51 m |
+| 0.50 m | 0.38 m |
+| 1.00 m | 0.12 m |
+| 1.22 m | the beam reaches the floor |
+
+Put the plan's own example against that table. A 5 cm box enters the fan at
+about 1 m and **leaves it again as the robot closes** — invisible exactly when
+it matters, which is worse than never having seen it.
+
+And it is worse than invisible. The beam passes over the box and lands on the
+floor behind it, so `points_to_sectors` sees ground and nothing standing on it,
+`clear_m` records the ground verified free out to 1.2 m, and `fill_clear` turns
+that into a DISTANCE. In a sector stereo cannot see into either — which is the
+premise, since the box is below the camera band — the fusion then reports clear
+road where the box is. Section 3's "unknown is never clear" doctrine is intact;
+this is the other failure, a confident and wrong *known*.
+
+That is the argument for the low level mount, restated as arithmetic rather
+than as intent. `ORIO_TOF` stays 0 until the mount is settled. The pose in
+config is correct and worth keeping either way — and the fan as built is still
+a real sensor for tall obstacles in the dark and against blank walls, which is
+a genuine gap in stereo. It is just not the gap this plan was written to close.
 
 ### The I2C survey, before anything is soldered
 

@@ -262,7 +262,7 @@ way.
 | `ORIO_TOF` | `0` | `1` to open the VL53L5CX fan and fuse it into the sector map |
 | `ORIO_TOF_BUSES` / `_ADDRESSES` | `7,1` / `0x29,0x29` | One sensor per I2C bus — which is why the shared 0x29 never has to be changed |
 | `ORIO_TOF_NAMES` | `tof-left,tof-right` | Per-sector provenance in the debug views |
-| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.045,0.045` / `0,0` / `-22.5,22.5` | **Placeholders.** Measured mount pose per sensor — `tools/tof_pose.py` solves them from what the sensor can see |
+| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.64,0.64` / `8.1,7.8` / `-5.0,2.1` | **Measured** 2026-09-17 on the as-built bracket (`tools/tof_pose.py`). Note this is 0.64 m looking 8° down, not the low level mount the plan specifies — see `config.py` before enabling `ORIO_TOF` |
 | `ORIO_TOF_FOV_DEG` | `45.0` | Angular span of the 8x8 zone array (ST's figure) |
 | `ORIO_TOF_RESOLUTION` / `_FREQ_HZ` | `64` / `15` | 8x8 at 15 Hz, the ULD's ceiling. Reached on bus 7 (400 kHz); bus 1 (100 kHz) delivers 4.7 Hz whatever it is asked for |
 | `ORIO_TOF_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.02` / `3.0` | The near end is the point: well inside the 0.25 m the cameras cannot reach |

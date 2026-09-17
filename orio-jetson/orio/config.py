@@ -746,11 +746,14 @@ STEREO_GROUND_STRIDE = int(_env("ORIO_STEREO_GROUND_STRIDE", "2"))
 # the bracket — the mount poses below are still the plan's intent rather than a
 # measurement.
 #
-# STILL OFF BY DEFAULT, and that is the reason. The pose is what turns a range
-# into a height above the floor; against a guessed one the fan reports the
-# floor as an obstacle, or worse, an obstacle as floor. Set this to 1 once
-# TOF_HEIGHTS_M / TOF_PITCHES_DEG / TOF_YAWS_DEG carry measured numbers. A ToF
-# that fails to open degrades to stereo-only either way.
+# STILL OFF BY DEFAULT — but no longer for want of a measurement. The pose
+# below IS measured now. It is off because of what the measurement says: the
+# bracket sits at 0.64 m looking 8 deg down, so the fan clears the floor only
+# past 1.22 m and flies over exactly the low obstacles it was added to catch,
+# reporting the floor behind them as clear road. Read the block at
+# TOF_HEIGHTS_M before switching this on; `ORIO_TOF=1` runs it today and the
+# geometry is right, so it is a fair experiment — just not one to leave armed.
+# A ToF that fails to open degrades to stereo-only either way.
 TOF_ENABLED = _env("ORIO_TOF", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
@@ -782,24 +785,49 @@ TOF_ADDRESSES = tuple(
 )
 TOF_NAMES = tuple(n.strip() for n in _env("ORIO_TOF_NAMES", "tof-left,tof-right").split(","))
 
-# *** NOT MEASURED — nothing is mounted yet. ***  Mount pose per sensor. Height
-# above the floor, pitch (positive DOWN) and yaw (positive RIGHT). The plan's
-# Phase 3 measures each one on the actual bracket and records it here, with the
-# same discipline as every other number in this file: a sensor pointing
-# somewhere else measures somewhere else while reporting the same numbers.
+# MEASURED 2026-09-17 on the as-built bracket. Height above the floor (tape
+# measure), pitch positive DOWN and yaw positive RIGHT, both solved from a flat
+# wall by tools/tof_pose.py over five repeats per sensor:
 #
-# The intent they encode: mounted LOW and LEVEL, 3-6 cm above the floor, splayed
-# by about 22.5 deg each way so the two 45 deg squares abut into ~90 deg. Level
-# rather than pitched up, because the array is square and a level mount sees
-# floor in its lower rows — and the answer to that is the height classification
-# above, not a mechanical dodge that also throws away the lowest obstacles.
+#     tof-left  (bus 7)   pitch +8.13 +/- 0.08 deg   yaw -5.03 +/- 0.21 deg
+#     tof-right (bus 1)   pitch +7.80 +/- 0.05 deg   yaw +2.07 +/- 0.03 deg
+#     both                height 0.64 m
+#
+# The yaws carry however square the robot was to that wall; the DIFFERENCE
+# between them does not, and it is 7.1 deg.
+#
+# THE BRACKET IS NOT WHAT THIS PLAN ASSUMED, AND THE NUMBERS ABOVE ARE HOW YOU
+# CAN TELL. The intent was LOW and LEVEL — 3-6 cm off the floor, splayed 22.5
+# deg each way so two 45 deg squares abut into ~90 deg of cover. What is built
+# sits at 0.64 m, looks 8 deg DOWN, and splays 7.1 deg, so the two fields
+# overlap almost entirely and span about 52 deg of the 73.1 deg sector grid.
+#
+# What that costs, and it is the whole reason the fan was specified: at 0.64 m
+# and 8 deg down, the LOWEST zone centre passes the floor only at 1.22 m. Nearer
+# than that the fan flies over everything short:
+#
+#     at 0.25 m   nothing below 0.51 m is in the beam
+#     at 0.50 m   nothing below 0.38 m
+#     at 1.00 m   nothing below 0.12 m
+#     at 1.22 m   the beam finally reaches the floor
+#
+# So the 5 cm box this plan was written around enters the fan at about 1 m and
+# LEAVES IT AGAIN as the robot closes — invisible exactly when it matters. Worse
+# than invisible: the beam passes over the box and lands on the floor behind it,
+# so the sector is reported as ground verified free out to 1.2 m, fill_clear
+# turns that into a DISTANCE, and a sector stereo cannot see into either (which
+# is the premise — the box is below the camera band) fuses to "clear road".
+#
+# That is why ORIO_TOF stays 0. The pose here is correct and worth having; the
+# mount is a decision. Low and level covers the volume the cameras cannot, and
+# this one does not.
 #
 # Unlike the cameras, this mount is fixed to the CHASSIS, not the neck. That is
 # a feature: the ToF fan does not move when the head looks around, so it is
 # immune to the whole neck-aim problem the stereo thresholds live with.
-TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.045,0.045").split(","))
-TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "0,0").split(","))
-TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-22.5,22.5").split(","))
+TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.64,0.64").split(","))
+TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "8.1,7.8").split(","))
+TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-5.0,2.1").split(","))
 
 # Angular span of the 8x8 grid, per ST: 45 x 45 deg (the 65 deg figure in the
 # marketing is the diagonal of the full optical field, not the zone array). Each
