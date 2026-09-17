@@ -262,13 +262,13 @@ way.
 | `ORIO_TOF` | `0` | `1` to open the VL53L5CX fan and fuse it into the sector map |
 | `ORIO_TOF_BUSES` / `_ADDRESSES` | `7,1` / `0x29,0x29` | One sensor per I2C bus — which is why the shared 0x29 never has to be changed |
 | `ORIO_TOF_NAMES` | `tof-left,tof-right` | Per-sector provenance in the debug views |
-| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.045,0.045` / `0,0` / `-22.5,22.5` | **Placeholders.** Measured mount pose per sensor |
+| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.045,0.045` / `0,0` / `-22.5,22.5` | **Placeholders.** Measured mount pose per sensor — `tools/tof_pose.py` solves them from what the sensor can see |
 | `ORIO_TOF_FOV_DEG` | `45.0` | Angular span of the 8x8 zone array (ST's figure) |
-| `ORIO_TOF_RESOLUTION` / `_FREQ_HZ` | `64` / `15` | 8x8 at 15 Hz — the ULD's ceiling for that resolution |
+| `ORIO_TOF_RESOLUTION` / `_FREQ_HZ` | `64` / `15` | 8x8 at 15 Hz, the ULD's ceiling. Reached on bus 7 (400 kHz); bus 1 (100 kHz) delivers 4.7 Hz whatever it is asked for |
 | `ORIO_TOF_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.02` / `3.0` | The near end is the point: well inside the 0.25 m the cameras cannot reach |
 | `ORIO_TOF_TRUSTED_STATUS` | `5,6,9` | Per-zone `target_status` values whose distance is believed; everything else is unknown, never max range |
 | `ORIO_TOF_FLIP_H` / `_FLIP_V` | `0` / `0` | Zone-order flips, once you have seen which corner is zone 0 |
-| `ORIO_TOF_STALE_S` | `0.5` | Older than this and the fan drops out of the fusion — stereo decides alone rather than the robot halting |
+| `ORIO_TOF_STALE_S` | `0.5` | Older than this and a sensor drops out of the fusion — **per sensor**, so the slow one cannot take the healthy one with it. Both quiet and stereo decides alone, rather than the robot halting |
 | `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
 | `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |
@@ -508,6 +508,14 @@ See it live — the stereo counterpart to `ORIO_VISION_DEBUG`:
 
 ```bash
 uv run python tools/stereo_debug.py
+```
+
+The ToF fan has the same two tools:
+
+```bash
+uv run python tools/tof_debug.py             # the 8x8 grids, classes, sector map
+uv run python tools/tof_pose.py --selftest   # check the pose maths, no hardware
+uv run python tools/tof_pose.py --wall       # squared to a wall: pitch and yaw
 ```
 
 Left pane is the camera with per-sector distance and valid-pixel percentage,

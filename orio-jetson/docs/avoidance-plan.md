@@ -121,6 +121,41 @@ and the starvation at once — it is a device-tree change on a bus the carrier
 board's USB-C PD controller and power monitor already own, so it is a decision
 to take deliberately. It is also worth asking which arc deserves the fast bus.
 
+### The as-built mount is forward-looking, not low and level — 2026-09-17
+
+Phase 3 step 1 specifies the pair mounted 3-6 cm off the floor and **level**,
+so that each array sees floor in its lower rows and the height classification
+removes it. What is actually on the robot is a pair on the **front, looking
+forward**. The sensors confirm it: neither finds a floor plane anywhere in its
+64 zones, and the lower rows return ~2.9 m — the far wall. A ray leaving a
+level sensor 4.5 cm up and 19.7 deg down meets the floor at 13 cm and cannot
+reach 2.9 m, so whatever the bracket is, it is not that.
+
+This is worth settling before any pose is written into config, because the
+mount is what decides whether the fan answers the question it was added for.
+The two volumes in section 1 are *below the camera band* and *inside 0.25 m*,
+and both are close to the floor and close to the robot. A forward-looking pair
+covers the second but reaches over the first, which is the one that motivated
+the whole plan: the box, the shoe, the door threshold.
+
+It may still be the right mount — a forward fan covers the near gate and works
+in the dark against blank walls, which stereo does not. But it is a different
+sensor answering a different question, and the plan should say which one is
+intended rather than discover it from a grid of numbers later.
+
+`tools/tof_pose.py` handles both mounts. From a floor it solves height, pitch
+and roll; from a wall the robot is squared to it solves pitch and yaw, which is
+the only reference a forward-looking sensor has. It cannot get height from a
+wall — a vertical plane looks identical from every height — and for this mount
+that is a tape measure anyway. Its `--selftest` recovers ten known poses from
+synthetic grids, including 10 mm of simulated range noise, so the maths can be
+trusted before the bracket is.
+
+**Not yet measured.** A run on 2026-09-17 found a plane 1.1 m ahead on 13 zones
+of each sensor, which is an object rather than a wall, with the robot squared
+to nothing in particular. The numbers it produced are not in config and should
+not be: square the robot to a flat wall that fills the field, then rerun.
+
 ### The I2C survey, before anything is soldered
 
 `i2cdetect -l` on this Orin Nano, confirmed against the device tree:
@@ -189,11 +224,13 @@ allowed to *claim* an obstacle (the part the noise ruins).
    still owed, and it is what sets `TOF_FLIP_H` / `TOF_FLIP_V`: run
    `tools/tof_debug.py` and check the grid lights up on the side the hand is
    actually on, and in the row it is actually in.
-4. **Build the bracket**, measure each sensor's height, pitch and yaw into
-   `TOF_HEIGHTS_M` / `TOF_PITCHES_DEG` / `TOF_YAWS_DEG`, then set `ORIO_TOF=1`.
-   Until then the fan is off by default and the placeholders are the plan's
-   intent, not a measurement — the sensors currently see no floor in their
-   lower rows at all, which is what an unmounted sensor on a bench looks like.
+4. **Settle the mount**, then measure it. The bracket exists and points
+   forward rather than down (see *The as-built mount*), so decide whether that
+   is the intent before recording it. Then square the robot to a flat wall,
+   run `tools/tof_pose.py --wall`, tape-measure the height, fill in
+   `TOF_HEIGHTS_M` / `TOF_PITCHES_DEG` / `TOF_YAWS_DEG`, and set `ORIO_TOF=1`.
+   Until then the fan stays off and the placeholders are the plan's intent,
+   not a measurement.
 
 ## 1. Three causes, not one
 
