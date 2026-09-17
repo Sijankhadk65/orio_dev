@@ -310,13 +310,34 @@ allowed to *claim* an obstacle (the part the noise ruins).
    still owed, and it is what sets `TOF_FLIP_H` / `TOF_FLIP_V`: run
    `tools/tof_debug.py` and check the grid lights up on the side the hand is
    actually on, and in the row it is actually in.
-4. **Settle the mount**, then measure it. The bracket exists and points
-   forward rather than down (see *The as-built mount*), so decide whether that
-   is the intent before recording it. Then square the robot to a flat wall,
-   run `tools/tof_pose.py --wall`, tape-measure the height, fill in
-   `TOF_HEIGHTS_M` / `TOF_PITCHES_DEG` / `TOF_YAWS_DEG`, and set `ORIO_TOF=1`.
-   Until then the fan stays off and the placeholders are the plan's intent,
-   not a measurement.
+4. **Lower the bracket — decided 2026-09-17, to be done 2026-09-18.** The
+   as-built mount measured 0.64 m looking 8 deg down, which flies over the
+   low obstacles the fan exists to catch and reports the floor behind them as
+   clear road (see *What the mount costs*). The pose currently in `config.py`
+   is correct FOR THAT MOUNT and becomes wrong the moment the bracket moves.
+
+   After lowering, in this order:
+
+   a. Tape-measure each sensor's height to the centre of its window. They
+      need not match — the two differed by 0.3 deg of pitch on the old
+      bracket, so measure both.
+   b. Square the robot to a flat wall at **0.5-1.5 m** — not closer, and the
+      tool now prints the error bar that explains why — and run
+      `uv run python tools/tof_pose.py --wall`. Expect 50+ of 64 zones on the
+      plane and the two sensors to agree on pitch within a few tenths of a
+      degree; less than that means it is not looking at a clean wall.
+   c. Write height, pitch and yaw into `TOF_HEIGHTS_M` / `TOF_PITCHES_DEG` /
+      `TOF_YAWS_DEG`, and re-run the coverage arithmetic: the target is the
+      lowest zone reaching the floor well inside `AVOID_*` braking distance
+      rather than at 1.22 m.
+   d. Settle `TOF_FLIP_H` with a hand on one side in front of
+      `tools/tof_debug.py`. A floor and a square wall are both symmetric left
+      to right, so nothing measured so far constrains it.
+   e. Then `ORIO_TOF=1`, and Phase 5.
+
+   The splay is the other open question and lowering the bracket is the moment
+   to settle it: the pair sits 7.1 deg apart against the 45 deg the plan asks
+   for, so the two fields almost entirely overlap instead of abutting.
 
 ## 1. Three causes, not one
 
