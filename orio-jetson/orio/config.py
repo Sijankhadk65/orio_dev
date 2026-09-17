@@ -264,6 +264,15 @@ DRIVE_STEP_S = float(_env("ORIO_DRIVE_STEP_S", "1.5"))
 TURN_STEP_S = float(_env("ORIO_TURN_STEP_S", "0.7"))
 DRIVE_MAX_STEP_S = float(_env("ORIO_DRIVE_MAX_STEP_S", "4.0"))
 
+# What bounds a cruise instead (body.Cruise) — the drive behaviours run on their
+# own thread, where a span would be the wrong shape. The latch expires this long
+# after the go() that set it, so a caller that wedges mid-loop stops the robot
+# rather than leaving a direction standing. Callers renew every pass, so this
+# only has to outlast one pass comfortably: a look is a detector inference, tens
+# of milliseconds to a few tenths, and 1.0 s is well clear of a slow one while
+# still being a short distance at the duties Orio is allowed.
+CRUISE_DEADMAN_S = float(_env("ORIO_CRUISE_DEADMAN_S", "1.0"))
+
 
 # ── Obstacle avoidance ────────────────────────────────────────────────────────
 # Not a feature and not a toggle: driving goes through the policy in
@@ -444,8 +453,16 @@ SEEK_ARRIVE_M = float(_env("ORIO_SEEK_ARRIVE_M", str(AVOID_CLEAR_M)))
 SEEK_CENTRE_DEG = float(_env("ORIO_SEEK_CENTRE_DEG", "9"))
 SEEK_TURN_BURST_S = float(_env("ORIO_SEEK_TURN_BURST_S", "0.3"))
 
-# One step of the approach. Short, so the target is re-checked often.
-SEEK_HOP_S = float(_env("ORIO_SEEK_HOP_S", "0.8"))
+# How often the approach re-detects while it is driving. This used to be
+# SEEK_HOP_S, the length of one drive-and-stop step, and its value was a
+# compromise: long enough to make progress, short enough to re-check often.
+# Those pull in opposite directions only while looking costs motion. The
+# approach now cruises (body.Cruise), so a look costs nothing but the detector,
+# and this is a floor on how hard that detector is asked to run rather than a
+# bound on how far the robot travels blind to its target. The GPU is shared with
+# the LLM, so the floor is real; below it there is nothing to gain, since the
+# picture barely changes between two looks this close together.
+SEEK_LOOK_PERIOD_S = float(_env("ORIO_SEEK_LOOK_PERIOD_S", "0.2"))
 
 # How many consecutive frames the target may be missing before Orio gives up
 # and says so, rather than wandering after something that has left.
