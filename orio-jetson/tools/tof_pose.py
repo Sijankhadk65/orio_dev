@@ -171,9 +171,46 @@ def floor_accept(normal, offset) -> bool:
     return normal[1] > FLOOR_MIN_UP and 0.005 < height < 0.60
 
 
+# A wall nearer than this is reported but flagged: see `angle_sigma_deg` for
+# why close walls make bad references. Below 10 cm it is not a reference at all,
+# it is a sensor pressed against something.
+WALL_MIN_M = 0.10
+# Under this, the angular error bar is wide enough that the number should not be
+# copied into config without backing the robot up first.
+WALL_COMFORTABLE_M = 0.50
+
+
 def wall_accept(normal, offset) -> bool:
     """A wall faces back at the sensor, from somewhere ahead of it."""
-    return normal[2] > 0.5 and 0.20 < offset < config.TOF_MAX_RANGE_M
+    return normal[2] > 0.5 and WALL_MIN_M < offset < config.TOF_MAX_RANGE_M
+
+
+def angle_sigma_deg(pts, normal, offset) -> float | None:
+    """How well this point set actually pins the plane's normal down, in degrees.
+
+    The zones span a fixed 45 deg whatever the range, so it is tempting to think
+    distance does not matter. It does, and this is the number that says so: the
+    fit is a lever, its arm is how far the points spread ACROSS the plane, and
+    range noise at the ends of that arm is what tilts it. The arm grows with
+    distance while the noise barely does, so
+
+        angular error ~ (residual scatter) / (in-plane radius)
+
+    and a wall at 0.15 m pins the normal roughly four times worse than the same
+    wall at 0.6 m. That is not a rounding detail — it is the difference between
+    a pose worth writing into config and one that moves a degree every time it
+    is measured.
+    """
+    if len(pts) < 6:
+        return None
+    centroid = pts.mean(axis=0)
+    delta = pts - centroid
+    in_plane = delta - np.outer(delta @ normal, normal)
+    radius = float(np.sqrt((in_plane ** 2).sum(axis=1).mean()))
+    if radius < 1e-6:
+        return None
+    scatter = float(np.abs(pts @ normal - offset).std())
+    return math.degrees(scatter / radius)
 
 
 def pose_from_floor(normal, offset):
@@ -254,7 +291,8 @@ def solve(name: str, ranges, want_wall: bool, tol: float = PLANE_TOL_M) -> dict:
         height, pitch, roll = pose_from_floor(normal, offset)
         residual = float(np.abs(pts[inliers] @ normal - offset).std())
         out["floor"] = {"height_m": height, "pitch_deg": pitch, "roll_deg": roll,
-                        "inliers": int(inliers.sum()), "residual_m": residual}
+                        "inliers": int(inliers.sum()), "residual_m": residual,
+                        "sigma_deg": angle_sigma_deg(pts[inliers], normal, offset)}
         rest = pts[~inliers]
 
     if want_wall:
@@ -264,7 +302,8 @@ def solve(name: str, ranges, want_wall: bool, tol: float = PLANE_TOL_M) -> dict:
         else:
             w_pitch, w_yaw = pose_from_wall(w_n)
             out["wall"] = {"pitch_deg": w_pitch, "yaw_deg": w_yaw,
-                           "distance_m": w_c, "inliers": int(w_in.sum())}
+                           "distance_m": w_c, "inliers": int(w_in.sum()),
+                           "sigma_deg": angle_sigma_deg(rest[w_in], w_n, w_c)}
     return out
 
 
@@ -274,11 +313,18 @@ def report(res: dict) -> None:
     floor = res.get("floor")
     wall = res.get("wall")
     if floor is None and wall:
+        sigma = wall.get("sigma_deg")
+        pm = "" if sigma is None else f" +/- {sigma:.1f}"
         print(f"  no floor in view — pose taken from the wall {wall['distance_m']:.2f} m "
               f"ahead ({wall['inliers']} zones)")
-        print(f"  pitch {wall['pitch_deg']:+.1f} deg   yaw {wall['yaw_deg']:+.1f} deg"
+        print(f"  pitch {wall['pitch_deg']:+.1f}{pm} deg   yaw {wall['yaw_deg']:+.1f}{pm} deg"
               "   height: not measurable from a wall, use a tape measure")
         print("    — only as square as the robot was to the wall.")
+        if wall["distance_m"] < WALL_COMFORTABLE_M:
+            print(f"  ⚠ that wall is {wall['distance_m'] * 100:.0f} cm away, which is too close to")
+            print(f"    measure against: the fit's lever arm is short and the error bar above")
+            print(f"    shows it. Back the robot up to {WALL_COMFORTABLE_M:.1f}-1.5 m from a flat")
+            print("    wall and run this again before writing anything into config.")
         return
     if floor is None:
         print("  NO FLOOR PLANE IN VIEW.")
@@ -298,9 +344,15 @@ def report(res: dict) -> None:
         print("  shows the statuses).")
         return
 
-    print(f"  height {floor['height_m'] * 100:.1f} cm   pitch {floor['pitch_deg']:+.1f} deg"
-          f"   roll {floor['roll_deg']:+.1f} deg")
+    sigma = floor.get("sigma_deg")
+    pm = "" if sigma is None else f" +/- {sigma:.1f}"
+    print(f"  height {floor['height_m'] * 100:.1f} cm   pitch {floor['pitch_deg']:+.1f}{pm} deg"
+          f"   roll {floor['roll_deg']:+.1f}{pm} deg")
     print(f"  fitted on {floor['inliers']} floor zones, residual {floor['residual_m'] * 1000:.0f} mm")
+    if floor["inliers"] < 20:
+        print(f"  ⚠ only {floor['inliers']} zones — a floor filling the lower rows gives many")
+        print("    more than that. This is more likely a patch of something flat than a floor;")
+        print("    check it in tools/tof_debug.py before believing the height.")
     if abs(floor["roll_deg"]) > 3:
         print(f"  ⚠ roll {floor['roll_deg']:+.1f} deg — the bracket is twisted. Every zone's")
         print("    elevation is then wrong by a different amount; fix the mount, not the config.")
