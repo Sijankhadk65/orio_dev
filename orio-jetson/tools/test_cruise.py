@@ -45,6 +45,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import config
 from orio.avoid import Reading
+from orio.sectors import ObstacleMap, Sector, SectorGeometry, fill_clear, fuse
 from orio.body import DIRECTIONS, NO_WHEELS, NOT_RENEWED, Body
 from orio.seek import Seeker
 
@@ -282,6 +283,241 @@ def test_close_is_idempotent() -> None:
     check("the wheels are stopped and stay stopped", link.stopped(), f"{link.standing}")
 
 
+# ── the sector map: fusion and the geometry both sensors share ───────────────
+#
+# `fuse()` and `SectorGeometry` are pure and sector-shaped, so they belong here
+# rather than on the robot: the cases that matter are two sources disagreeing,
+# one knowing and one not, neither knowing, and one gone stale — none of which
+# needs a camera, an I2C bus, or a box on the floor to provoke.
+
+
+def sector_map(distances, source="x", clear=None, hfov=73.1, timestamp=None):
+    """An ObstacleMap over `len(distances)` sectors. None means unknown."""
+    n = len(distances)
+    clear = clear if clear is not None else [None] * n
+    return ObstacleMap(
+        sectors=tuple(
+            Sector(index=i, angle_deg=((i + 0.5) / n - 0.5) * hfov, distance_m=d,
+                   valid_frac=1.0, source=source, clear_m=c)
+            for i, (d, c) in enumerate(zip(distances, clear))
+        ),
+        timestamp=time.time() if timestamp is None else timestamp,
+        calibrated=True,
+    )
+
+
+def test_fuse() -> None:
+    print("\nfusing two sources into one sector map")
+    stereo = sector_map([2.0, 3.0, None, None], source="stereo-band")
+    tof = sector_map([0.4, None, 0.8, None], source="tof-left")
+    fused = fuse(stereo, tof)
+    got = [s.distance_m for s in fused.sectors]
+
+    check("the pessimist wins a disagreement", got[0] == 0.4, f"{got[0]}")
+    check("and the winner is named", fused.sectors[0].source == "tof-left",
+          fused.sectors[0].source)
+    check("a source that knows beats one that does not (stereo)", got[1] == 3.0, f"{got[1]}")
+    check("a source that knows beats one that does not (tof)", got[2] == 0.8, f"{got[2]}")
+    check("unknown to both stays unknown", got[3] is None, f"{got[3]}")
+    check("no source claims an unknown sector", fused.sectors[3].source == "",
+          fused.sectors[3].source)
+
+    # The oldest reading sets the age, so a frozen sensor cannot hide behind a
+    # fresh one — it ages the fused map instead.
+    old = sector_map([1.0, 1.0, 1.0, 1.0], timestamp=time.time() - 10.0)
+    check("the fused map is as old as its oldest source",
+          fuse(stereo, old).timestamp == old.timestamp)
+
+    # This is how the ToF fan degrades rather than halting: it simply is not
+    # there, and fusion is the identity.
+    check("a missing source fuses to the one that is left",
+          fuse(stereo, None) is stereo)
+    check("no source at all is an error, not a silent empty map",
+          raises(ValueError, lambda: fuse(None, None)))
+    check("grids that do not match are refused",
+          raises(ValueError, lambda: fuse(stereo, sector_map([1.0] * 7))))
+
+
+def test_clear_is_not_an_obstacle() -> None:
+    print("\nverified-clear ground is the answer of last resort, never a reading")
+    # Sector 0: an obstacle AND clear ground seen beyond it. The obstacle wins —
+    # if `clear_m` could ever be minimised against a real reading, ground seen
+    # past an obstacle would argue the obstacle away.
+    omap = sector_map([0.5, None, None], clear=[3.0, 2.5, None])
+    filled = fill_clear(omap)
+    got = [s.distance_m for s in filled.sectors]
+    check("a real obstacle is not replaced by clear ground", got[0] == 0.5, f"{got[0]}")
+    check("an unknown sector with clear ground gets it", got[1] == 2.5, f"{got[1]}")
+    check("genuinely blind stays blind", got[2] is None, f"{got[2]}")
+    check("and the fallback says so in the source",
+          filled.sectors[1].source.endswith("-clear"), filled.sectors[1].source)
+
+    # Fusion runs BEFORE the fill, so a ToF obstacle still beats stereo's
+    # "I can see the ground and it is empty".
+    tof = sector_map([None, 0.3, None], source="tof-right")
+    check("a ToF obstacle beats clear ground from the cameras",
+          fill_clear(fuse(omap, tof)).sectors[1].distance_m == 0.3)
+
+
+def test_ground_plane_geometry() -> None:
+    """The claim Fix A rests on: a 5 cm box at 0.6 m is a reading, and the floor
+    it stands on is not."""
+    print("\nclassifying by height: a 5 cm box on a floor, seen by a pitched camera")
+    import numpy as np
+
+    h, pitch = 0.35, 20.0          # camera height and how far down it looks
+    box_at, box_high = 0.60, 0.05  # a low obstacle, the kind the band discards
+
+    az = np.repeat(np.arange(-36.0, 36.0, 1.0), 200)
+    el = np.tile(np.arange(-35.0, 5.0, 0.2), 72)
+    geom = SectorGeometry(az, el, height_m=h, pitch_deg=pitch, sectors=7, hfov_deg=73.1)
+
+    def trace(with_box: bool):
+        """Range to the first thing each ray hits: the floor, or the box."""
+        up, ground = geom.up.astype(np.float64), geom.ground.astype(np.float64)
+        r = np.full(up.shape, np.inf)
+        down = up < 0
+        r[down] = -h / up[down]  # the floor, at height 0
+        if with_box:
+            r_box = box_at / np.maximum(ground, 1e-9)
+            hits = (h + r_box * up >= 0) & (h + r_box * up <= box_high)
+            r[hits] = np.minimum(r[hits], r_box[hits])
+        r[~np.isfinite(r)] = np.nan
+        return r
+
+    empty = geom.reduce(trace(with_box=False), floor_tol_m=0.03, ceiling_m=0.60,
+                        source="floor-only")
+    mid = empty[3]
+    check("bare floor produces no obstacle at all", mid.distance_m is None,
+          f"{mid.distance_m}")
+    check("but the floor it saw is reported as verified clear",
+          mid.clear_m is not None and mid.clear_m > 1.0, f"{mid.clear_m}")
+
+    boxed = geom.reduce(trace(with_box=True), floor_tol_m=0.03, ceiling_m=0.60,
+                        source="ground")
+    mid = boxed[3]
+    check("a 5 cm box at 0.60 m is seen", mid.distance_m is not None)
+    check("and it is seen AT 0.60 m, by ground distance not slant range",
+          mid.distance_m is not None and abs(mid.distance_m - box_at) < 0.03,
+          f"{mid.distance_m}")
+    check("the floor under it still does not count as an obstacle",
+          all(s.distance_m is None or abs(s.distance_m - box_at) < 0.05 for s in boxed),
+          f"{[None if s.distance_m is None else round(s.distance_m, 2) for s in boxed]}")
+
+    # Above the robot is not an obstacle either: drop the ceiling below the box
+    # and the same reading has to disappear.
+    under = geom.reduce(trace(with_box=True), floor_tol_m=0.03, ceiling_m=0.02,
+                        source="ground")
+    check("anything taller than the robot is driven under, not around",
+          under[3].distance_m is None, f"{under[3].distance_m}")
+
+
+def test_tof_pose_lands_in_the_right_sector() -> None:
+    """A yawed sensor reports into the robot's grid, not its own."""
+    print("\na splayed ToF array projects into the shared sector grid")
+    import numpy as np
+
+    from orio.tof import zone_angles
+
+    az, el = zone_angles(8, 8, 45.0)
+    check("an 8x8 grid is 64 zones, 5.625 deg apart",
+          az.size == 64 and abs(float(np.unique(az)[1] - np.unique(az)[0]) - 5.625) < 1e-6)
+
+    for yaw, expect_side in ((-22.5, "left"), (22.5, "right")):
+        geom = SectorGeometry(az, el, height_m=0.045, pitch_deg=0.0, yaw_deg=yaw,
+                              sectors=7, hfov_deg=73.1)
+        # A wall square across the fan at 1 m: every zone sees it at its own
+        # slant range, and the map must report 1 m of GROUND distance.
+        ranges = 1.0 / np.maximum(geom.ground, 1e-9)
+        known = [s for s in geom.reduce(ranges, floor_tol_m=0.03, ceiling_m=0.6,
+                                        source="tof") if s.known]
+        check(f"the {expect_side} array reports something", bool(known))
+        check(f"the {expect_side} array reports it at 1 m",
+              all(abs(s.distance_m - 1.0) < 0.05 for s in known),
+              f"{[round(s.distance_m, 2) for s in known]}")
+        centre = sum(s.angle_deg for s in known) / len(known)
+        check(f"and its sectors sit to the {expect_side}",
+              (centre < 0) if yaw < 0 else (centre > 0), f"centre {centre:+.1f} deg")
+
+
+def test_tof_stale_drops_out() -> None:
+    """A quiet ToF must leave the fusion, not age the map and halt the robot."""
+    print("\na stale ToF map drops out of the fusion")
+    from orio.tof import ToFDetector
+
+    det = ToFDetector(arrays=[])
+    det._map = sector_map([0.3, 0.3, 0.3], source="tof-left")
+    det._published_at = time.monotonic()
+    check("a fresh map is offered", det.fresh_map(max_age_s=0.5) is not None)
+
+    # Liveness is "is the fan still publishing", not "how old is the oldest
+    # reading inside it". `fuse` stamps with its oldest contributor, so a map
+    # built from a 0.49 s reading is itself stamped 0.49 s old, and gating on
+    # that would blink the fan out on arithmetic alone while both sensors were
+    # ranging happily. `_republish` has already dropped stale contributors.
+    det._map = sector_map([0.3, 0.3, 0.3], source="tof-left",
+                          timestamp=time.time() - 0.49)
+    check("an old contributing stamp does not itself withhold the map",
+          det.fresh_map(max_age_s=0.5) is not None)
+
+    det._published_at = time.monotonic() - 5.0
+    check("a fan that stopped publishing is withheld",
+          det.fresh_map(max_age_s=0.5) is None)
+    check("and stereo alone is then the whole map",
+          fuse(sector_map([2.0, 2.0, 2.0]), det.fresh_map(max_age_s=0.5)).sectors[0]
+          .distance_m == 2.0)
+
+
+def test_tof_one_quiet_sensor() -> None:
+    """A starved sensor must not take its healthy neighbour out with it.
+
+    The bus-1 sensor is GIL-starved by its faster neighbour and was measured
+    going 900+ ms between frames (2026-09-17). Fusing on the oldest
+    contributor, that dragged the WHOLE fan past TOF_STALE_S and avoidance fell
+    back to stereo — blind low and blind inside 0.25 m, which is the entire
+    reason the parts are there. Staleness is per sensor for that reason.
+    """
+    print("\none quiet ToF sensor drops out; the live one keeps the fan up")
+    from orio.tof import ToFDetector
+
+    class _Named:
+        def __init__(self, name):
+            self.name = name
+
+    det = ToFDetector(arrays=[_Named("tof-left"), _Named("tof-right")])
+    det._latest["tof-left"] = sector_map([0.3, 0.3, 0.3], source="tof-left")
+    det._latest["tof-right"] = sector_map([0.1, 0.1, 0.1], source="tof-right",
+                                          timestamp=time.time() - 5.0)
+    det._republish()
+    omap = det.fresh_map(max_age_s=0.5)
+    check("the fan still publishes", omap is not None)
+    check("the live sensor's reading is what it publishes",
+          omap is not None and omap.sectors[0].distance_m == 0.3,
+          None if omap is None else f"{omap.sectors[0].distance_m}")
+    check("the quiet sensor's nearer reading is NOT carried forward",
+          omap is not None and all(s.distance_m != 0.1 for s in omap.sectors))
+
+    # Both quiet: nothing new is published, the last map ages, and the fan
+    # leaves the fusion. Republishing a stale fusion under a fresh timestamp is
+    # the one unforgivable version of this.
+    det._latest["tof-left"] = sector_map([0.3, 0.3, 0.3], source="tof-left",
+                                         timestamp=time.time() - 5.0)
+    det._published_at = time.monotonic() - 5.0
+    det._republish()
+    check("both quiet means the fan withholds entirely",
+          det.fresh_map(max_age_s=0.5) is None)
+
+
+def raises(exc_type, fn) -> bool:
+    try:
+        fn()
+    except exc_type:
+        return True
+    except Exception:
+        return False
+    return False
+
+
 # ── the approach, end to end ─────────────────────────────────────────────────
 
 
@@ -396,6 +632,12 @@ def main() -> int:
         test_exception_stops_the_wheels,
         test_blind_and_wheelless,
         test_close_is_idempotent,
+        test_fuse,
+        test_clear_is_not_an_obstacle,
+        test_ground_plane_geometry,
+        test_tof_pose_lands_in_the_right_sector,
+        test_tof_stale_drops_out,
+        test_tof_one_quiet_sensor,
         test_approach,
     ):
         test()

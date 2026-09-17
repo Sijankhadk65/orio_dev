@@ -233,7 +233,32 @@ def parse_args() -> argparse.Namespace:
              "stays wherever it already is (slack, if nothing else is holding it)",
     )
     parser.add_argument("--no-avoid", action="store_true", help="start with avoidance off")
+    parser.add_argument(
+        "--no-tof", action="store_true",
+        help="drive on the cameras alone, leaving the ToF fan closed. The A/B "
+             "for whether a low obstacle was caught by the fan or by the "
+             "ground-plane classification — run the same approach twice",
+    )
     return parser.parse_args()
+
+
+def sector_sources(reading) -> str:
+    """The sector map's provenance as one letter each, left to right."""
+    if reading is None or not reading.sources:
+        return "?" * config.STEREO_SECTORS
+    out = []
+    for source in reading.sources:
+        if not source:
+            out.append(".")
+        elif source.endswith("-clear"):
+            out.append("c")
+        elif source.startswith("tof"):
+            out.append("T")
+        elif source.endswith("ground"):
+            out.append("G")
+        else:
+            out.append("B")
+    return "".join(out)
 
 
 def aim_neck(args) -> Motion:
@@ -354,8 +379,11 @@ def main() -> int:
             return 1
 
     try:
-        print("--- opening stereo (both sensors, ~2 s) ---")
-        sensor = Sensor(3)
+        fan = config.TOF_ENABLED and not args.no_tof
+        print("--- opening stereo (both sensors, ~2 s)"
+              + (" and the ToF fan (firmware upload, seconds)" if fan else "")
+              + " ---")
+        sensor = Sensor(3, use_tof=fan)
         try:
             sensor.start()
         except Exception as exc:
@@ -364,6 +392,16 @@ def main() -> int:
             print(f"\nstereo failed to start: {exc}")
             sensor.close()
             return 1
+        if fan:
+            if sensor.tof_names:
+                print(f"    ToF fan: {', '.join(sensor.tof_names)}")
+            if sensor.tof_error:
+                # Not fatal, and deliberately so: the fan is an addition to a
+                # guard that already works, and a sensor that can stop the robot
+                # is a new way for the robot to be stopped.
+                print(f"    ToF fan DEGRADED — {sensor.tof_error}\n"
+                      f"    driving on stereo alone, which is blind below the "
+                      f"camera band and inside {config.STEREO_MIN_RANGE_M:.2f} m")
         if not sensor.calibrated:
             print(
                 "\n*** UNCALIBRATED STEREO — distances are approximate ***\n"
@@ -462,8 +500,14 @@ def main() -> int:
                         last_hud = now
                         ahead = None if reading is None else reading.clearance_m
                         clear = "----" if ahead is None else f"{ahead:.2f}"
+                        # One letter per sector, left to right, for which sensor
+                        # produced it: B row band, G ground plane, T a ToF array,
+                        # c the clear-ground fallback, . nothing knew. A column
+                        # that reads T while the robot slows is the fan earning
+                        # its place; one that reads . is a blind sector.
                         print(
-                            f"\r ahead {clear:>5} m │ {decision.state:<7} │ "
+                            f"\r ahead {clear:>5} m │ {sector_sources(reading)} │ "
+                            f"{decision.state:<7} │ "
                             f"head {decision.heading_deg:+3.0f}° │ "
                             f"L{command[0]:+5d} R{command[1]:+5d} │ duty {duty_percent:3.0f}% │ "
                             f"avoid {'ON ' if avoider.enabled else 'OFF'} ",

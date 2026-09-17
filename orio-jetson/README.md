@@ -253,6 +253,22 @@ way.
 | `ORIO_STEREO_MIN_VALID_FRAC` | `0.10` | Valid-pixel floor before a sector reports a distance |
 | `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.35` / `0.71` | Image band that can hold a collidable obstacle |
 | `ORIO_STEREO_CALIBRATION` | `models/stereo/calibration.npz` | Calibration from `tools/calibrate_stereo.py` |
+| `ORIO_STEREO_GROUND_PLANE` | `0` | `1` to classify depth by *height above the floor* instead of by image row — needs the two measurements below |
+| `ORIO_STEREO_CAM_HEIGHT_M` / `_CAM_PITCH_DEG` | `0.35` / `0.0` | **Placeholders.** Camera height and downward pitch at the current neck pose; measure before switching the line above on |
+| `ORIO_STEREO_FLOOR_TOL_M` | `0.03` | A point this far above the floor *is* the floor |
+| `ORIO_ROBOT_HEIGHT_M` | `0.60` | **Placeholder.** Anything taller is driven under, not around |
+| `ORIO_STEREO_HEIGHT_TRUST_M` | `1.2` | Past this the disparity noise swamps the height estimate and the row band takes over |
+| `ORIO_STEREO_GROUND_STRIDE` | `2` | Pixel decimation for the ground-plane reduction |
+| `ORIO_TOF` | `0` | `1` to open the VL53L5CX fan and fuse it into the sector map |
+| `ORIO_TOF_BUSES` / `_ADDRESSES` | `7,1` / `0x29,0x29` | One sensor per I2C bus — which is why the shared 0x29 never has to be changed |
+| `ORIO_TOF_NAMES` | `tof-left,tof-right` | Per-sector provenance in the debug views |
+| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.045,0.045` / `0,0` / `-22.5,22.5` | **Placeholders.** Measured mount pose per sensor |
+| `ORIO_TOF_FOV_DEG` | `45.0` | Angular span of the 8x8 zone array (ST's figure) |
+| `ORIO_TOF_RESOLUTION` / `_FREQ_HZ` | `64` / `15` | 8x8 at 15 Hz — the ULD's ceiling for that resolution |
+| `ORIO_TOF_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.02` / `3.0` | The near end is the point: well inside the 0.25 m the cameras cannot reach |
+| `ORIO_TOF_TRUSTED_STATUS` | `5,6,9` | Per-zone `target_status` values whose distance is believed; everything else is unknown, never max range |
+| `ORIO_TOF_FLIP_H` / `_FLIP_V` | `0` / `0` | Zone-order flips, once you have seen which corner is zone 0 |
+| `ORIO_TOF_STALE_S` | `0.5` | Older than this and the fan drops out of the fusion — stereo decides alone rather than the robot halting |
 | `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
 | `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |

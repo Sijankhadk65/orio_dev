@@ -18,6 +18,12 @@ dependencies = [
     "ultralytics>=8.4.115",
     "numpy<2",
     "pyserial>=3.5",
+    # ST's VL53L5CX ULD behind a ctypes shim, for the low ToF fan (orio/tof.py).
+    # Builds the driver from source — a few seconds on aarch64, verified on
+    # JetPack 2026-09-17 — and pulls in smbus2 and nothing else. No torch, no
+    # vendor SDK. Imported lazily, so a machine that cannot build it still runs
+    # everything else; ORIO_TOF defaults to 0 regardless.
+    "vl53l5cx-ctypes>=0.0.3",
 ]
 
 [tool.uv]

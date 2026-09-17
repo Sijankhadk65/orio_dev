@@ -12,10 +12,188 @@ aimed**, **classify by height above the floor instead of by image row**, and
 **add the pair of VL53L5CX time-of-flight arrays** for the volume no camera
 pixel covers at all.
 
-> Status: **not started.** Branched off `develop` at `7577851`. Written from the
-> code and the committed calibration; every figure marked *(predicted)* is
-> arithmetic rather than a measurement, and Phase 0 exists to replace those with
-> real numbers. Expect some of them to be wrong.
+> Status: **the software is built, the parts are wired and ranging, and the rig
+> is still not measured.** Branched off `develop` at `7577851`. Written from the code and the
+> committed calibration; every figure marked *(predicted)* is arithmetic rather
+> than a measurement, and Phase 0 exists to replace those with real numbers.
+> Expect some of them to be wrong. See **Progress** below for what has actually
+> been done, and what each remaining step is waiting on.
+
+## Progress — 2026-09-17
+
+Phases 1, 3 and 4 are implemented and the pure logic is tested. **Phase 2 is
+now done on the real parts**: both sensors answer at 0x29, one per bus, and the
+pair opens, ranges and fuses through `orio/tof.py` — see *Bring-up on the wired
+pair* below, which cost two real bugs. Phase 0 and the bracket are untouched,
+because neither can be done from a keyboard: one needs a tape measure and the
+other needs a bracket.
+
+**Everything new is OFF by default** (`ORIO_STEREO_GROUND_PLANE=0`, `ORIO_TOF=0`)
+and nothing in the existing path changed behaviour. That is not caution for its
+own sake — Phase 0's measurements are the inputs both features need, and
+switching either on against a guessed camera pitch is precisely how the robot
+ends up refusing to cruise in an empty room.
+
+| | what exists | what it is waiting on |
+|---|---|---|
+| Phase 0 | nothing | a tape measure, boxes, and the tilt sweep. Blocks everything below from being *trusted*, not from being *run* |
+| Phase 1 | `sectors.SectorGeometry` / `reduce()`, `DepthEstimator.obstacles()`, the class view in `stereo_debug.py` (press **G**) | `STEREO_CAM_HEIGHT_M` and `STEREO_CAM_PITCH_DEG`, which are placeholders |
+| Phase 2 | **done** — both sensors wired, opening, ranging and fusing on the robot | nothing |
+| Phase 3 | `orio/tof.py`, `tools/tof_debug.py` | the bracket, the measured mount pose per sensor, and `TOF_FLIP_H/V` from a hand in front of the grid |
+| Phase 4 | `sectors.fuse()`, `avoid.Sensor(use_tof=)`, `body.py` notes, `teleop_guarded.py --no-tof`, five new cases in `test_cruise.py` | nothing — it runs today, with one source |
+| Phase 5 | nothing | all of the above |
+
+### Phase 2 step 2 is answered: the library builds, and it is quick
+
+The item flagged as "the single item most likely to cost a day" cost seven
+seconds. `vl53l5cx-ctypes` **0.0.3** builds from source on this aarch64 JetPack
+with no coaxing — `uv pip install vl53l5cx-ctypes`, 6.9 s, and it pulls in
+`smbus2` and nothing else. No vendor SDK, no torch. It is now a normal project
+dependency; `uv sync` brings it in.
+
+Its API is small and it is ST's ULD underneath, as advertised:
+`VL53L5CX(i2c_addr=0x29, i2c_dev=SMBus(bus))` — the constructor is what performs
+the ~84 KB firmware upload and it raises rather than returning a dud handle —
+then `set_resolution(64)`, `set_ranging_frequency_hz(15)`,
+`set_target_order(TARGET_ORDER_CLOSEST)`, `start_ranging()`, and
+`data_ready()` / `get_data()` per frame. `get_data()` returns `distance_mm` and
+`target_status` as `[target][zone]`, one target per zone. There was no need for
+the ctypes-shim fallback.
+
+### Bring-up on the wired pair — 2026-09-17
+
+Both parts answer at 0x29, one per bus, exactly as planned. Getting from there
+to a fan that stays in the fusion took two fixes, and neither was predicted:
+
+**1. Opening the two sensors in parallel SEGFAULTS the interpreter.** Not a
+race that corrupts a reading — the process dies. Reproduced 3/3, both threads
+in `is_alive()`, which is the first call that drives the I2C callbacks and
+comes *before* the firmware upload. Locking only the constructor did not help,
+and neither did deferring `init()` with `skip_init=True`: the upload crashes in
+parallel too. The ctypes wrapper is simply not reentrant while a device is
+being brought up.
+
+This mattered more than an ordinary bug because Phase 4 step 2 says a ToF
+failure must degrade to stereo rather than halt — and `avoid.Sensor.start()`
+does wrap the open in `try/except` to guarantee exactly that. **A SIGSEGV is
+not an exception.** The one guard written to stop the fan taking the robot down
+was the one thing that could not catch it. Opens are now serialised under a
+module-level `_OPEN_LOCK`; steady-state reads were measured safe from separate
+threads, so only the open is serialised.
+
+**2. The two buses are not equals, and it shows in the data.** From the device
+tree, bus 7 runs at **400 kHz** and bus 1 at **100 kHz**:
+
+| | bus 7 (pins 3/5) | bus 1 (pins 27/28) |
+|---|---|---|
+| clock | 400 kHz | 100 kHz |
+| firmware upload at open | 2.73 s | 8.78 s |
+| frame rate, own thread | 15.3 Hz | 4.7 Hz |
+| frame gap, median / max | 46 / 136 ms | 196 / 329 ms |
+
+Polled from one thread the fast sensor is dragged down to the slow one and
+**both** fall to 4 Hz, because the thread sits inside the slow sensor's ~1 KB
+`get_data()`. Each sensor now gets its own reader thread.
+
+Worse, under the detector's own load the bus-1 sensor is GIL-starved by its
+neighbour — the ULD calls back into Python for every I2C chunk — and its frame
+gap stretched to **1118 ms**. Since `fuse()` stamps with its oldest
+contributor, that dragged the whole fan past `TOF_STALE_S` and `fresh_map()`
+withheld *both* sensors: avoidance silently fell back to stereo, blind low and
+blind inside 0.25 m, in stretches, exactly where these parts were added to see.
+Two changes fix it, and both are the same principle the rest of the plan runs
+on — degrade where the fault is:
+
+* **Staleness is applied per sensor**, in `_republish`. A starved sensor drops
+  out and its sectors go unknown; its healthy neighbour keeps publishing.
+* **Liveness asks whether the fan is still publishing**, not how old the oldest
+  reading in the map is. A map fused from a 0.49 s reading is itself stamped
+  0.49 s old, so the old rule blinked the fan out on arithmetic alone while
+  both sensors were ranging happily. The map keeps its honest
+  oldest-contributor timestamp for anyone fusing it further.
+
+Measured after: **0 dropouts in 989 samples over 20 s**, both sensors
+contributing sectors, against intermittent whole-fan dropouts before.
+
+**Startup is now 11.5 s for the pair** (2.73 + 8.78, serialised), and it is not
+a hang. Raising bus 1 to 400 kHz would collapse the upload time, the frame rate
+and the starvation at once — it is a device-tree change on a bus the carrier
+board's USB-C PD controller and power monitor already own, so it is a decision
+to take deliberately. It is also worth asking which arc deserves the fast bus.
+
+### The I2C survey, before anything is soldered
+
+`i2cdetect -l` on this Orin Nano, confirmed against the device tree:
+
+| bus | controller | 40-pin | what is on it |
+|---|---|---|---|
+| `/dev/i2c-7` | `c250000.i2c` | pins 3/5 | **empty** |
+| `/dev/i2c-1` | `c240000.i2c` | pins 27/28 | `0x25` and `0x40`, both driver-claimed (`UU`) |
+
+So the plan's bus table holds, with one correction worth having: **bus 1 is not
+private.** Two carrier-board devices already live there. Neither is at 0x29 so
+there is no collision, but it does mean the ToF is sharing a bus with something
+whose driver owns it, and a bus error there is not necessarily the ToF's fault.
+Bus 7 is completely clear — note that the stereo camera's ICM20948 IMU would
+also land there at 0x68 if it is ever wired (it is not, today).
+
+The user account is already in the `i2c` group, so no `usermod` is needed.
+
+### Two decisions the plan did not make, made here
+
+**1. "Nothing there" needed a third state.** Classifying by height creates
+sectors that are unknown for a new reason: not "I cannot see" but "I can see the
+ground and there is nothing standing on it". Reported as `None` — which is what
+Phase 1 step 3 literally says — the policy treats them as blocked, and an empty
+room stops the robot dead. That is the Phase 5 regression, reached by following
+the plan rather than by deviating from it.
+
+So `Sector` gained `clear_m`: *the ground under this sector was verified free
+out to here*. It is not an obstacle distance, it never competes with one, and it
+is applied only where no sensor saw anything at all (`sectors.fill_clear`, run
+after fusion). It is also more honest than it first looks — an obstacle too dark
+to match also occludes the floor behind it, so the observed ground stops at the
+obstacle rather than past it. The residual risk is real and is now the main
+thing Phase 5 should hunt for: a small untextured obstacle with visible floor to
+either side of it inside the same sector.
+
+**2. The band and the height test fuse by `min()`, they do not switch.** Phase 1
+step 4 asks the height test to "degrade back to the row band" past
+`STEREO_HEIGHT_TRUST_M`. Implemented as a hand-off, the two would disagree at
+the boundary and the nearer reading could be the one discarded. Implemented as
+`fuse()` — the same function the ToF uses — each is authoritative over its own
+volume and the pessimist wins where they overlap. Past the trust range a point
+can still count as floor (good evidence, cheap to get right) but is no longer
+allowed to *claim* an obstacle (the part the noise ruins).
+
+### Measured incidentally
+
+* The ground-plane reduction costs **5.7 ms** against the row band's **2.2 ms**,
+  at 320x240 with `STEREO_GROUND_STRIDE=2` on this Jetson — 3.5 ms added to a
+  33 ms frame budget. The trigonometry is cached at open (`SectorGeometry`),
+  which is what keeps it there; rebuilt per frame it is several times that.
+* Each ToF array loses its outer two columns to the 7-sector grid: 48 of 64
+  zones land inside ±36.55 deg, 16 fall outside and are discarded, exactly as
+  section 3 predicted. The pair still covers all seven sectors between them.
+
+### What to do next, in order
+
+1. **Phase 0.** Nothing below is trustworthy without it, and its first item may
+   shrink the rest considerably. It needs no code and no parts.
+2. Fill in `STEREO_CAM_HEIGHT_M` / `STEREO_CAM_PITCH_DEG`, set
+   `ORIO_STEREO_GROUND_PLANE=1`, and watch `tools/stereo_debug.py` with **G**
+   held on an empty floor. Red creeping toward the horizon means the pitch is
+   too shallow.
+3. ~~Wire one sensor, run `tools/tof_debug.py --bus 7`, wave a hand at it.~~
+   Done — both sensors, see *Bring-up on the wired pair*. The hand wave is
+   still owed, and it is what sets `TOF_FLIP_H` / `TOF_FLIP_V`: run
+   `tools/tof_debug.py` and check the grid lights up on the side the hand is
+   actually on, and in the row it is actually in.
+4. **Build the bracket**, measure each sensor's height, pitch and yaw into
+   `TOF_HEIGHTS_M` / `TOF_PITCHES_DEG` / `TOF_YAWS_DEG`, then set `ORIO_TOF=1`.
+   Until then the fan is off by default and the placeholders are the plan's
+   intent, not a measurement — the sensors currently see no floor in their
+   lower rows at all, which is what an unmounted sensor on a bench looks like.
 
 ## 1. Three causes, not one
 

@@ -939,6 +939,7 @@ dependencies = [
     { name = "sounddevice" },
     { name = "sqlite-vec" },
     { name = "ultralytics" },
+    { name = "vl53l5cx-ctypes" },
 ]
 
 [package.metadata]
@@ -956,6 +957,7 @@ requires-dist = [
     { name = "sounddevice", specifier = ">=0.5.5" },
     { name = "sqlite-vec", specifier = ">=0.1.9" },
     { name = "ultralytics", specifier = ">=8.4.115" },
+    { name = "vl53l5cx-ctypes", specifier = ">=0.0.3" },
 ]
 
 [[package]]
@@ -1298,6 +1300,15 @@ wheels = [
 ]
 
 [[package]]
+name = "smbus2"
+version = "0.6.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/87/37/b3f7b501502c4915ba3819d1dc277bf3f5fae4a9d067caa4f502aaddd889/smbus2-0.6.1.tar.gz", hash = "sha256:2b043372abf8f6029a632c3aab36b641c5d5872b1cbad599fc68e17ac4fd90a5", size = 17274, upload-time = "2026-04-09T20:37:54.821Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/96/f2/c78a68bd739ac8fc608747cff73a4db3b19f3135658ed4e64374f6425cbf/smbus2-0.6.1-py2.py3-none-any.whl", hash = "sha256:650feeb27ca0ed58b07db4c10201c2a662c41305b7bf6e5fab9d888056f48180", size = 11767, upload-time = "2026-04-09T20:37:53.728Z" },
+]
+
+[[package]]
 name = "sniffio"
 version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1542,6 +1553,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/5c/7d/0b889654d9ee3413f810cf4685e241285f650d98a4103ac9f3c6bcc95f29/uuid_utils-0.17.0-cp312-cp312-win_amd64.whl", hash = "sha256:e59b60a0a4cb7541480e02090d37dc2df3b72df4c2e776fff64ce3a4e3dd4637", size = 172944, upload-time = "2026-07-09T13:48:42.992Z" },
     { url = "https://files.pythonhosted.org/packages/be/35/8c6e1bf65e4d400352885dadc656ad6d0af96e89231e3f04686bc2197128/uuid_utils-0.17.0-cp312-cp312-win_arm64.whl", hash = "sha256:d561a4c5747a1e6c7fa7c49a0292e78b4e8c456332caa084fc7abad8de828652", size = 172459, upload-time = "2026-07-09T13:48:44.271Z" },
 ]
+
+[[package]]
+name = "vl53l5cx-ctypes"
+version = "0.0.3"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "smbus2" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/62/03/12a6c2b2104df604f424a79efa3fb9bc3cbf84964f5807a9e57a133c31de/vl53l5cx-ctypes-0.0.3.tar.gz", hash = "sha256:12ba18265230e37c9e78852ade32a50e89bd7fd69e15446bf8d57c9f008933c5", size = 132834, upload-time = "2022-05-09T10:01:39.254Z" }
 
 [[package]]
 name = "websockets"

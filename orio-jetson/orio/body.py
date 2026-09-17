@@ -274,6 +274,24 @@ class Body:
             )
             return
         self._sensor = sensor
+        # The ToF fan is reported but never fatal — Body must come up without
+        # it, exactly as it did before there was one. `Sensor.start()` has
+        # already dropped it on failure and kept the cameras.
+        if config.TOF_ENABLED:
+            if sensor.tof_names:
+                self.notes.append(
+                    f"ToF fan reading on {', '.join(sensor.tof_names)} — low "
+                    "obstacles and the sub-"
+                    f"{config.STEREO_MIN_RANGE_M:.2f} m gap are covered"
+                )
+            if sensor.tof_error:
+                self.notes.append(
+                    f"⚠ ToF fan degraded: {sensor.tof_error}\n"
+                    f"    Avoidance is running on stereo alone, which is blind "
+                    f"below the camera band and inside {config.STEREO_MIN_RANGE_M:.2f} m. "
+                    f"Check `i2cdetect -y -r {config.TOF_BUSES[0]}` for 0x29, or set "
+                    "ORIO_TOF=0 to stop trying."
+                )
         if sensor.calibrated:
             self.notes.append("obstacle avoidance armed (stereo calibrated)")
         else:

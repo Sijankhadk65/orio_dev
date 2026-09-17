@@ -659,6 +659,201 @@ STEREO_MIN_VALID_FRAC = float(_env("ORIO_STEREO_MIN_VALID_FRAC", "0.10"))
 STEREO_BAND_TOP = float(_env("ORIO_STEREO_BAND_TOP", "0.35"))
 STEREO_BAND_BOTTOM = float(_env("ORIO_STEREO_BAND_BOTTOM", "0.71"))
 
+# ── Ground-plane classification (docs/avoidance-plan.md, Fix A) ───────────────
+# The band above is a CROP, not a classification. It works by keeping the floor
+# outside the kept rows, which also throws away every obstacle low enough to sit
+# below the band edge — a box, a shoe, a door threshold: tall enough to stop the
+# wheels, too low to be looked at. Computed from the committed calibration at
+# 320x240 (focal 216.0 px, cy 117.1), the band bottom is 13.9 deg below the
+# optical axis while the frame runs to 29.6 deg: 15.7 degrees of view the
+# cameras already deliver that nothing ever reads.
+#
+# Classifying each depth pixel by its HEIGHT ABOVE THE FLOOR instead eliminates
+# the floor by geometry, and the whole lower frame becomes usable. See
+# orio/sectors.py for the arithmetic.
+#
+# OFF BY DEFAULT, and it must stay off until the two numbers below are MEASURED.
+# The plan's Phase 0 is what measures them. Switching this on against a guessed
+# pitch tilts the fitted plane, distant floor reads as an obstacle, and the
+# robot refuses to leave `steer` for `cruise` in an empty room — the same
+# failure the tilt-45 row in the neck sweep above records. Set to 1 once
+# STEREO_CAM_HEIGHT_M and STEREO_CAM_PITCH_DEG carry measurements, and keep 0
+# reachable: a regression should be one env var away from being confirmed
+# rather than argued about.
+STEREO_GROUND_PLANE = _env("ORIO_STEREO_GROUND_PLANE", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# *** NOT MEASURED. PLACEHOLDERS. ***  Height of the stereo pair above the floor
+# and how far below horizontal its optical axis looks, with the head at
+# NECK_PAN_DEG/NECK_TILT_DEG. Both are properties of the NECK POSE, not of the
+# camera: re-aim the head and both change, which is why they sit next to a tilt
+# whose own sweep is stale (read the NECK_TILT_DEG block above before trusting
+# anything here).
+#
+# Phase 0 of the plan measures them together and they are cheap to get: run a
+# tape measure along the floor, and in tools/stereo_debug.py read the floor
+# distance at the bottom row of the rectified frame and at the band-bottom row.
+# Two rows, two known off-axis angles (29.6 and 13.9 deg at the committed
+# calibration), two floor distances — solve for height and pitch, then
+# cross-check the height against the tape directly. Positive pitch is DOWN.
+STEREO_CAM_HEIGHT_M = float(_env("ORIO_STEREO_CAM_HEIGHT_M", "0.35"))
+STEREO_CAM_PITCH_DEG = float(_env("ORIO_STEREO_CAM_PITCH_DEG", "0.0"))
+
+# A point this far above the floor is the floor. It absorbs depth noise, the
+# ~1 cm of range error a single pixel of disparity is worth at 0.5 m, and small
+# errors in the pitch above; raising it makes the robot blind to genuinely flat
+# obstacles (a cable, a threshold strip) rather than making it safer.
+STEREO_FLOOR_TOL_M = float(_env("ORIO_STEREO_FLOOR_TOL_M", "0.03"))
+
+# *** NOT MEASURED. *** Anything taller than this is driven under, not around —
+# a doorway lintel, a tabletop the robot passes beneath. Too large is the safe
+# direction (overhead things read as obstacles); too small drives into a table.
+ROBOT_HEIGHT_M = float(_env("ORIO_ROBOT_HEIGHT_M", "0.60"))
+
+# Beyond this range the height estimate is worth less than the disparity noise
+# allows, so the row band takes over and the two fuse by min(). One pixel of
+# disparity error at the committed calibration is worth 1.8 cm at 0.5 m, 7.3 cm
+# at 1.0 m, 16.5 cm at 1.5 m and 29.3 cm at 2.0 m: classifying a 5 cm object by
+# its height is comfortable at 0.5 m and meaningless at 1.5 m. That is fine —
+# low obstacles only matter close — but the height test must DEGRADE back to the
+# band with range rather than pretending to measure heights out to 4 m.
+STEREO_HEIGHT_TRUST_M = float(_env("ORIO_STEREO_HEIGHT_TRUST_M", "1.2"))
+
+# Take every Nth pixel in each axis for the ground-plane reduction. The band
+# path reduces ~27k pixels; the ground path would see the whole 77k frame, and
+# the percentile per sector sorts them. 2 keeps a quarter of the frame, which is
+# ~19k points over 7 sectors — far more than the percentile needs — and keeps
+# the reduction well inside the 33 ms frame budget. Set 1 to use every pixel.
+STEREO_GROUND_STRIDE = int(_env("ORIO_STEREO_GROUND_STRIDE", "2"))
+
+
+# ── ToF fan (VL53L5CX x2, docs/avoidance-plan.md, Fix B) ──────────────────────
+# Two 8x8 time-of-flight arrays at wheel height looking forward, covering the
+# volume no camera pixel reaches at all: below the frame edge, and closer than
+# the 0.25 m stereo near gate that a 60 mm baseline genuinely cannot triangulate
+# inside. They also work in the dark and against blank walls, which is exactly
+# where SGBM is weakest.
+#
+# They hang off the JETSON's 40-pin I2C, not either STM32. Settled 2026-09-16
+# and the reasoning is in the plan: the motion board (32 KB flash, 12 KB RAM)
+# cannot host ST's ~84 KB firmware blob at all, and the drivetrain board would
+# need the 24-byte PROTO_MAX_PAYLOAD raised — a wire-format change on the link
+# that carries the e-stop heartbeat — to move 384 bytes of grid per reading.
+#
+# WIRED AND RANGING as of 2026-09-17: both parts answer at 0x29, one per bus,
+# and the pair opens, ranges and fuses through orio/tof.py. What is NOT done is
+# the bracket — the mount poses below are still the plan's intent rather than a
+# measurement.
+#
+# STILL OFF BY DEFAULT, and that is the reason. The pose is what turns a range
+# into a height above the floor; against a guessed one the fan reports the
+# floor as an obstacle, or worse, an obstacle as floor. Set this to 1 once
+# TOF_HEIGHTS_M / TOF_PITCHES_DEG / TOF_YAWS_DEG carry measured numbers. A ToF
+# that fails to open degrades to stereo-only either way.
+TOF_ENABLED = _env("ORIO_TOF", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# One sensor per I2C bus, which is the whole reason there is no address dance:
+# both parts boot at 0x29, and two buses means no LPn sequencing, no GPIO, no
+# mux, and no volatile address to re-apply after every power cycle.
+#
+# VERIFY THE BUS NUMBERS BEFORE WIRING — numbering varies by Jetson model and
+# JetPack version. `i2cdetect -l` is the authority. On this Orin Nano, 40-pin
+# pins 3/5 are /dev/i2c-7 (c250000.i2c) and pins 27/28 are /dev/i2c-1
+# (c240000.i2c), both confirmed from the device tree. Bus 1 already carries two
+# driver-claimed carrier-board devices at 0x25 and 0x40 (they show as UU), which
+# does not collide with 0x29 but does mean the bus is not private.
+#
+# THE TWO BUSES RUN AT DIFFERENT CLOCKS, and with the parts wired that turned
+# out to matter more than the sharing does. From the device tree: bus 7 is
+# 400 kHz, bus 1 is 100 kHz. Measured 2026-09-17, the sensor on bus 1 takes
+# 8.78 s to accept its ~84 KB firmware blob against 2.73 s on bus 7, and then
+# delivers 4.7 Hz against 15.3 Hz because it cannot move ~1 KB of results per
+# frame any faster. The consequences are handled in orio/tof.py (per-sensor
+# reader threads, per-sensor staleness), but the FIX is to raise bus 1 to
+# 400 kHz — a device-tree change on a bus the carrier board's own drivers use,
+# so it is a decision to take deliberately rather than a tweak. The faster bus
+# is worth giving to whichever sensor covers the more important arc.
+TOF_BUSES = tuple(int(b, 0) for b in _env("ORIO_TOF_BUSES", "7,1").split(",") if b.strip())
+TOF_ADDRESSES = tuple(
+    int(a, 0) for a in _env("ORIO_TOF_ADDRESSES", "0x29,0x29").split(",") if a.strip()
+)
+TOF_NAMES = tuple(n.strip() for n in _env("ORIO_TOF_NAMES", "tof-left,tof-right").split(","))
+
+# *** NOT MEASURED — nothing is mounted yet. ***  Mount pose per sensor. Height
+# above the floor, pitch (positive DOWN) and yaw (positive RIGHT). The plan's
+# Phase 3 measures each one on the actual bracket and records it here, with the
+# same discipline as every other number in this file: a sensor pointing
+# somewhere else measures somewhere else while reporting the same numbers.
+#
+# The intent they encode: mounted LOW and LEVEL, 3-6 cm above the floor, splayed
+# by about 22.5 deg each way so the two 45 deg squares abut into ~90 deg. Level
+# rather than pitched up, because the array is square and a level mount sees
+# floor in its lower rows — and the answer to that is the height classification
+# above, not a mechanical dodge that also throws away the lowest obstacles.
+#
+# Unlike the cameras, this mount is fixed to the CHASSIS, not the neck. That is
+# a feature: the ToF fan does not move when the head looks around, so it is
+# immune to the whole neck-aim problem the stereo thresholds live with.
+TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.045,0.045").split(","))
+TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "0,0").split(","))
+TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-22.5,22.5").split(","))
+
+# Angular span of the 8x8 grid, per ST: 45 x 45 deg (the 65 deg figure in the
+# marketing is the diagonal of the full optical field, not the zone array). Each
+# zone is therefore 5.625 deg across.
+TOF_FOV_DEG = float(_env("ORIO_TOF_FOV_DEG", "45.0"))
+
+# 8x8 at 15 Hz REQUESTED. The ULD caps 8x8 at 15 Hz (4x4 goes to 60), and the
+# sensor on bus 7 reaches it — 15.3 Hz measured. The one on bus 1 does not and
+# cannot: 4.7 Hz measured, bounded by the 100 kHz bus rather than by the part,
+# so asking it for more simply means every read returns the newest frame. This
+# is a single knob for both sensors; if the pair ever needs different rates,
+# that is the moment to make it per-sensor rather than the moment to lower it
+# for the healthy one.
+TOF_RESOLUTION = int(_env("ORIO_TOF_RESOLUTION", "64"))
+TOF_FREQ_HZ = int(_env("ORIO_TOF_FREQ_HZ", "15"))
+
+# Range gate. ST quotes up to 400 cm, in the dark, against a good target; indoor
+# ambient light and a dark carpet cut that hard, and a grazing floor return at
+# the far end of the fan is noise rather than information. The near end is the
+# point of the part — 2 cm is well inside the 25 cm the cameras cannot reach.
+TOF_MIN_RANGE_M = float(_env("ORIO_TOF_MIN_RANGE_M", "0.02"))
+TOF_MAX_RANGE_M = float(_env("ORIO_TOF_MAX_RANGE_M", "3.0"))
+
+# Per-zone target_status values whose distance is believed. 5 is a trusted
+# range; 6 (no wrap check) and 9 (valid, large pulse) are usable with caveats.
+# EVERYTHING ELSE IS UNKNOWN, NOT MAX RANGE. This is the same rule valid_frac
+# enforces for the cameras, and the one that bites hardest if it is got wrong,
+# because "no return" flattened to 4.0 m reads as "clear" and the failure is
+# silent. 255 (no target) in particular is not clear road — it is a surface too
+# dark, too angled, or too far to answer.
+TOF_TRUSTED_STATUS = frozenset(
+    int(s) for s in _env("ORIO_TOF_TRUSTED_STATUS", "5,6,9").split(",") if s.strip()
+)
+
+# Zone 0 is the sensor's own top-left, and which physical corner that is depends
+# on how the breakout is turned on the bracket. Flip here once the grid has been
+# looked at with a hand in front of it, rather than rotating the bracket.
+TOF_FLIP_H = _env("ORIO_TOF_FLIP_H", "0").strip().lower() not in ("0", "false", "no", "off", "")
+TOF_FLIP_V = _env("ORIO_TOF_FLIP_V", "0").strip().lower() not in ("0", "false", "no", "off", "")
+
+# A ToF reading older than this is dropped from the fusion rather than fused.
+# It mirrors AVOID_STALE_S and exists separately so a slow ToF degrades to
+# stereo-only instead of halting the robot: a new sensor that can stop the robot
+# is a new way for the robot to be stopped, and this is an ADDITION to a working
+# guard. A stereo failure keeps halting exactly as it does today.
+#
+# Applied PER SENSOR, not to the fan as a whole — see ToFDetector._republish.
+# The slow sensor on bus 1 is starved by its faster neighbour often enough to
+# cross this threshold on its own (900+ ms between frames, measured), and under
+# a whole-fan rule it took the healthy sensor down with it every time it did.
+# Raise this only with that in mind: it is the window in which a sensor may say
+# nothing before its sectors go unknown, and unknown is not clear.
+TOF_STALE_S = float(_env("ORIO_TOF_STALE_S", str(AVOID_STALE_S)))
+
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each
 # profile is its own sqlite-vec collection under KB_DIR; swap ORIO_KB_PROFILE
