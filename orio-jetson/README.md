@@ -522,7 +522,7 @@ The ToF fan has the same two tools:
 
 ```bash
 uv run python tools/tof_debug.py             # the 8x8 grids, classes, sector map
-uv run python tools/wheel_telemetry.py       # per-wheel eRPM/current, for the bump thresholds
+uv run python tools/wheel_telemetry.py --duty 5   # per-wheel eRPM/current, for the bump thresholds
 uv run python tools/tof_pose.py --selftest   # check the pose maths, no hardware
 uv run python tools/tof_pose.py --wall       # squared to a wall: pitch and yaw
 ```

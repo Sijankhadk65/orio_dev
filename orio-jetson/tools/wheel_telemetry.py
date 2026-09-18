@@ -16,11 +16,12 @@ below what a stationary wheel really reports.
     # watch, without moving anything
     uv run python tools/wheel_telemetry.py
 
-    # hold a duty while watching — the calibration run
-    uv run python tools/wheel_telemetry.py --duty 50
+    # hold a duty while watching — the calibration run. PERCENT, as everywhere
+    # else a human types a duty, so this is the speed the robot actually drives
+    uv run python tools/wheel_telemetry.py --duty 5
 
     # log it for later
-    uv run python tools/wheel_telemetry.py --duty 50 --csv /tmp/stall.csv
+    uv run python tools/wheel_telemetry.py --duty 5 --csv /tmp/stall.csv
 
 ## Safety
 
@@ -28,8 +29,8 @@ Stalling a hub motor at duty is a thermal event on the ESC: sub-ohm windings,
 no back-EMF, current pinned at whatever the FSESC limit is. Keep a jam to a
 couple of seconds, give the controllers airflow, and touch-check between runs.
 `--seconds` defaults to 20 for that reason, and `--duty` is capped at the
-robot's own ceiling (`ORIO_DRIVE_SPEED_MAX_PERCENT`, 5% = 50 per-mille) rather
-than at some limit this tool invented for itself.
+robot's own ceiling (`ORIO_DRIVE_SPEED_MAX_PERCENT`) rather than at some limit
+this tool invented for itself.
 
 The wheels are zeroed and the board e-stopped on every exit path, including an
 exception and a Ctrl-C — that is `Drivetrain.__exit__`'s guarantee and the only
@@ -49,11 +50,14 @@ from orio import config
 from orio.bump import StallDetector
 from orio.drivetrain import Drivetrain
 
-# The robot's ceiling, in per-mille, not this tool's own idea of safe. It was
-# a flat 300 before the ceiling was pinned at 5% on 2026-09-18, which would
-# have let the calibration run at six times the duty every threshold it exists
-# to measure is measured at.
-DUTY_CAP = round(config.DRIVE_SPEED_MAX_PERCENT * 10)
+# PERCENT, like `tools/teleop_guarded.py --duty` and like `set_speed`. This
+# flag was per-mille at first, so `--duty 50` here and `--duty 5` there meant
+# the same thing and the difference was invisible at the prompt. The board
+# takes per-mille and the conversion belongs in one place — just above
+# `set_drive`, not in the operator's head.
+#
+# The cap is the robot's ceiling, not this tool's own idea of safe.
+DUTY_CAP_PERCENT = config.DRIVE_SPEED_MAX_PERCENT
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,9 +67,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument("--port", default=config.DRIVETRAIN_PORT,
                    help="drivetrain board — a udev symlink, never a raw ttyACM*")
-    p.add_argument("--duty", type=int, default=0,
-                   help=f"per-mille duty to hold on BOTH wheels while watching. "
-                        f"Capped at +/-{DUTY_CAP} — the robot's ceiling "
+    p.add_argument("--duty", type=float, default=0.0,
+                   help=f"duty PERCENT to hold on BOTH wheels while watching, the "
+                        f"same units as teleop_guarded. Capped at "
+                        f"+/-{DUTY_CAP_PERCENT:g}%% — the robot's ceiling "
                         f"(ORIO_DRIVE_SPEED_MAX_PERCENT), not this tool's. "
                         f"0 just watches")
     p.add_argument("--seconds", type=float, default=20.0,
@@ -78,9 +83,12 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = parse_args()
-    duty = max(-DUTY_CAP, min(DUTY_CAP, args.duty))
-    if duty != args.duty:
-        print(f"duty clamped to {duty} (cap is +/-{DUTY_CAP})")
+    duty_percent = max(-DUTY_CAP_PERCENT, min(DUTY_CAP_PERCENT, args.duty))
+    if duty_percent != args.duty:
+        print(f"duty clamped to {duty_percent:g}% (the robot's ceiling is "
+              f"+/-{DUTY_CAP_PERCENT:g}%)")
+    # The one conversion, here and nowhere else: the board speaks per-mille.
+    duty = round(duty_percent * 10)
 
     detector = StallDetector()
     period = 1.0 / max(args.hz, 0.1)
@@ -96,8 +104,8 @@ def main() -> int:
           f"|erpm| <= {config.BUMP_STALL_ERPM}, duty >= {config.BUMP_MIN_DUTY}, "
           f"held {config.BUMP_CONFIRM_S}s")
     if duty:
-        print(f"HOLDING {duty} per-mille on both wheels for {args.seconds:g}s — "
-              f"Ctrl-C stops everything")
+        print(f"HOLDING {duty_percent:g}% ({duty} per-mille) on both wheels for "
+              f"{args.seconds:g}s — Ctrl-C stops everything")
     print()
 
     # Opening is its own try, narrowly. Wrapping the whole run in one handler
