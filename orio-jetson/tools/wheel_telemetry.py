@@ -94,6 +94,8 @@ def main() -> int:
     period = 1.0 / max(args.hz, 0.1)
     peaks = {"left": 0.0, "right": 0.0}
     spinning = {"left": 0.0, "right": 0.0}  # peak current while actually turning
+    erpm_moving = {"left": [], "right": []}  # eRPM whenever the wheel was turning
+    erpm_still = {"left": 0, "right": 0}     # samples with the wheel stopped
     samples = 0
     no_status = 0      # the board sent no STATUS frame at all
     invalid_wheels = 0  # a STATUS frame arrived, but a wheel in it was not valid
@@ -183,6 +185,9 @@ def main() -> int:
                     peaks[side] = max(peaks[side], tel.current_a)
                     if abs(tel.erpm) > config.BUMP_STALL_ERPM:
                         spinning[side] = max(spinning[side], tel.current_a)
+                        erpm_moving[side].append(abs(tel.erpm))
+                    else:
+                        erpm_still[side] += 1
                     cells.append(
                         f"{side[0].upper()} {tel.erpm:+6d} erpm {tel.current_a:6.2f} A "
                         f"{tel.v_in:5.1f} V f{tel.fault_code}"
@@ -220,15 +225,42 @@ def main() -> int:
     for side in ("left", "right"):
         print(f"  {side:5s} peak {peaks[side]:6.2f} A   "
               f"peak while turning {spinning[side]:6.2f} A")
+    for side in ("left", "right"):
+        moving = sorted(erpm_moving[side])
+        med = moving[len(moving) // 2] if moving else 0
+        print(f"  {side:5s} eRPM median-while-moving {med:5d}   "
+              f"stopped in {erpm_still[side]}/{samples} samples")
+
+    # What this run says about each threshold. Current earns its place only if
+    # the two populations are far enough apart to put a line between them; on
+    # this robot at 5% duty they are not, and saying "set it to the midpoint of
+    # 0.01 and 0.06" is worse than saying nothing.
     turning = max(spinning.values())
     stalled = max(peaks.values())
-    if stalled > turning > 0:
-        print(f"\nfree-running peak {turning:.2f} A, overall peak {stalled:.2f} A.\n"
-              f"If the overall peak was a genuine jam, ORIO_BUMP_STALL_CURRENT_A\n"
-              f"belongs between them — around {(turning + stalled) / 2:.1f}.")
+    print()
+    if stalled > 2.0 * turning and stalled - turning >= 0.5:
+        print(f"CURRENT looks usable: {turning:.2f} A while turning against "
+              f"{stalled:.2f} A overall.\n"
+              f"  If that peak was a genuine jam, ORIO_BUMP_STALL_CURRENT_A belongs\n"
+              f"  between them — around {(turning + stalled) / 2:.1f}.")
     else:
-        print("\nNo separation to report: run this once free-running and once against\n"
-              "something immovable, and compare the two peaks.")
+        print(f"CURRENT is NOT a usable threshold here: {turning:.2f} A while turning\n"
+              f"  against {stalled:.2f} A overall. Those are too close to put a line\n"
+              f"  between, and at low duty they will stay that way — the applied\n"
+              f"  volts cap the stall current. Leave ORIO_BUMP_STALL_CURRENT_A at 0\n"
+              f"  (disabled) and let eRPM carry it.")
+
+    still = sum(erpm_still.values())
+    moving_any = sum(len(v) for v in erpm_moving.values())
+    if still and moving_any:
+        print(f"\neRPM saw both populations in this one run ({moving_any} turning, "
+              f"{still} stopped),\n  which usually means the wheels stalled part way "
+              f"through rather than\n  the whole run being one condition.")
+    elif moving_any:
+        print(f"\neRPM: turning for the whole run. This is a FREE-RUNNING baseline.")
+    elif still:
+        print(f"\neRPM: stopped for the whole run. This is a STALL, or the wheels "
+              f"never started.")
     return 0
 
 
