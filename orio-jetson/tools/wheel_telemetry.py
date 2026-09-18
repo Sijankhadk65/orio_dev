@@ -27,8 +27,9 @@ below what a stationary wheel really reports.
 Stalling a hub motor at duty is a thermal event on the ESC: sub-ohm windings,
 no back-EMF, current pinned at whatever the FSESC limit is. Keep a jam to a
 couple of seconds, give the controllers airflow, and touch-check between runs.
-`--seconds` defaults to 20 for that reason and `--duty` is capped at 300
-per-mille, which is far more than the 50 this robot cruises at.
+`--seconds` defaults to 20 for that reason, and `--duty` is capped at the
+robot's own ceiling (`ORIO_DRIVE_SPEED_MAX_PERCENT`, 5% = 50 per-mille) rather
+than at some limit this tool invented for itself.
 
 The wheels are zeroed and the board e-stopped on every exit path, including an
 exception and a Ctrl-C — that is `Drivetrain.__exit__`'s guarantee and the only
@@ -48,7 +49,11 @@ from orio import config
 from orio.bump import StallDetector
 from orio.drivetrain import Drivetrain
 
-DUTY_CAP = 300
+# The robot's ceiling, in per-mille, not this tool's own idea of safe. It was
+# a flat 300 before the ceiling was pinned at 5% on 2026-09-18, which would
+# have let the calibration run at six times the duty every threshold it exists
+# to measure is measured at.
+DUTY_CAP = round(config.DRIVE_SPEED_MAX_PERCENT * 10)
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,8 +64,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--port", default=config.DRIVETRAIN_PORT,
                    help="drivetrain board — a udev symlink, never a raw ttyACM*")
     p.add_argument("--duty", type=int, default=0,
-                   help=f"per-mille duty to hold on BOTH wheels while watching, "
-                        f"capped at +/-{DUTY_CAP}. 0 just watches")
+                   help=f"per-mille duty to hold on BOTH wheels while watching. "
+                        f"Capped at +/-{DUTY_CAP} — the robot's ceiling "
+                        f"(ORIO_DRIVE_SPEED_MAX_PERCENT), not this tool's. "
+                        f"0 just watches")
     p.add_argument("--seconds", type=float, default=20.0,
                    help="stop after this long. Short by default because a stall is "
                         "a thermal event on the ESC")
