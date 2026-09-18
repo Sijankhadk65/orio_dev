@@ -88,9 +88,20 @@ class Sensor:
     """
 
     def __init__(self, guard_sectors: int = 3, use_tof: bool | None = None,
-                 tof=None) -> None:
+                 tof=None, bumps=None, use_bump: bool | None = None) -> None:
         self._guard_sectors = guard_sectors
         self._detector = ObstacleDetector()
+        # The bump memory, when there is one. Unlike the ToF fan this opens no
+        # hardware and cannot fail — it is a shared dataclass that the control
+        # loop writes (`body._drive_tick`) and this thread reads. It is here
+        # rather than inside the loop because fusion happens at ObstacleMap
+        # level, and by the time a `Reading` exists the sectors have already
+        # been flattened to tuples.
+        if bumps is None and (config.BUMP_ENABLED if use_bump is None else use_bump):
+            from .bump import BumpMemory
+
+            bumps = BumpMemory()
+        self._bumps = bumps
         # The ToF fan, when there is one. Constructed here rather than passed in
         # so that `Sensor()` keeps meaning "the robot's obstacle sensing,
         # however much of it exists"; `tof=` is for tests and bench tools that
@@ -157,6 +168,16 @@ class Sensor:
             if tof_map is not None:
                 omap = fuse(omap, tof_map)
 
+        # The bump memory last, because contact outranks everything: `fuse()`
+        # takes the nearest, and nothing a ranged sensor reports is nearer than
+        # a wheel that is already against the obstacle. `fresh_map()` returns
+        # None whenever the robot is not stalled, which is nearly always, so
+        # for the whole of a normal run this contributes nothing at all.
+        if self._bumps is not None:
+            bump_map = self._bumps.fresh_map()
+            if bump_map is not None:
+                omap = fuse(omap, bump_map)
+
         with self._lock:
             self._frame = frame
             self._reading = Reading(
@@ -202,6 +223,16 @@ class Sensor:
         """
         with self._lock:
             return self._frame
+
+    @property
+    def bumps(self):
+        """The shared bump memory, or None when bump sensing is off.
+
+        `body._drive_tick` writes it and this thread reads it; handing it out
+        here keeps one memory per `Sensor` rather than leaving the two halves
+        to find each other.
+        """
+        return self._bumps
 
     @property
     def tof_names(self) -> tuple[str, ...]:

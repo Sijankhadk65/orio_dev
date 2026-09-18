@@ -105,6 +105,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import config
 from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor
+from orio.bump import StallDetector
 from orio.drivetrain import Drivetrain
 from orio.motion import JOINT_NECK, Motion
 
@@ -239,6 +240,11 @@ def parse_args() -> argparse.Namespace:
              "for whether a low obstacle was caught by the fan or by the "
              "ground-plane classification — run the same approach twice",
     )
+    parser.add_argument(
+        "--no-bump", action="store_true",
+        help="ignore wheel stalls, rather than reading a jammed wheel as an "
+             "obstacle in the sector map (see orio/bump.py)",
+    )
     return parser.parse_args()
 
 
@@ -254,6 +260,8 @@ def sector_sources(reading) -> str:
             out.append("c")
         elif source.startswith("tof"):
             out.append("T")
+        elif source == "bump":
+            out.append("X")
         elif source.endswith("ground"):
             out.append("G")
         else:
@@ -383,7 +391,9 @@ def main() -> int:
         print("--- opening stereo (both sensors, ~2 s)"
               + (" and the ToF fan (firmware upload, seconds)" if fan else "")
               + " ---")
-        sensor = Sensor(3, use_tof=fan)
+        bumps_on = config.BUMP_ENABLED and not args.no_bump
+        sensor = Sensor(3, use_tof=fan, use_bump=bumps_on)
+        stall = StallDetector()
         try:
             sensor.start()
         except Exception as exc:
@@ -469,6 +479,18 @@ def main() -> int:
                             avoider.reset()
                             print(f"\n{DIRECTION_NAMES.get(latch, latch)}")
 
+                    # A jammed wheel, read as contact. Fed BEFORE the reading
+                    # is taken so a stall confirmed now is in the map this tick
+                    # decides on. `last_sent` is what the board is holding —
+                    # the duty the telemetry in hand actually describes.
+                    if sensor.bumps is not None:
+                        sensor.bumps.record(
+                            stall.update(
+                                time.monotonic(), last_sent or (0, 0), dt.last_status()
+                            )
+                        )
+                        dt.request_status()
+
                     reading = sensor.reading
                     decision = avoider.decide(latch, round(duty_percent * 10), reading)
 
@@ -502,7 +524,8 @@ def main() -> int:
                         clear = "----" if ahead is None else f"{ahead:.2f}"
                         # One letter per sector, left to right, for which sensor
                         # produced it: B row band, G ground plane, T a ToF array,
-                        # c the clear-ground fallback, . nothing knew. A column
+                        # X a wheel stall (contact), c the clear-ground
+                        # fallback, . nothing knew. A column
                         # that reads T while the robot slows is the fan earning
                         # its place; one that reads . is a blind sector.
                         print(

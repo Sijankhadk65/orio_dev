@@ -44,7 +44,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import config
-from orio.avoid import Reading
+from orio.avoid import Reading, avoider_from_config
+from orio.bump import Bump, BumpMemory, StallDetector
+from orio.drivetrain import Status, WheelTelemetry
 from orio.sectors import ObstacleMap, Sector, SectorGeometry, fill_clear, fuse
 from orio.body import DIRECTIONS, NO_WHEELS, NOT_RENEWED, Body
 from orio.seek import Seeker
@@ -75,6 +77,14 @@ class FakeLink:
     def __init__(self) -> None:
         self.sent: list[tuple[float, int, int]] = []
         self.lock = threading.Lock()
+        # What the FSESCs are reporting, or None for a board that never
+        # answers. Held as the wheel dict rather than a whole `Status` so
+        # `last_status()` can stamp it fresh on every poll, the way a live
+        # board does: a fixture stamped once ages past BUMP_STATUS_STALE_S
+        # mid-run and stops confirming for a reason that has nothing to do
+        # with what is being tested.
+        self.wheels = None
+        self.status_requests = 0
 
     def set_drive(self, left: int, right: int) -> None:
         with self.lock:
@@ -82,6 +92,18 @@ class FakeLink:
 
     def take_rejection(self):
         return None
+
+    # `_drive_tick` polls wheel telemetry for stall detection. A link that
+    # never answers is the normal case on this bench: `last_status()` stays
+    # None, the detector resets every tick and records nothing — which is the
+    # property every test below silently depends on.
+    def request_status(self) -> None:
+        self.status_requests += 1
+
+    def last_status(self):
+        if self.wheels is None:
+            return None
+        return Status(estopped=False, wheels=self.wheels, timestamp=time.monotonic())
 
     def stop(self) -> None:
         pass
@@ -111,9 +133,10 @@ class FakeLink:
 class FakeSensor:
     """A stereo pair that always sees the same thing."""
 
-    def __init__(self, sectors=CLEAR, age_s: float = 0.0) -> None:
+    def __init__(self, sectors=CLEAR, age_s: float = 0.0, bumps=None) -> None:
         self.sectors = sectors
         self.age_s = age_s
+        self.bumps = bumps
 
     @property
     def reading(self) -> Reading:
@@ -615,6 +638,14 @@ class World:
     def take_rejection(self):
         return None
 
+    def request_status(self) -> None:
+        pass
+
+    def last_status(self):
+        return None
+
+    bumps = None
+
     def stop(self) -> None:
         pass
 
@@ -671,6 +702,228 @@ def test_approach() -> None:
     check("no cruise thread is left behind", no_cruise_threads())
 
 
+# ── a jammed wheel, read as an obstacle ──────────────────────────────────────
+
+
+def wheel(erpm=0, current_a=20.0, valid=True):
+    return WheelTelemetry(erpm=erpm, current_a=current_a, v_in=36.0,
+                          fault_code=0, valid=valid)
+
+
+def status(left=None, right=None, at=None, age_s=0.0):
+    """A `Status` stamped `age_s` before `at`. `at` is the simulated clock, not
+    the wall clock: the detector compares the status stamp against the `now` it
+    is given, so a fixture stamped once with `time.monotonic()` goes stale
+    part-way through a simulated run and quietly stops confirming."""
+    at = time.monotonic() if at is None else at
+    return Status(
+        estopped=False,
+        wheels={"left": left if left is not None else wheel(erpm=3000, current_a=2.0),
+                "right": right if right is not None else wheel(erpm=3000, current_a=2.0)},
+        timestamp=at - age_s,
+    )
+
+
+def confirm(det, t0, make, duty=(300, 300), ticks=8, step=0.05):
+    """Tick the detector forward and return the FIRST bump it confirmed.
+
+    First, not last: the question every test below asks is whether the evidence
+    was ever enough, and a detector that confirms and then stops (because the
+    fixture aged out, or the wheel broke free) has still answered yes.
+
+    `make(now)` builds the status for that tick, so a fixture can follow the
+    simulated clock instead of being stamped once.
+    """
+    first = None
+    for i in range(ticks):
+        now = t0 + i * step
+        got = det.update(now, duty, make(now))
+        if got is not None and first is None:
+            first = got
+    return first
+
+
+def jammed(**kw):
+    """A both-wheels-jammed status factory, overridable per side."""
+    return lambda now: status(
+        left=kw.get("left", wheel(erpm=0, current_a=20.0)),
+        right=kw.get("right", wheel(erpm=0, current_a=20.0)),
+        at=now,
+        age_s=kw.get("age_s", 0.0),
+    )
+
+
+def left_jammed(**kw):
+    return lambda now: status(left=wheel(erpm=0, current_a=20.0, **kw), at=now)
+
+
+def test_stall_detection() -> None:
+    print("\na stalled wheel is confirmed, and nothing else is")
+    t0 = time.monotonic()
+
+    det = StallDetector()
+    check("a wheel drawing current and not turning is a stall",
+          confirm(det, t0, left_jammed()) is not None)
+    det = StallDetector()
+    check("and it is reported on the side it happened",
+          confirm(det, t0, left_jammed()).side == "left")
+
+    # Each of the three conditions alone, and none of them is contact.
+    det = StallDetector()
+    check("current with the wheel turning is load, not contact",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=3000, current_a=20.0), at=now)) is None)
+    det = StallDetector()
+    check("a still wheel drawing nothing is just a stationary robot",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=0, current_a=0.5), at=now)) is None)
+    det = StallDetector()
+    check("no duty commanded is never a stall",
+          confirm(det, t0, left_jammed(), duty=(0, 0)) is None)
+
+    # Trap 3: reversing into something is real, and there is nowhere to put it.
+    det = StallDetector()
+    check("stalling in REVERSE is not an obstacle ahead",
+          confirm(det, t0, jammed(), duty=(-300, -300)) is None)
+
+    # Trap 2, three ways: unknown is not stalled.
+    det = StallDetector()
+    check("telemetry flagged invalid cannot confirm",
+          confirm(det, t0, left_jammed(valid=False)) is None)
+    det = StallDetector()
+    check("no status at all cannot confirm", confirm(det, t0, lambda now: None) is None)
+    det = StallDetector()
+    check("stale status cannot confirm",
+          confirm(det, t0, jammed(age_s=config.BUMP_STATUS_STALE_S + 1.0)) is None)
+
+    # The start-up transient: duty high, eRPM 0, current at its peak. Confirming
+    # instantly would report a bump every time the robot moves off.
+    det = StallDetector()
+    make = left_jammed()
+    check("a single tick of stall is not yet a bump",
+          det.update(t0, (300, 300), make(t0)) is None)
+    half = t0 + config.BUMP_CONFIRM_S * 0.5
+    check("and it is still not one before BUMP_CONFIRM_S",
+          det.update(half, (300, 300), make(half)) is None)
+    past = t0 + config.BUMP_CONFIRM_S + 0.01
+    check("but it is after", det.update(past, (300, 300), make(past)) is not None)
+
+    # Between two hops the loop stops ticking and the robot may be moved or
+    # carried. A timer started before that gap must not confirm across it.
+    det = StallDetector()
+    det.update(t0, (300, 300), make(t0))
+    late = t0 + 10.0
+    check("a timer does not survive a gap in the ticks",
+          det.update(late, (300, 300), make(late)) is None)
+
+    det = StallDetector()
+    check("both wheels jammed reports as one two-sided bump",
+          confirm(det, t0, jammed()).side == "both")
+
+    # Regression: BUMP_MIN_DUTY was first set above the duty this robot
+    # actually drives at, and the detector armed in no test and on no hop.
+    # DRIVE_SPEED_MIN_PERCENT is 5, so 50 per-mille is the slowest CRUISE, and
+    # `Avoider` scales that again by AVOID_MIN_SCALE and its turn factor while
+    # steering. The floor has to sit under all of it.
+    slowest_cruise = round(config.DRIVE_SPEED_MIN_PERCENT * 10)
+    det = StallDetector()
+    check("the detector arms at the slowest speed the robot can be driven at",
+          confirm(det, t0, jammed(), duty=(slowest_cruise, slowest_cruise)) is not None,
+          f"duty {slowest_cruise} vs floor {config.BUMP_MIN_DUTY}")
+    crawling = max(1, round(slowest_cruise * config.AVOID_MIN_SCALE * 0.5))
+    det = StallDetector()
+    check("and at the slowest the avoider can scale it down to",
+          confirm(det, t0, jammed(), duty=(crawling, crawling)) is not None,
+          f"duty {crawling} vs floor {config.BUMP_MIN_DUTY}")
+
+
+def test_bump_map() -> None:
+    print("\na bump becomes sectors, and stops being them")
+    t0 = time.monotonic()
+    mem = BumpMemory(memory_s=2.0, sectors=7, hfov_deg=73.0)
+
+    check("nothing remembered is no map at all", mem.fresh_map(t0) is None)
+
+    mem.record(Bump(side="left", at=t0, current_a=20.0))
+    omap = mem.fresh_map(t0)
+    left = [s for s in omap.sectors if s.angle_deg < 0]
+    right = [s for s in omap.sectors if s.angle_deg > 0]
+    check("every sector on the bumped side is marked",
+          all(s.distance_m == config.BUMP_DISTANCE_M for s in left))
+    check("and none on the other side is", all(s.distance_m is None for s in right))
+    check("the winning source says which sensor it was",
+          all(s.source == "bump" for s in left))
+
+    # Trap 1, the one that halts the robot on arithmetic alone if it is wrong.
+    later = t0 + 1.5
+    check("the map is stamped NOW, not when the contact happened",
+          abs(mem.fresh_map(later).timestamp - later) < 1e-6)
+    check("a bump older than its memory is not emitted at all",
+          mem.fresh_map(t0 + 2.5) is None)
+
+    # `_roomier_side()` scores a side by its BEST known sector, so a bump that
+    # marked one sector would leave the robot free to pivot into what it hit.
+    mem.record(Bump(side="left", at=t0, current_a=20.0))
+    stereo = sector_map([4.0] * 7, source="stereo-band")
+    fused = fuse(stereo, mem.fresh_map(t0))
+    angles = [s.angle_deg for s in fused.sectors]
+    got = [s.distance_m for s in fused.sectors]
+    check("contact beats a clear stereo reading on the bumped side",
+          all(d == 0.0 for a, d in zip(angles, got) if a < 0), f"{got}")
+    check("and leaves the other side alone to be steered toward",
+          all(d == 4.0 for a, d in zip(angles, got) if a > 0), f"{got}")
+
+    reading = Reading(tuple(zip(angles, got)), None, "fused", time.monotonic())
+    av = avoider_from_config()
+    check("so the escape turns AWAY from the side that stalled",
+          av._roomier_side(reading) == 1, str(av._roomier_side(reading)))
+
+    mem.record(Bump(side="both", at=t0, current_a=20.0))
+    everywhere = mem.fresh_map(t0)
+    check("a two-sided bump marks the centre sector too",
+          all(s.distance_m == config.BUMP_DISTANCE_M for s in everywhere.sectors))
+
+
+def test_bump_reaches_the_policy() -> None:
+    print("\nthe drive loop turns a jammed wheel into a stopped robot")
+    mem = BumpMemory()
+    link = FakeLink()
+    body = fake_body(link=link, sensor=FakeSensor(bumps=mem))
+
+    body.hop("forward", (1, 1), 0.2)
+    check("with a quiet board, nothing is ever recorded", mem.last is None)
+    check("and the loop did ask for telemetry", link.status_requests > 0)
+
+    # Now the board answers, and answers jammed.
+    link = FakeLink()
+    link.wheels = {"left": wheel(erpm=0, current_a=20.0),
+                   "right": wheel(erpm=0, current_a=20.0)}
+    mem = BumpMemory()
+    body = fake_body(link=link, sensor=FakeSensor(bumps=mem))
+
+    started = time.monotonic()
+    body.hop("forward", (1, 1), config.BUMP_CONFIRM_S + 0.3)
+    bumped = mem.last is not None
+    check("a jammed wheel under duty is recorded as a bump", bumped,
+          f"after {time.monotonic() - started:.2f}s")
+    if bumped:
+        check("on both sides, because both wheels were jammed",
+              mem.last.side == "both", mem.last.side)
+        check("and the map it produces is the one the policy would see",
+              all(s.source == "bump" for s in mem.fresh_map().sectors))
+
+    # The other half of the contract: a wheel that is turning under the same
+    # duty and the same current is a robot driving up a ramp, not into a wall.
+    link = FakeLink()
+    link.wheels = {"left": wheel(erpm=3000, current_a=20.0),
+                   "right": wheel(erpm=3000, current_a=20.0)}
+    mem = BumpMemory()
+    body = fake_body(link=link, sensor=FakeSensor(bumps=mem))
+    body.hop("forward", (1, 1), config.BUMP_CONFIRM_S + 0.3)
+    check("a wheel turning under load is not a bump, however hard it is pulling",
+          mem.last is None)
+
+
 def main() -> int:
     print(f"AVOID_TICK_S={config.AVOID_TICK_S:g}  CRUISE_DEADMAN_S={config.CRUISE_DEADMAN_S:g}  "
           f"SEEK_LOOK_PERIOD_S={config.SEEK_LOOK_PERIOD_S:g}  "
@@ -691,6 +944,9 @@ def main() -> int:
         test_tof_axial_distance,
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
+        test_stall_detection,
+        test_bump_map,
+        test_bump_reaches_the_policy,
         test_approach,
     ):
         test()

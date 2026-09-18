@@ -882,6 +882,96 @@ TOF_FLIP_V = _env("ORIO_TOF_FLIP_V", "0").strip().lower() not in ("0", "false", 
 # nothing before its sectors go unknown, and unknown is not clear.
 TOF_STALE_S = float(_env("ORIO_TOF_STALE_S", str(AVOID_STALE_S)))
 
+# ── Bump: a stalled wheel, read as an obstacle ────────────────────────────────
+# See orio/bump.py. A wheel that will not turn under duty is contact, which is a
+# more certain obstacle reading than any ranged sensor produces — and it covers
+# exactly the case stereo cannot: the thing is touching the robot, a quarter of
+# a metre inside STEREO_MIN_RANGE_M, and below the camera band besides.
+#
+# This is an ADDITION to a guard that already works, so it is free to be wrong
+# in the cheap direction (a bump that decays unused) and must never be wrong in
+# the expensive one (contact invented from missing telemetry). Every threshold
+# below is set with that asymmetry in mind.
+# OFF until the two thresholds below are measured against a real jammed wheel,
+# the same discipline TOF_ENABLED is held to and for the same reason: a
+# constant that was estimated rather than measured is not yet a sensor. Both
+# are guesses today, and BUMP_STALL_ERPM is doubly so — it assumes ~15 pole
+# pairs, which hubmotor_control_reference.pdf p.2 makes its own gotcha. Too low
+# a current threshold invents 2.5 s of phantom obstacle; too high does nothing.
+# `ORIO_BUMP=1` opts in, which is how the bench runs it.
+BUMP_ENABLED = _env("ORIO_BUMP", "0").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# All three conditions must hold together for BUMP_CONFIRM_S. Duty alone says
+# nothing about the world, a still wheel alone is every stationary robot, and
+# current alone is a carpet or a ramp — load, not contact.
+#
+# Per-mille, matching what reaches the board, and it has to sit under the
+# SLOWEST duty the policy ever commands or the detector never arms at all.
+# That floor is lower than it looks: DRIVE_SPEED_MIN_PERCENT is 5, so the
+# slowest cruise is 50 per-mille, and `Avoider` scales that again by
+# AVOID_MIN_SCALE (0.35) and by its turn factor while steering — 9 at the
+# extreme, which a floor of 10 sat just above, arming the detector on no hop
+# this robot can actually drive. 5 clears the whole commandable range while
+# still meaning "something was genuinely asked for".
+#
+# Almost all the discrimination therefore comes from current and eRPM, not from
+# here, which is the right division of labour: at 1% duty a hub motor cannot
+# pull BUMP_STALL_CURRENT_A whether it is jammed or not.
+#
+# Note a pivot commands one wheel NEGATIVE. A reverse duty can never clear this
+# floor, so pivoting against something is not recorded — the same gap as trap 3
+# in orio/bump.py, reached by a different route.
+BUMP_MIN_DUTY = int(_env("ORIO_BUMP_MIN_DUTY", "5"))
+
+# ELECTRICAL rpm, which is what the VESC reports. At ~15 pole pairs (confirm
+# against FOC detection before trusting it — hubmotor_control_reference.pdf p.2
+# makes this its own gotcha) 100 wheel-rpm is ~1500 eRPM, so a 3 wheel-rpm
+# crawl is ~45. Above this the wheel is turning, however slowly, and a turning
+# wheel is not jammed.
+BUMP_STALL_ERPM = int(_env("ORIO_BUMP_STALL_ERPM", "50"))
+
+# Amps, and THE number to measure before ORIO_BUMP=1 is worth setting. The
+# FSESC current limit is the ceiling: the VESC config checklist starts the
+# motor limit at 15-20 A (hubmotor_control_reference.pdf p.2) and a jammed
+# wheel pins itself against whatever that limit is. This wants to sit well
+# above what a free-running wheel draws and below the limit itself.
+#
+# 8.0 is an ESTIMATE, and the uncertainty is real: Orio cruises at 5% duty, so
+# a stall there applies only ~1.8 V across a sub-ohm winding, and how many amps
+# that becomes is a property of this motor nobody here has measured. Drive into
+# something immovable, watch `current_a`, and set it between the two
+# populations.
+BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "8.0"))
+
+# How long all three must hold. NOT noise filtering: a hub motor coming up from
+# rest looks exactly like a stall for real milliseconds — duty high, eRPM ~0,
+# current at its peak — so confirming instantly reports a bump on every start.
+BUMP_CONFIRM_S = float(_env("ORIO_BUMP_CONFIRM_S", "0.25"))
+
+# Telemetry older than this is treated as no telemetry at all. Unknown is not
+# stalled: inventing contact from a quiet link stops the robot for as long as
+# the memory lasts, and the failure is silent.
+BUMP_STATUS_STALE_S = float(_env("ORIO_BUMP_STATUS_STALE_S", "0.30"))
+
+# How long a bump stays in the map after the wheel stops reporting jammed.
+# Long enough to survive the back-off it triggers (AVOID_BACKOFF_S) and the
+# pivot that follows, and no longer: a bump is a fact about a moment of
+# contact, not a landmark, and a permanent one walls off a side of the map
+# forever. Note this is the memory's LIFETIME, never its timestamp — see trap 1
+# in orio/bump.py.
+BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "2.5"))
+
+# The range a bump reports. Zero is the honest answer and it is also the useful
+# one: Avoider._ahead() qualifies a sector by `distance * sin(angle)`, so a
+# zero-range reading is inside the corridor at every angle, which is exactly
+# right for something already touching the robot.
+BUMP_DISTANCE_M = float(_env("ORIO_BUMP_DISTANCE_M", "0.0"))
+
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each
 # profile is its own sqlite-vec collection under KB_DIR; swap ORIO_KB_PROFILE

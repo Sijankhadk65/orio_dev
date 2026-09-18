@@ -297,6 +297,76 @@ allowed to *claim* an obstacle (the part the noise ruins).
   zones land inside ±36.55 deg, 16 fall outside and are discarded, exactly as
   section 3 predicted. The pair still covers all seven sectors between them.
 
+### A jammed wheel is a sensor — 2026-09-18
+
+Added while the ToF bracket is off the robot, and it needs no bracket at all.
+`orio/bump.py`, `ORIO_BUMP` (default **0**).
+
+The request that started it was to point the head at whatever stopped the
+robot. That cannot work, for two reasons worth recording so it is not proposed
+again:
+
+* **The neck cannot look sideways.** `kJointLimits[]` in
+  `orio-stm-motion/Core/Src/servo_joint.c` clamps neck pan to 165..185 — the
+  same +/-10 deg window that silently defeated `SEEK_SCAN_OFFSETS_DEG` on
+  2026-09-10. The head turns 10 deg against a stereo pair that already sees
+  36.5, so panning reveals nothing the current frame does not already contain.
+* **Contact is inside stereo's minimum range.** `STEREO_MIN_RANGE_M` is 0.25 m.
+  A stall means the obstacle is touching the robot, a quarter of a metre inside
+  the range where disparity resolves at all. Aimed perfectly, the cameras
+  return unknown.
+
+So the stall is not a trigger to go and perceive. It IS the perception, and the
+most certain one on the robot: every other sensor answers "is something there?"
+with a probability, and a wheel that will not turn under duty answers it with
+contact.
+
+It reaches the policy the same way the ToF fan does — as sectors, through
+`fuse()`, at zero range. `Avoider` is untouched. Three properties took thought:
+
+1. **The map is stamped NOW, not at contact.** `fuse()` takes the oldest
+   timestamp of its inputs, so a memory stamped when the wheel jammed would age
+   the whole fused map as it decayed and `AVOID_STALE_S` would halt the robot on
+   arithmetic alone — the same bug the fan hit at bring-up. A memory's age
+   belongs in whether it is emitted, never in the stamp it is emitted with.
+2. **A side bump marks the WHOLE side.** `_roomier_side()` scores a side by its
+   best known sector, so one zeroed sector on the left leaves the robot free to
+   pivot left into the thing it just hit. Marking every sector on that side is
+   what makes the escape correct, and it is honest: a stalled wheel locates an
+   obstacle to a side, not to a 10 deg slice.
+3. **Unknown is not stalled.** `WheelTelemetry.valid` is 0 on any poll that did
+   not get a CRC-valid reply (`vesc.h:45`), and the FSESCs are polled over UART
+   per ESC — so with motor power off every sample is invalid and no bump can
+   ever be recorded. That is the designed behaviour, but it also means the
+   feature looks identical to "working fine" on an unpowered bench.
+
+**The thresholds are estimates and that is why the default is 0.**
+`BUMP_STALL_CURRENT_A = 8.0` is the one to measure: Orio cruises at 5% duty, so
+a stall applies only ~1.8 V across a sub-ohm winding and the resulting current
+is a property of this motor nobody has measured. `BUMP_STALL_ERPM = 50` assumes
+~15 pole pairs, which p.2 of the hub-motor reference makes its own gotcha.
+
+One threshold was already wrong and the tests caught it: `BUMP_MIN_DUTY` was
+first set to 80, above the 50 per-mille that `DRIVE_SPEED_MIN_PERCENT = 5`
+actually commands, so the detector armed on no hop this robot can drive.
+`tools/test_cruise.py` now asserts the floor against the slowest duty `Avoider`
+can emit (9, after `AVOID_MIN_SCALE` and the turn factor).
+
+**What it does not cover.** A stall while REVERSING is real information about
+something behind, and the sector grid is forward-only — recording it would put
+a phantom obstacle in front of a robot whose problem is behind it. It is
+dropped, and back-off still reverses blind. A pivot commands one wheel
+negative, so pivoting against something is not recorded either, by the same
+rule. Both stay gaps; the rear sensor is still the fix.
+
+**Still owed:** the post-back-off look. Once the robot has reversed 0.3-0.5 m
+the obstacle is inside stereo's working range, and a tilt sweep toward the
+downward end of the window is then a real look at a visible target rather than
+a search. Not built — it needs the wheels stopped (a panned or tilted head
+points the corridor somewhere other than the direction of travel) and it needs
+the tilt-to-scene mapping re-measured, since the numbers in `config.py` predate
+both the 30 deg driving aim and the +/-10 deg window.
+
 ### What to do next, in order
 
 1. **Phase 0.** Nothing below is trustworthy without it, and its first item may
@@ -310,6 +380,11 @@ allowed to *claim* an obstacle (the part the noise ruins).
    still owed, and it is what sets `TOF_FLIP_H` / `TOF_FLIP_V`: run
    `tools/tof_debug.py` and check the grid lights up on the side the hand is
    actually on, and in the row it is actually in.
+3b. **Measure the two bump thresholds** (`ORIO_BUMP_STALL_CURRENT_A`,
+   `ORIO_BUMP_STALL_ERPM`) and set `ORIO_BUMP=1`. Needs motor power and a real
+   jam; keep it to a couple of seconds, because stalling a hub motor at duty is
+   a thermal event on the ESC. This is the one item here that does not depend
+   on the bracket.
 4. **Lower the bracket — decided 2026-09-17, to be done 2026-09-18.** The
    as-built mount measured 0.64 m looking 8 deg down, which flies over the
    low obstacles the fan exists to catch and reports the floor behind them as

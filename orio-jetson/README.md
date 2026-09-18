@@ -269,6 +269,14 @@ way.
 | `ORIO_TOF_TRUSTED_STATUS` | `5,6,9` | Per-zone `target_status` values whose distance is believed; everything else is unknown, never max range |
 | `ORIO_TOF_FLIP_H` / `_FLIP_V` | `0` / `0` | Zone-order flips, once you have seen which corner is zone 0 |
 | `ORIO_TOF_STALE_S` | `0.5` | Older than this and a sensor drops out of the fusion — **per sensor**, so the slow one cannot take the healthy one with it. Both quiet and stereo decides alone, rather than the robot halting |
+| `ORIO_BUMP` | `0` | `1` to read a jammed wheel as contact and fuse it into the sector map (`orio/bump.py`). **Off until the two thresholds below are measured against a real stall** — same discipline as `ORIO_TOF` |
+| `ORIO_BUMP_STALL_CURRENT_A` | `8.0` | **Estimate.** Amps a stalled wheel must be drawing. The number to measure first: drive into something immovable and watch `current_a` |
+| `ORIO_BUMP_STALL_ERPM` | `50` | **Estimate.** Above this the wheel is turning, so it is not jammed. Electrical rpm, assuming ~15 pole pairs — confirm from FOC detection |
+| `ORIO_BUMP_MIN_DUTY` | `5` | Per-mille floor below which nothing was really commanded. Must stay under the slowest duty `Avoider` emits (9), or the detector never arms |
+| `ORIO_BUMP_CONFIRM_S` | `0.25` | How long all three conditions must hold. Not noise filtering — a hub motor coming up from rest looks exactly like a stall |
+| `ORIO_BUMP_STATUS_STALE_S` | `0.3` | Telemetry older than this is no telemetry. Unknown is not stalled |
+| `ORIO_BUMP_MEMORY_S` | `2.5` | How long a bump stays in the map. Long enough to outlast the back-off it triggers, and no longer |
+| `ORIO_BUMP_DISTANCE_M` | `0.0` | The range a bump reports. Zero is honest and puts it inside the corridor at every angle |
 | `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
 | `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |
