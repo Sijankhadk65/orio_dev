@@ -486,7 +486,7 @@ def main() -> int:
                     if sensor.bumps is not None:
                         sensor.bumps.record(
                             stall.update(
-                                time.monotonic(), last_sent or (0, 0), dt.last_status()
+                                time.monotonic(), last_sent or (0, 0), dt.last_status
                             )
                         )
                         dt.request_status()

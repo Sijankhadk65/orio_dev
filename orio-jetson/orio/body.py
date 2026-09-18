@@ -546,18 +546,18 @@ class Body:
         `standing` is the duty pair the board is currently holding — what was
         actually commanded, not what is about to be. That is the pair the
         telemetry in hand describes: `request_status()` only asks, and the
-        reply lands in `last_status()` a tick or so later, so pairing this
+        reply lands in `last_status` a tick or so later, so pairing this
         reply with the command about to be sent would judge a stall against
         duty the wheel has not seen yet.
 
         Nothing here can halt the robot on its own. A board that never answers
-        leaves `last_status()` None, the detector resets, and the map is
+        leaves `last_status` None, the detector resets, and the map is
         exactly what stereo and the ToF fan made it.
         """
         bumps = getattr(sensor, "bumps", None)
         if bumps is None:
             return
-        bump = self._stall.update(time.monotonic(), standing or (0, 0), link.last_status())
+        bump = self._stall.update(time.monotonic(), standing or (0, 0), link.last_status)
         bumps.record(bump)
         # Ask for the next one. Asynchronous by design — see `request_status`.
         link.request_status()

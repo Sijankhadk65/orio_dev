@@ -46,7 +46,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from orio import config
 from orio.avoid import Reading, avoider_from_config
 from orio.bump import Bump, BumpMemory, StallDetector
-from orio.drivetrain import Status, WheelTelemetry
+from orio.drivetrain import Drivetrain, Status, WheelTelemetry
 from orio.sectors import ObstacleMap, Sector, SectorGeometry, fill_clear, fuse
 from orio.body import DIRECTIONS, NO_WHEELS, NOT_RENEWED, Body
 from orio.seek import Seeker
@@ -79,7 +79,7 @@ class FakeLink:
         self.lock = threading.Lock()
         # What the FSESCs are reporting, or None for a board that never
         # answers. Held as the wheel dict rather than a whole `Status` so
-        # `last_status()` can stamp it fresh on every poll, the way a live
+        # `last_status` can stamp it fresh on every poll, the way a live
         # board does: a fixture stamped once ages past BUMP_STATUS_STALE_S
         # mid-run and stops confirming for a reason that has nothing to do
         # with what is being tested.
@@ -94,12 +94,16 @@ class FakeLink:
         return None
 
     # `_drive_tick` polls wheel telemetry for stall detection. A link that
-    # never answers is the normal case on this bench: `last_status()` stays
+    # never answers is the normal case on this bench: `last_status` stays
     # None, the detector resets every tick and records nothing — which is the
     # property every test below silently depends on.
     def request_status(self) -> None:
         self.status_requests += 1
 
+    # A PROPERTY, because that is what Drivetrain.last_status is. It was a
+    # method here first, which made every test below agree with a call site
+    # that could not work against the real board.
+    @property
     def last_status(self):
         if self.wheels is None:
             return None
@@ -641,6 +645,7 @@ class World:
     def request_status(self) -> None:
         pass
 
+    @property
     def last_status(self):
         return None
 
@@ -837,6 +842,32 @@ def test_stall_detection() -> None:
           f"duty {crawling} vs floor {config.BUMP_MIN_DUTY}")
 
 
+def test_fakes_match_the_real_link() -> None:
+    """The fakes must have the same SHAPE as `Drivetrain`, not just the same names.
+
+    `last_status` is a PROPERTY on the real link and was a method on FakeLink,
+    so every test here agreed with three call sites that could not work against
+    the board — `'Status' object is not callable`, found only once the hardware
+    was powered up. A fake that disagrees with the real interface does not
+    catch bugs, it certifies them.
+    """
+    print("\nthe fakes have the same shape as the real drivetrain")
+    for name in ("last_status", "set_drive", "request_status", "take_rejection", "stop"):
+        real = getattr(Drivetrain, name, None)
+        check(f"Drivetrain still has {name}", real is not None)
+        if real is None:
+            continue
+        for fake in (FakeLink, World):
+            mine = getattr(fake, name, None)
+            check(f"{fake.__name__}.{name} exists", mine is not None)
+            if mine is None:
+                continue
+            check(f"{fake.__name__}.{name} is a property iff Drivetrain's is",
+                  isinstance(mine, property) == isinstance(real, property),
+                  f"fake property={isinstance(mine, property)}, "
+                  f"real property={isinstance(real, property)}")
+
+
 def test_bump_map() -> None:
     print("\na bump becomes sectors, and stops being them")
     t0 = time.monotonic()
@@ -945,6 +976,7 @@ def main() -> int:
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
         test_stall_detection,
+        test_fakes_match_the_real_link,
         test_bump_map,
         test_bump_reaches_the_policy,
         test_approach,

@@ -93,10 +93,24 @@ def main() -> int:
               f"Ctrl-C stops everything")
     print()
 
+    # Opening is its own try, narrowly. Wrapping the whole run in one handler
+    # made a bad call site inside the loop print the cable advice below and
+    # blame the port, which cost a real debugging session.
     try:
-        with Drivetrain(args.port) as link:
-            ident = link.identity
-            print(f"board: {ident}\n")
+        link = Drivetrain(args.port).connect()
+    except Exception as exc:
+        print(f"\ncould not open the drivetrain on {args.port}: {exc}\n"
+              "  Check `ls -l /dev/orio_* /dev/ttyACM*`. If /dev/orio_drive is\n"
+              "  missing the udev rule is not installed here — find the drivetrain\n"
+              "  board in `ls /dev/serial/by-id/` by its ST-LINK serial and pass\n"
+              "  --port. Do not guess between ttyACM0 and ttyACM1.")
+        if csv:
+            csv.close()
+        return 1
+
+    try:
+        with link:
+            print(f"board: {link.identity}\n")
             started = time.monotonic()
             while (time.monotonic() - started) < args.seconds:
                 now = time.monotonic()
@@ -105,7 +119,7 @@ def main() -> int:
                 link.request_status()
                 time.sleep(period)
 
-                status = link.last_status()
+                status = link.last_status
                 samples += 1
                 bump = detector.update(time.monotonic(), (duty, duty), status)
                 if status is None:
@@ -137,13 +151,6 @@ def main() -> int:
                 print(f"\r{'  │  '.join(cells)}{verdict}   ", end="", flush=True)
     except KeyboardInterrupt:
         pass
-    except Exception as exc:
-        print(f"\n\ncould not talk to the drivetrain on {args.port}: {exc}\n"
-              "  Check `ls -l /dev/orio_* /dev/ttyACM*`. If /dev/orio_drive is\n"
-              "  missing the udev rule is not installed here — find the drivetrain\n"
-              "  board in `ls /dev/serial/by-id/` by its ST-LINK serial and pass\n"
-              "  --port. Do not guess between ttyACM0 and ttyACM1.")
-        return 1
     finally:
         if csv:
             csv.close()
