@@ -97,9 +97,15 @@ def main() -> int:
     samples = 0
     no_status = 0      # the board sent no STATUS frame at all
     invalid_wheels = 0  # a STATUS frame arrived, but a wheel in it was not valid
-    csv = open(args.csv, "a") if args.csv else None
-    if csv:
-        csv.write("t,side,erpm,current_a,v_in,fault,valid,duty\n")
+    # Append, but write the header only into a file that does not have one.
+    # Appending it every run put three header rows inside a ten-second log and
+    # left anything reading it back to notice on its own.
+    csv = None
+    if args.csv:
+        fresh = not Path(args.csv).exists() or Path(args.csv).stat().st_size == 0
+        csv = open(args.csv, "a")
+        if fresh:
+            csv.write("t,side,erpm,current_a,v_in,fault,valid,duty\n")
 
     print(f"thresholds in force: current >= {config.BUMP_STALL_CURRENT_A} A, "
           f"|erpm| <= {config.BUMP_STALL_ERPM}, duty >= {config.BUMP_MIN_DUTY}, "
