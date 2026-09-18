@@ -95,7 +95,8 @@ def main() -> int:
     peaks = {"left": 0.0, "right": 0.0}
     spinning = {"left": 0.0, "right": 0.0}  # peak current while actually turning
     samples = 0
-    invalid = 0
+    no_status = 0      # the board sent no STATUS frame at all
+    invalid_wheels = 0  # a STATUS frame arrived, but a wheel in it was not valid
     csv = open(args.csv, "a") if args.csv else None
     if csv:
         csv.write("t,side,erpm,current_a,v_in,fault,valid,duty\n")
@@ -127,19 +128,42 @@ def main() -> int:
         with link:
             print(f"board: {link.identity}\n")
             started = time.monotonic()
+            last_sent = None
             while (time.monotonic() - started) < args.seconds:
                 now = time.monotonic()
-                if duty:
+                # ONCE, not every tick. `handle_set_drive` calls `Vesc_SetDuty`
+                # on both ESCs synchronously, each a blocking HAL_UART_Transmit
+                # with a 10 ms timeout, so one SET_DRIVE frame occupies the
+                # board's frame loop for ~20 ms. Re-sending it at 10 Hz and
+                # asking for STATUS in the same breath means the STATUS request
+                # lands mid-transaction and is dropped — the run comes back
+                # "no status" from end to end while the wheels turn happily.
+                #
+                # There is no need to repeat it either: the firmware holds the
+                # commanded speed and keeps re-sending it to the ESCs itself.
+                # Every other caller in the tree sends on change only; this one
+                # did not, and it is the only one that ever saw the failure.
+                if duty and last_sent != (duty, duty):
                     link.set_drive(duty, duty)
+                    last_sent = (duty, duty)
+                    time.sleep(0.05)  # let both ESC transactions finish
                 link.request_status()
                 time.sleep(period)
+
+                # Rejections are silent unless read (see drivetrain.py's module
+                # docstring): a SET_DRIVE sent while e-stopped is NACKed and
+                # otherwise ignored, so the wheels just do not move.
+                rejection = link.take_rejection()
+                if rejection is not None:
+                    print(f"\nBOARD REJECTED: {rejection}")
+                    last_sent = None  # say it again rather than dedupe it away
 
                 status = link.last_status
                 samples += 1
                 bump = detector.update(time.monotonic(), (duty, duty), status)
                 if status is None:
-                    invalid += 1
-                    print("\rno status from the board — is it answering?          ",
+                    no_status += 1
+                    print("\rno STATUS frame from the board                       ",
                           end="", flush=True)
                     continue
 
@@ -147,7 +171,7 @@ def main() -> int:
                 for side in ("left", "right"):
                     tel = status.wheels.get(side)
                     if tel is None or not tel.valid:
-                        invalid += 1
+                        invalid_wheels += 1
                         cells.append(f"{side[0].upper()} ---- invalid ----")
                         continue
                     peaks[side] = max(peaks[side], tel.current_a)
@@ -171,13 +195,22 @@ def main() -> int:
             csv.close()
 
     print("\n")
-    if samples and invalid == samples * 2:
-        print("EVERY sample came back invalid. `valid` is 0 on any poll that did not\n"
-              "get a CRC-valid reply from the ESC (vesc.h:45), so the usual cause is\n"
-              "motor power off — the STM32 is fine and the FSESCs are not answering.")
+    if samples and no_status == samples:
+        print("The board sent no STATUS frame at all, for the whole run.\n"
+              "  That is the LINK, not the motors: with --duty 0 the same board\n"
+              "  answers every poll. Suspect something occupying the firmware's\n"
+              "  frame loop — SET_DRIVE blocks it for ~20 ms talking to both ESCs —\n"
+              "  or a second process holding the port.")
+        return 1
+    if samples and invalid_wheels == samples * 2:
+        print("Every wheel reading came back invalid, though the board was answering.\n"
+              "  `valid` is 0 on any poll that did not get a CRC-valid reply from the\n"
+              "  ESC (vesc.h:45), so the usual cause is motor power off — the STM32 is\n"
+              "  fine and the FSESCs are not.")
         return 1
 
-    print(f"{samples} samples, {invalid} invalid wheel readings")
+    print(f"{samples} samples, {no_status} with no STATUS frame, "
+          f"{invalid_wheels} invalid wheel readings")
     for side in ("left", "right"):
         print(f"  {side:5s} peak {peaks[side]:6.2f} A   "
               f"peak while turning {spinning[side]:6.2f} A")
