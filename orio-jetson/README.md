@@ -271,11 +271,12 @@ way.
 | `ORIO_TOF_STALE_S` | `0.5` | Older than this and a sensor drops out of the fusion — **per sensor**, so the slow one cannot take the healthy one with it. Both quiet and stereo decides alone, rather than the robot halting |
 | `ORIO_BUMP` | `0` | `1` to read a jammed wheel as contact and fuse it into the sector map (`orio/bump.py`). Thresholds measured 2026-09-18; still off pending the end-to-end drive test |
 | `ORIO_BUMP_STALL_CURRENT_A` | `0.0` | **Disabled by measurement, 2026-09-18.** At 5% duty driving draws 0.04 A and a jam 0.06 — two adjacent readings at the bottom of the ESC's range. Zero skips the check. Raise it only where the two populations have been measured apart |
-| `ORIO_BUMP_STALL_ERPM` | `50` | **Measured.** Driving reads a median 447 eRPM, a jam reads 0 — this sits an order of magnitude below one and just above the other. With the current check disabled it is the whole stall signal |
+| `ORIO_BUMP_STALL_ERPM` | `50` | Absolute floor for the stall test. Driving reads a median 447 eRPM; a wheel jammed on a wall reads 0 |
+| `ORIO_BUMP_STALL_ERPM_PER_MILLE` | `2.7` | The real test: a wheel doing under ~⅓ of what its duty asked for. Free-running is 8.9 eRPM per per-mille. A *real* obstacle makes the wheels **creep**, not stop — measured at 0–23% of normal — and a flat floor caught only one wheel of each stalled pair |
 | `ORIO_BUMP_MIN_DUTY` | `5` | Per-mille floor below which nothing was really commanded. Must stay under the slowest duty `Avoider` emits (9), or the detector never arms |
 | `ORIO_BUMP_CONFIRM_S` | `0.25` | How long all three conditions must hold. Not noise filtering — a hub motor coming up from rest looks exactly like a stall |
 | `ORIO_BUMP_STATUS_STALE_S` | `0.3` | Telemetry older than this is no telemetry. Unknown is not stalled |
-| `ORIO_BUMP_MEMORY_S` | `2.5` | How long a bump stays in the map. Long enough to outlast the back-off it triggers, and no longer |
+| `ORIO_BUMP_MEMORY_S` | `5.0` | How long a bump stays in the map. Must outlast the whole escape — pivot (2.0) + back-off (1.0) + commit (0.8). At 2.5 it expired mid-escape and the robot drove back into the same obstacle |
 | `ORIO_BUMP_DISTANCE_M` | `0.0` | The range a bump reports. Zero is honest and puts it inside the corridor at every angle |
 | `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |

@@ -788,9 +788,19 @@ def test_stall_detection() -> None:
           confirm(det, t0, lambda now: status(
               left=wheel(erpm=0, current_a=0.06), at=now)) is not None)
     det = StallDetector()
-    check("and the measured DRIVING case (447 erpm, 0.04 A) does not",
+    check("and the measured DRIVING case (447 erpm at duty 50) does not",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=447, current_a=0.04), at=now)) is None)
+              left=wheel(erpm=447, current_a=0.04),
+              right=wheel(erpm=447, current_a=0.04), at=now),
+                  duty=(50, 50)) is None)
+    # The threshold scales, so the SAME eRPM at a duty that should be turning
+    # the wheel six times faster is a stall. That is the point of scaling it.
+    det = StallDetector()
+    check("447 erpm at duty 300 would be a stall, because it should be ~2670",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=447, current_a=0.04),
+              right=wheel(erpm=447, current_a=0.04), at=now),
+                  duty=(300, 300)) is not None)
     det = StallDetector()
     check("a free-running wheel's negative current noise cannot veto a stall",
           confirm(det, t0, lambda now: status(
@@ -874,6 +884,35 @@ def test_stall_detection() -> None:
     det = StallDetector()
     check("but a single wheel jammed while BOTH drive forward still confirms",
           confirm(det, t0, left_jammed(), duty=(50, 50)).side == "left")
+
+    # THE THREE BUMPS LOGGED ON THE ROBOT, 2026-09-18, replayed. Every one of
+    # them is both wheels creeping at 0-23% of the 447 eRPM they free-run at,
+    # and the flat 50 threshold caught only one wheel of each pair — so the map
+    # was marked on one side, `_roomier_side` picked a side that was not open,
+    # and the robot drove back into the obstacle it had just hit.
+    for label, left_erpm, right_erpm in (("L68 R22", 68, 22),
+                                         ("L0 R92", 0, 92),
+                                         ("L101 R0", 101, 0)):
+        det = StallDetector()
+        got = confirm(det, t0, lambda now, l=left_erpm, r=right_erpm: status(
+            left=wheel(erpm=l, current_a=0.05),
+            right=wheel(erpm=r, current_a=0.05), at=now), duty=(50, 50))
+        check(f"the logged bump {label} is read as BOTH wheels stalled",
+              got is not None and got.side == "both",
+              "not detected" if got is None else got.side)
+
+    # ...without swallowing the legitimate slow steering in the same run, where
+    # Avoider throttles to duty 22 and the wheels turn at about 197 eRPM.
+    det = StallDetector()
+    check("slow steering at duty 22 is not a stall",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=197, current_a=0.04),
+              right=wheel(erpm=197, current_a=0.04), at=now), duty=(22, 22)) is None)
+    det = StallDetector()
+    check("but a wheel that stops AT that same low duty is",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=10, current_a=0.04),
+              right=wheel(erpm=10, current_a=0.04), at=now), duty=(22, 22)) is not None)
 
     # A change of command starts a new episode, so the tail of one manoeuvre
     # cannot confirm a stall that belongs to the next.

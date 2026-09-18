@@ -99,8 +99,15 @@ class StallDetector:
     is called once per control tick by whoever has both halves of the evidence,
     which is the one place a duty pair reaches the board (`body._drive_tick`).
 
-    A stall is BOTH wheels commanded forward, one or both not turning, held for
-    `confirm_s`.
+    A stall is BOTH wheels commanded forward, one or both turning far slower
+    than that duty should turn them, held for `confirm_s`.
+
+    "Far slower", not "stopped": a wheel jammed against a wall reads a clean
+    zero, but a wheel pushing a real obstacle creeps. Measured on the robot,
+    three separate contacts reported both wheels between 0 and 23% of the 447
+    eRPM they free-run at, and a flat 50 threshold caught only one wheel of
+    each pair — so the map was marked on one side, `_roomier_side` kept picking
+    a side that was not open, and the robot drove back into the obstacle.
 
     There was a third condition — current being drawn — and measuring it on
     2026-09-18 retired it. At the 5% duty this robot is limited to, driving
@@ -124,12 +131,14 @@ class StallDetector:
         *,
         min_duty: int = config.BUMP_MIN_DUTY,
         max_erpm: int = config.BUMP_STALL_ERPM,
+        erpm_per_mille: float = config.BUMP_STALL_ERPM_PER_MILLE,
         min_current_a: float = config.BUMP_STALL_CURRENT_A,
         confirm_s: float = config.BUMP_CONFIRM_S,
         status_stale_s: float = config.BUMP_STATUS_STALE_S,
     ) -> None:
         self.min_duty = min_duty
         self.max_erpm = max_erpm
+        self.erpm_per_mille = erpm_per_mille
         self.min_current_a = min_current_a
         self.confirm_s = confirm_s
         self.status_stale_s = status_stale_s
@@ -213,6 +222,7 @@ class StallDetector:
             self._since = {LEFT: None, RIGHT: None}
             self._last_commanded = commanded
 
+        commanded_side = {LEFT: commanded[0], RIGHT: commanded[1]}
         wheels = getattr(status, "wheels", None) or {}
         stalled: list[str] = []
         current = 0.0
@@ -223,7 +233,14 @@ class StallDetector:
                 self._since[side] = None
                 continue
             erpm[side] = tel.erpm
-            if abs(tel.erpm) > self.max_erpm:
+            # Scaled to the command, not a flat floor. A wheel jammed against a
+            # wall reads a clean 0, but a wheel pushing a REAL obstacle creeps —
+            # measured at 0 to 23% of free-running, where a flat 50 caught only
+            # one wheel of each stalled pair. `Avoider` also throttles duty down
+            # while steering, so the same fixed number cannot be both tight
+            # enough at cruise and loose enough at a crawl.
+            limit = max(self.max_erpm, self.erpm_per_mille * commanded_side[side])
+            if abs(tel.erpm) > limit:
                 self._since[side] = None
                 continue
             # Zero or below disables the current condition rather than making

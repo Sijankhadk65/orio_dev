@@ -955,6 +955,24 @@ BUMP_MIN_DUTY = int(_env("ORIO_BUMP_MIN_DUTY", "5"))
 # visibly does. The conversion checks out.
 BUMP_STALL_ERPM = int(_env("ORIO_BUMP_STALL_ERPM", "50"))
 
+# ...but a fixed floor turned out to be the wrong SHAPE, measured against a real
+# obstacle 2026-09-18. A wheel jammed against a wall reads a clean 0. A wheel
+# pushing a real obstacle CREEPS: the three bumps logged on the robot reported
+# (L68 R22), (L0 R92) and (L101 R0) — both wheels between 0 and 23% of the 447
+# they turn at freely, but a flat 50 caught only one of each pair. So the robot
+# marked one side, never both, `_roomier_side` kept finding an open side that
+# was not open, and it drove back into the same obstacle.
+#
+# A stall is better defined as "far slower than this duty should be turning
+# it". Free-running measures 8.9 eRPM per per-mille (447 at duty 50), so 2.7 is
+# a wheel doing under a third of what it was asked for. The threshold scales
+# with the command, which matters because `Avoider` throttles down to duty 22
+# while steering, where a FIXED 135 would call legitimate slow driving a stall:
+#
+#     duty 50 (cruise) -> max(50, 135) = 135   catches all three logged bumps
+#     duty 22 (steer)  -> max(50,  59) =  59   against ~197 expected. Clear.
+BUMP_STALL_ERPM_PER_MILLE = float(_env("ORIO_BUMP_STALL_ERPM_PER_MILLE", "2.7"))
+
 # Amps, and MEASURED 2026-09-18 to be useless at this duty — hence 0.0, which
 # disables the check entirely. Keep it as a knob, not as a condition.
 #
@@ -991,7 +1009,15 @@ BUMP_STATUS_STALE_S = float(_env("ORIO_BUMP_STATUS_STALE_S", "0.30"))
 # contact, not a landmark, and a permanent one walls off a side of the map
 # forever. Note this is the memory's LIFETIME, never its timestamp — see trap 1
 # in orio/bump.py.
-BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "2.5"))
+# RAISED from 2.5 to 5.0 on 2026-09-18: 2.5 expired mid-escape. The escape is
+# AVOID_PIVOT_TIMEOUT_S (2.0) of pivoting, then AVOID_BACKOFF_S (1.0) of
+# reversing, then AVOID_COMMIT_CLEAR_S (0.8) before cruise resumes — about 4 s.
+# With a 2.5 s memory the bump vanished during the back-off, stereo reported
+# the clear road it always saw (the obstacle is below the camera band, which is
+# the entire reason this sensor exists), `_must_clear` was satisfied instantly,
+# and the robot drove back into the thing it had just hit. Observed three times
+# in one run.
+BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "5.0"))
 
 # The range a bump reports. Zero is the honest answer and it is also the useful
 # one: Avoider._ahead() qualifies a sector by `distance * sin(angle)`, so a
