@@ -942,6 +942,68 @@ def test_stall_detection() -> None:
           f"duty {crawling} vs floor {config.BUMP_MIN_DUTY}")
 
 
+def test_escape_duty() -> None:
+    """Pivot and back-off get their own duty; cruise and steer do not.
+
+    Measured on the robot 2026-09-18: 5% rolls it forward at 0.30 m/s but will
+    not scrub it round in place. A pivot at that duty leaves +/-45 per-mille
+    against two drive wheels and a castor, and the back-off runs at MIN_SCALE
+    of it, about 17. Both were commanded repeatedly without moving the robot.
+    """
+    print("\nescapes get more duty than cruising, and only escapes do")
+    av = avoider_from_config()
+    cruise_duty = round(config.DRIVE_SPEED_MIN_PERCENT * 10)
+
+    # Rebuilt per call: a Reading carries its own timestamp and AVOID_STALE_S
+    # is 0.5 s, so one held across the sleep loop below halts instead of
+    # backing off — which is the policy working, not the escape failing.
+    def clear():
+        return Reading(tuple((a, 4.0) for a in SECTOR_ANGLES), 4.0, "clear",
+                       time.monotonic())
+
+    def blocked():
+        return Reading(tuple((a, 0.1) for a in SECTOR_ANGLES), 0.1, "blocked",
+                       time.monotonic())
+
+    d = av.decide((1, 1), cruise_duty, clear())
+    check("cruising still obeys the cruise duty", max(abs(d.left), abs(d.right)) <= cruise_duty,
+          f"{d.state} L{d.left} R{d.right}")
+
+    # Boxed in: everything inside stop_m, so the policy pivots.
+    av.reset()
+    d = av.decide((1, 1), cruise_duty, blocked())
+    check("a pivot uses the escape duty, not the cruise duty",
+          d.state == "pivot" and max(abs(d.left), abs(d.right)) > cruise_duty,
+          f"{d.state} L{d.left} R{d.right}")
+    check("and it is bounded by AVOID_ESCAPE_DUTY",
+          max(abs(d.left), abs(d.right)) <= config.AVOID_ESCAPE_DUTY,
+          f"L{d.left} R{d.right} vs {config.AVOID_ESCAPE_DUTY}")
+
+    # Pinned long enough to trip the stuck timer, which forces the back-off.
+    av.reset()
+    for _ in range(int(config.AVOID_PIVOT_TIMEOUT_S / 0.05) + 4):
+        d = av.decide((1, 1), cruise_duty, blocked())
+        time.sleep(0.05)
+        if d.state == "backoff":
+            break
+    check("the back-off is reached", d.state == "backoff", d.state)
+    if d.state == "backoff":
+        floor = round(cruise_duty * config.AVOID_MIN_SCALE)
+        check("and it reverses harder than MIN_SCALE of the cruise duty",
+              abs(d.left) > floor, f"L{d.left} vs {floor}")
+        check("but still scaled down, because it reverses blind",
+              abs(d.left) < config.AVOID_ESCAPE_DUTY,
+              f"L{d.left} vs {config.AVOID_ESCAPE_DUTY}")
+
+    # The floor must never make the escape the slowest thing the robot does.
+    fast = config.AVOID_ESCAPE_DUTY * 2
+    av.reset()
+    d = av.decide((1, 1), fast, blocked())
+    check("a robot cruising faster than the escape duty pivots at ITS duty",
+          max(abs(d.left), abs(d.right)) > config.AVOID_ESCAPE_DUTY,
+          f"L{d.left} R{d.right}")
+
+
 def test_fakes_match_the_real_link() -> None:
     """The fakes must have the same SHAPE as `Drivetrain`, not just the same names.
 
@@ -1075,6 +1137,7 @@ def main() -> int:
         test_tof_axial_distance,
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
+        test_escape_duty,
         test_stall_detection,
         test_fakes_match_the_real_link,
         test_bump_map,

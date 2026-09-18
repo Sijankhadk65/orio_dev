@@ -341,6 +341,29 @@ AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
+# Per-mille duty the ESCAPE manoeuvres get — pivoting in place, and backing
+# off. The one deliberate exception to DRIVE_SPEED_MAX_PERCENT, and it exists
+# because 5% cannot perform them.
+#
+# Observed on the robot 2026-09-18, driving into a real obstacle: cruising
+# forward at 5% works fine (0.30 m/s measured), but the escape it triggers does
+# not. A pivot leaves +/-45 per-mille to scrub the robot round in place against
+# two drive wheels and a castor, and the back-off runs at AVOID_MIN_SCALE of
+# that, about 17. Both were commanded, repeatedly, and the robot did not
+# noticeably move. Cruising and scrubbing are different loads and there is no
+# reason one duty should serve both.
+#
+# Bounded in three ways, which is what makes the exception safe: it applies
+# ONLY in the pivot and back-off branches, those branches are time-limited
+# (AVOID_PIVOT_TIMEOUT_S then AVOID_BACKOFF_S), and they only run when the
+# robot is already stuck and going nowhere. Cruise and steer are untouched and
+# still obey the 5% ceiling.
+#
+# Raise it if the robot still will not turn; it is the value that decides
+# whether being stuck is recoverable. Note the back-off still scales this by
+# AVOID_MIN_SCALE, because it reverses BLIND and should stay slow and brief.
+AVOID_ESCAPE_DUTY = int(_env("ORIO_AVOID_ESCAPE_DUTY", "150"))
+
 # Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
 # the move loop asks the policy for a fresh decision.
 AVOID_TICK_S = float(_env("ORIO_AVOID_TICK_S", "0.03"))

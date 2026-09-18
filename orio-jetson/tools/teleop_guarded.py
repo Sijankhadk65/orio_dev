@@ -249,6 +249,12 @@ def parse_args() -> argparse.Namespace:
              "ground-plane classification — run the same approach twice",
     )
     parser.add_argument(
+        "--escape-duty", type=int, default=config.AVOID_ESCAPE_DUTY,
+        help="per-mille duty for pivoting and backing off. Deliberately above "
+             "the cruise ceiling: 5%% rolls the robot forward fine but will not "
+             "scrub it round in place",
+    )
+    parser.add_argument(
         "--no-bump", action="store_true",
         help="ignore wheel stalls, rather than reading a jammed wheel as an "
              "obstacle in the sector map (see orio/bump.py)",
@@ -378,6 +384,7 @@ def main() -> int:
         commit_clear_s=args.commit_clear_s,
         pivot_timeout_s=args.pivot_timeout_s,
         backoff_s=args.backoff_s,
+        escape_duty=args.escape_duty,
     )
     avoider.enabled = not args.no_avoid
 

@@ -293,9 +293,11 @@ class Avoider:
         commit_clear_s: float,
         pivot_timeout_s: float,
         backoff_s: float,
+        escape_duty: int = config.AVOID_ESCAPE_DUTY,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
+        self.escape_duty = escape_duty
         self.min_scale = min_scale
         self.stale_s = stale_s
         self.turn_penalty = turn_penalty
@@ -377,6 +379,15 @@ class Avoider:
             if score > best_score:
                 best_score, best = score, (angle, distance)
         return best
+
+    def _escape(self, duty: int) -> int:
+        """Duty for the escape manoeuvres, never less than the cruise duty.
+
+        The `max` matters: `escape_duty` is a floor for a robot that cruises
+        slowly, not a cap on one that does not. Raising the cruise duty above
+        it must not quietly make the escape the slowest thing the robot does.
+        """
+        return max(duty, self.escape_duty)
 
     def _mix(self, linear: int, turn: float, duty: int) -> tuple[int, int]:
         """Differential mix. `turn` > 0 steers LEFT, matching the sign of the
@@ -515,7 +526,12 @@ class Avoider:
                 self._stuck_s = 0.0
                 self._committed_side = 0
                 self._must_clear = True
-            speed = round(duty * self.min_scale)
+            # Escape duty, not cruise duty. See config.AVOID_ESCAPE_DUTY: at
+            # the 5% this robot cruises at, AVOID_MIN_SCALE of it is about 17
+            # per-mille, which was commanded repeatedly on the robot without
+            # moving it. Still scaled by min_scale, because this reverses BLIND
+            # and wants to stay slow and brief.
+            speed = round(self._escape(duty) * self.min_scale)
             self._turn = 0.0
             return Decision(-speed, -speed, "backoff", "stuck — backing off to turn")
 
@@ -537,8 +553,11 @@ class Avoider:
         side = self._committed_side or self._roomier_side(reading)
         if side is not None:
             self._committed_side = side
-            self._turn = -side * self.turn_gain * duty
-            left, right = self._mix(0, self._turn, duty)
+            # Scrubbing the robot round in place is a heavier load than rolling
+            # it forward, and 5% does not do it — see config.AVOID_ESCAPE_DUTY.
+            escape = self._escape(duty)
+            self._turn = -side * self.turn_gain * escape
+            left, right = self._mix(0, self._turn, escape)
             where = "left" if side < 0 else "right"
             why = "turning to clear" if self._must_clear else "boxed in"
             return Decision(left, right, "pivot", f"{why}, pivoting {where}")
@@ -594,4 +613,5 @@ def avoider_from_config() -> Avoider:
         commit_clear_s=config.AVOID_COMMIT_CLEAR_S,
         pivot_timeout_s=config.AVOID_PIVOT_TIMEOUT_S,
         backoff_s=config.AVOID_BACKOFF_S,
+        escape_duty=config.AVOID_ESCAPE_DUTY,
     )

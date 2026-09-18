@@ -301,6 +301,7 @@ way.
 | `ORIO_AVOID_COMMIT_CLEAR_S` | `0.8` | Clear road before Orio stops favouring the side it was turning to |
 | `ORIO_AVOID_PIVOT_TIMEOUT_S` | `2.0` | Pivoting longer than this without clearing triggers a back-off |
 | `ORIO_AVOID_BACKOFF_S` | `1.0` | How long the back-off reverses for — **reverses blind, no rear sensor** |
+| `ORIO_AVOID_ESCAPE_DUTY` | `150` | Per-mille duty for pivoting and backing off — the one deliberate exception to the 5% ceiling. 5% rolls the robot forward at 0.30 m/s but will not scrub it round in place; both escapes were commanded repeatedly on the robot without moving it. Bounded to those two branches, which are themselves time-limited and only run when already stuck |
 | `ORIO_AVOID_TICK_S` | `0.03` | How often a move asks the policy for a fresh decision |
 | `ORIO_SEEK_SCAN_OFFSETS_DEG` | `0,-30,30,-55,55` | Head pan offsets swept looking for a target (+ is left) |
 | `ORIO_SEEK_SCAN_TILTS_DEG` | `40,26,13` | Tilts swept at each pan; driving tilt first |
