@@ -281,7 +281,7 @@ way.
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
 | `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |
 | `ORIO_DRIVE_SPEED_PERCENT` | `5` | Starting duty; `set_speed` moves it within the min/max below |
-| `ORIO_DRIVE_SPEED_MIN_PERCENT` / `_MAX_PERCENT` | `5` / `60` | Speed window the LLM cannot drive outside of |
+| `ORIO_DRIVE_SPEED_MIN_PERCENT` / `_MAX_PERCENT` | `5` / `5` | Speed window the LLM cannot drive outside of. **Pinned at 5% since 2026-09-18** — every measured distance in `config.py` (the `AVOID_*` thresholds, the corridor, the `BUMP_*` stall thresholds) was measured there, and `tools/teleop_guarded.py` now honours this ceiling too. Raise it deliberately and re-check the braking distances |
 | `ORIO_DRIVE_STEP_S` | `1.5` | How long one forward/backward hop lasts when the model doesn't say |
 | `ORIO_TURN_STEP_S` | `0.7` | Same, for a turn in place |
 | `ORIO_DRIVE_MAX_STEP_S` | `4.0` | Hard ceiling on a single hop — the bound on one wrong command |

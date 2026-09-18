@@ -127,7 +127,13 @@ DEFAULT_MOTION_PORT = config.MOTION_PORT
 NECK_PAN_DEG = 175.0
 NECK_TILT_DEG = 30.0
 
-DEFAULT_DUTY_PERCENT = 30.0
+# The robot's own speed window, not this tool's preference. The bench is free
+# to sweep the avoidance tunables — that is why they are CLI flags rather than
+# config reads — but duty is a limit on the hardware, and a bench tool that can
+# exceed the ceiling the app enforces is how the robot ends up driven at six
+# times the speed every AVOID_* threshold was measured at.
+DEFAULT_DUTY_PERCENT = config.DRIVE_SPEED_PERCENT
+MAX_DUTY_PERCENT = config.DRIVE_SPEED_MAX_PERCENT
 DUTY_STEP_PERCENT = 5.0
 LOOP_TICK_S = 0.03
 
@@ -172,7 +178,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--port", default=DEFAULT_PORT, help="STM32 drivetrain serial port")
-    parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT, help="cruise duty %%")
+    parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT,
+                        help=f"cruise duty %% (ceiling {MAX_DUTY_PERCENT:g}, from "
+                             f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
     parser.add_argument("--stop-m", type=float, default=0.50, help="never drive forward inside this")
     parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
@@ -338,8 +346,10 @@ def aim_neck(args) -> Motion:
 
 def main() -> int:
     args = parse_args()
-    if not 0.0 <= args.duty <= 100.0:
-        print("--duty must be between 0 and 100")
+    if not 0.0 <= args.duty <= MAX_DUTY_PERCENT:
+        print(f"--duty must be between 0 and {MAX_DUTY_PERCENT:g} — the robot's "
+              f"ceiling, not this tool's. Raise ORIO_DRIVE_SPEED_MAX_PERCENT if "
+              f"you mean it, and re-check the braking distances when you do.")
         return 1
     if args.stop_m >= args.clear_m:
         print("--stop-m must be less than --clear-m")
@@ -460,7 +470,8 @@ def main() -> int:
                             duty_percent = max(0.0, duty_percent - DUTY_STEP_PERCENT)
                             print(f"\nduty={duty_percent:g}%")
                         elif key == b"]":
-                            duty_percent = min(100.0, duty_percent + DUTY_STEP_PERCENT)
+                            duty_percent = min(MAX_DUTY_PERCENT,
+                                               duty_percent + DUTY_STEP_PERCENT)
                             print(f"\nduty={duty_percent:g}%")
                         elif key == b" ":
                             latch = None

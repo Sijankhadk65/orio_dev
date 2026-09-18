@@ -251,9 +251,18 @@ DRIVE_ENABLED = _env("ORIO_DRIVE", "1").strip().lower() not in (
 # set_speed tool moves this within the MIN/MAX window and cannot leave it: the
 # ceiling is a limit on the robot, not a preference, since nothing is watching
 # for obstacles yet.
+#
+# CEILING LOWERED TO 5% — 2026-09-18. It was 60, which meant the robot could be
+# talked into twelve times the duty it actually drives at, and `tools/
+# teleop_guarded.py` ignored the window entirely and defaulted to 30. Every
+# distance in this file that was measured — the AVOID_* thresholds, the
+# corridor, the stall thresholds in the BUMP_* block — was measured at 5, and a
+# guard tuned at one speed is not a guard at twelve times it. Raise it with
+# ORIO_DRIVE_SPEED_MAX_PERCENT deliberately, and re-check the braking distances
+# when you do.
 DRIVE_SPEED_PERCENT = float(_env("ORIO_DRIVE_SPEED_PERCENT", "5"))
 DRIVE_SPEED_MIN_PERCENT = float(_env("ORIO_DRIVE_SPEED_MIN_PERCENT", "5"))
-DRIVE_SPEED_MAX_PERCENT = float(_env("ORIO_DRIVE_SPEED_MAX_PERCENT", "60"))
+DRIVE_SPEED_MAX_PERCENT = float(_env("ORIO_DRIVE_SPEED_MAX_PERCENT", "5"))
 
 # Every LLM-commanded move is a bounded hop: these are how long one lasts when
 # the model does not say, and the hard ceiling when it does. Turns are shorter
