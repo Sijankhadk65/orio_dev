@@ -96,10 +96,18 @@ class StallDetector:
     is called once per control tick by whoever has both halves of the evidence,
     which is the one place a duty pair reaches the board (`body._drive_tick`).
 
-    A stall is duty commanded, the wheel not turning, and current being drawn,
-    held for `confirm_s`. All three are needed. Duty alone says nothing about
-    the world; a low eRPM alone is every stationary robot; and current alone is
-    a carpet or a ramp, which is load, not contact.
+    A stall is duty commanded and the wheel not turning, held for `confirm_s`.
+
+    There was a third condition — current being drawn — and measuring it on
+    2026-09-18 retired it. At the 5% duty this robot is limited to, driving
+    draws 0.04 A and a jam draws 0.06, two adjacent readings at the bottom of
+    the ESC's range, while eRPM separates 447 from 0. `min_current_a` is
+    therefore 0.0 by default, which skips the check; it stays configurable
+    because at a duty this robot is not allowed to use it would work.
+
+    That puts all the weight on eRPM, and makes `Status.estopped` load-bearing:
+    a board that is refusing to drive looks exactly like a board driving into a
+    wall, and only the e-stop flag tells them apart.
 
     `confirm_s` is not noise filtering. A hub motor takes real milliseconds to
     come up from rest, and the whole of that looks exactly like a stall: duty
@@ -160,6 +168,17 @@ class StallDetector:
             self.reset()
             return None
 
+        if getattr(status, "estopped", False):
+            # An e-stopped board answers CMD_SET_DRIVE with NACK_ESTOPPED and
+            # otherwise ignores it (drivetrain.py's module docstring), so the
+            # wheels do not turn while duty is being commanded at them. That is
+            # duty + zero eRPM, which since the current check was measured
+            # useless and disabled is EXACTLY the signature of contact. Without
+            # this, an e-stopped robot reports an obstacle in every sector it
+            # is pointed at.
+            self.reset()
+            return None
+
         wheels = getattr(status, "wheels", None) or {}
         stalled: list[str] = []
         current = 0.0
@@ -171,7 +190,14 @@ class StallDetector:
                 # is never recorded as an obstacle ahead.
                 self._since[side] = None
                 continue
-            if abs(tel.erpm) > self.max_erpm or tel.current_a < self.min_current_a:
+            if abs(tel.erpm) > self.max_erpm:
+                self._since[side] = None
+                continue
+            # Zero or below disables the current condition rather than making
+            # it trivially true. It matters that this is a skip and not a
+            # comparison: a free-running wheel logged -0.01 A, so `>= 0.0`
+            # would veto a real stall on a sign of measurement noise.
+            if self.min_current_a > 0.0 and tel.current_a < self.min_current_a:
                 self._since[side] = None
                 continue
             if self._since[side] is None:

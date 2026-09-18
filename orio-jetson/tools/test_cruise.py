@@ -715,14 +715,14 @@ def wheel(erpm=0, current_a=20.0, valid=True):
                           fault_code=0, valid=valid)
 
 
-def status(left=None, right=None, at=None, age_s=0.0):
+def status(left=None, right=None, at=None, age_s=0.0, estopped=False):
     """A `Status` stamped `age_s` before `at`. `at` is the simulated clock, not
     the wall clock: the detector compares the status stamp against the `now` it
     is given, so a fixture stamped once with `time.monotonic()` goes stale
     part-way through a simulated run and quietly stops confirming."""
     at = time.monotonic() if at is None else at
     return Status(
-        estopped=False,
+        estopped=estopped,
         wheels={"left": left if left is not None else wheel(erpm=3000, current_a=2.0),
                 "right": right if right is not None else wheel(erpm=3000, current_a=2.0)},
         timestamp=at - age_s,
@@ -755,6 +755,7 @@ def jammed(**kw):
         right=kw.get("right", wheel(erpm=0, current_a=20.0)),
         at=now,
         age_s=kw.get("age_s", 0.0),
+        estopped=kw.get("estopped", False),
     )
 
 
@@ -778,10 +779,39 @@ def test_stall_detection() -> None:
     check("current with the wheel turning is load, not contact",
           confirm(det, t0, lambda now: status(
               left=wheel(erpm=3000, current_a=20.0), at=now)) is None)
+    # MEASURED 2026-09-18, and it retired the current condition: at 5% duty
+    # driving draws 0.04 A and a jam draws 0.06, while eRPM separates 447 from
+    # 0. A stall must confirm on the real jam figure, which is BELOW anything a
+    # current threshold could have been set to.
     det = StallDetector()
-    check("a still wheel drawing nothing is just a stationary robot",
+    check("a jam at the MEASURED current (0.06 A) confirms",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=0, current_a=0.5), at=now)) is None)
+              left=wheel(erpm=0, current_a=0.06), at=now)) is not None)
+    det = StallDetector()
+    check("and the measured DRIVING case (447 erpm, 0.04 A) does not",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=447, current_a=0.04), at=now)) is None)
+    det = StallDetector()
+    check("a free-running wheel's negative current noise cannot veto a stall",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=0, current_a=-0.01), at=now)) is not None)
+
+    # The knob still works when a robot is driven hard enough for current to
+    # separate; it is disabled by measurement, not removed.
+    det = StallDetector(min_current_a=5.0)
+    check("an explicit current threshold still vetoes below it",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=0, current_a=0.06), at=now)) is None)
+    det = StallDetector(min_current_a=5.0)
+    check("and still confirms above it",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=0, current_a=20.0), at=now)) is not None)
+
+    # With current no longer vetoing, the e-stop flag is the only thing
+    # separating "driving into a wall" from "refusing to drive at all".
+    det = StallDetector()
+    check("an e-stopped board is not a stall, however jammed it looks",
+          confirm(det, t0, jammed(estopped=True)) is None)
     det = StallDetector()
     check("no duty commanded is never a stall",
           confirm(det, t0, left_jammed(), duty=(0, 0)) is None)

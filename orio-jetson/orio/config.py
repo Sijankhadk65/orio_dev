@@ -937,25 +937,40 @@ BUMP_ENABLED = _env("ORIO_BUMP", "0").strip().lower() not in (
 # in orio/bump.py, reached by a different route.
 BUMP_MIN_DUTY = int(_env("ORIO_BUMP_MIN_DUTY", "5"))
 
-# ELECTRICAL rpm, which is what the VESC reports. At ~15 pole pairs (confirm
-# against FOC detection before trusting it — hubmotor_control_reference.pdf p.2
-# makes this its own gotcha) 100 wheel-rpm is ~1500 eRPM, so a 3 wheel-rpm
-# crawl is ~45. Above this the wheel is turning, however slowly, and a turning
-# wheel is not jammed.
+# ELECTRICAL rpm, which is what the VESC reports, and with the current check
+# disabled this is now THE stall signal rather than one of three.
+#
+# Measured 2026-09-18 at 5% duty: driving reads a median 447 eRPM and a jam
+# reads 0 on 49 of 50 samples, so 50 sits an order of magnitude below the
+# driving population and a hair above the jammed one. Spin-up under the robot's
+# own weight clears it by 151 ms, inside BUMP_CONFIRM_S, so starting from rest
+# does not confirm.
+#
+# At ~15 pole pairs (confirm against FOC detection before trusting it —
+# hubmotor_control_reference.pdf p.2 makes this its own gotcha) 447 eRPM is
+# ~30 wheel-rpm, about 0.30 m/s on 19 cm wheels, which is what the robot
+# visibly does. The conversion checks out.
 BUMP_STALL_ERPM = int(_env("ORIO_BUMP_STALL_ERPM", "50"))
 
-# Amps, and THE number to measure before ORIO_BUMP=1 is worth setting. The
-# FSESC current limit is the ceiling: the VESC config checklist starts the
-# motor limit at 15-20 A (hubmotor_control_reference.pdf p.2) and a jammed
-# wheel pins itself against whatever that limit is. This wants to sit well
-# above what a free-running wheel draws and below the limit itself.
+# Amps, and MEASURED 2026-09-18 to be useless at this duty — hence 0.0, which
+# disables the check entirely. Keep it as a knob, not as a condition.
 #
-# 8.0 is an ESTIMATE, and the uncertainty is real: Orio cruises at 5% duty, so
-# a stall there applies only ~1.8 V across a sub-ohm winding, and how many amps
-# that becomes is a property of this motor nobody here has measured. Drive into
-# something immovable, watch `current_a`, and set it between the two
-# populations.
-BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "8.0"))
+# The measurement, at 5% duty on a smooth floor (logs from tools/
+# wheel_telemetry.py):
+#
+#     driving on the ground   current max 0.04 A    eRPM median 447
+#     jammed against a wall   current max 0.06 A    eRPM median   0
+#
+# 0.04 vs 0.06 A is not a threshold, it is two adjacent readings at the bottom
+# of the ESC's measurement range. The physics says so too: 5% of 39.5 V is
+# ~2 V across the winding, so a stall is limited to whatever 2 V pushes through
+# it, and driving the robot on a smooth floor costs about 1.6 W. Current only
+# becomes a discriminator at a duty this robot is not allowed to use.
+#
+# eRPM, by contrast, separates 447 from 0. That is the whole signal at 5%, and
+# a threshold set anywhere in between cannot be wrong. Set this ABOVE zero only
+# if the two populations have been measured apart on the robot in front of you.
+BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "0.0"))
 
 # How long all three must hold. NOT noise filtering: a hub motor coming up from
 # rest looks exactly like a stall for real milliseconds — duty high, eRPM ~0,

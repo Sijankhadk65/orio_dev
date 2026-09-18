@@ -340,11 +340,34 @@ It reaches the policy the same way the ToF fan does — as sectors, through
    ever be recorded. That is the designed behaviour, but it also means the
    feature looks identical to "working fine" on an unpowered bench.
 
-**The thresholds are estimates and that is why the default is 0.**
-`BUMP_STALL_CURRENT_A = 8.0` is the one to measure: Orio cruises at 5% duty, so
-a stall applies only ~1.8 V across a sub-ohm winding and the resulting current
-is a property of this motor nobody has measured. `BUMP_STALL_ERPM = 50` assumes
-~15 pole pairs, which p.2 of the hub-motor reference makes its own gotcha.
+**Measured 2026-09-18, and it retired one of the three conditions.** Logs from
+`tools/wheel_telemetry.py` at 5% duty, smooth floor:
+
+| | current | eRPM (median) |
+|---|---|---|
+| free-running, wheels in the air | 0.00 A (max 0.01) | 523 / 511 |
+| driving on the ground | max **0.04 A** | 447 |
+| jammed against a wall | max **0.06 A** | **0** (49 of 50 samples) |
+
+Current is not a discriminator at this duty and cannot be made into one: 0.04
+against 0.06 A is two adjacent readings at the bottom of the ESC's measurement
+range. The physics agrees — 5% of 39.5 V is ~2 V across the winding, so a stall
+is limited to whatever 2 V pushes through it, and driving the robot costs about
+1.6 W. `BUMP_STALL_CURRENT_A` is therefore **0.0, which skips the check**, kept
+as a knob because at a duty this robot is not allowed to use it would work.
+
+eRPM separates 447 from 0, so it is the whole signal, and spin-up under the
+robot's own weight clears the 50 threshold by 151 ms — inside
+`BUMP_CONFIRM_S`, so starting from rest does not confirm. The pole-pair
+assumption checks out on the way past: 447 eRPM at ~15 pole pairs is ~30
+wheel-rpm, about 0.30 m/s on 19 cm wheels, which is what the robot visibly does.
+
+**That made `Status.estopped` load-bearing.** An e-stopped board answers
+SET_DRIVE with NACK_ESTOPPED and ignores it, so the wheels do not turn while
+duty is commanded at them — duty plus zero eRPM, which with the current check
+gone is exactly the signature of contact. The detector now refuses to confirm
+on an e-stopped board; without that, an e-stopped robot reports an obstacle in
+every sector it is pointed at.
 
 One threshold was already wrong and the tests caught it: `BUMP_MIN_DUTY` was
 first set to 80, above the 50 per-mille that `DRIVE_SPEED_MIN_PERCENT = 5`
