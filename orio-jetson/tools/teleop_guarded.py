@@ -404,6 +404,7 @@ def main() -> int:
         bumps_on = config.BUMP_ENABLED and not args.no_bump
         sensor = Sensor(3, use_tof=fan, use_bump=bumps_on)
         stall = StallDetector()
+        last_bump = None
         try:
             sensor.start()
         except Exception as exc:
@@ -495,11 +496,18 @@ def main() -> int:
                     # decides on. `last_sent` is what the board is holding —
                     # the duty the telemetry in hand actually describes.
                     if sensor.bumps is not None:
-                        sensor.bumps.record(
-                            stall.update(
-                                time.monotonic(), last_sent or (0, 0), dt.last_status
-                            )
+                        bump = stall.update(
+                            time.monotonic(), last_sent or (0, 0), dt.last_status
                         )
+                        sensor.bumps.record(bump)
+                        # Print the EDGE, with the telemetry that justified it.
+                        # A bump is a claim about the world made from two
+                        # numbers, and reading them off a scrolling status line
+                        # after the fact is not possible.
+                        if stall.active != last_bump:
+                            if bump is not None:
+                                print(f"\nBUMP: {bump.describe()}")
+                            last_bump = stall.active
                         dt.request_status()
 
                     reading = sensor.reading

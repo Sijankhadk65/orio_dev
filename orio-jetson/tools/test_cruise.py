@@ -855,6 +855,37 @@ def test_stall_detection() -> None:
     check("both wheels jammed reports as one two-sided bump",
           confirm(det, t0, jammed()).side == "both")
 
+    # THE bug that made this unusable on the robot, 2026-09-18. An in-place
+    # pivot drives one wheel forward and reverses the other, and at the 4.5%
+    # duty that leaves, the forward wheel cannot scrub the robot round on a
+    # smooth floor. Zero eRPM with nothing in front of it read as contact, the
+    # bump pinned `ahead` to 0.00 m, that kept the policy pivoting, and the
+    # pivot stalled it again — it ping-ponged between a left bump and a right
+    # one and never drove.
+    det = StallDetector()
+    check("a PIVOT is not a stall, however stopped the forward wheel is",
+          confirm(det, t0, jammed(), duty=(45, -45)) is None)
+    det = StallDetector()
+    check("nor is a pivot the other way",
+          confirm(det, t0, jammed(), duty=(-45, 45)) is None)
+    det = StallDetector()
+    check("nor is a hard steer that reverses the inside wheel",
+          confirm(det, t0, jammed(), duty=(50, -10)) is None)
+    det = StallDetector()
+    check("but a single wheel jammed while BOTH drive forward still confirms",
+          confirm(det, t0, left_jammed(), duty=(50, 50)).side == "left")
+
+    # A change of command starts a new episode, so the tail of one manoeuvre
+    # cannot confirm a stall that belongs to the next.
+    det = StallDetector()
+    make = jammed()
+    for i in range(6):
+        det.update(t0 + i * 0.05, (50, 50), make(t0 + i * 0.05))
+    check("a stall is confirmed while the command is steady",
+          det.update(t0 + 0.30, (50, 50), make(t0 + 0.30)) is not None)
+    check("and a new duty pair restarts the timer",
+          det.update(t0 + 0.35, (60, 60), make(t0 + 0.35)) is None)
+
     # Regression: BUMP_MIN_DUTY was first set above the duty this robot
     # actually drives at, and the detector armed in no test and on no hop.
     # DRIVE_SPEED_MIN_PERCENT is 5, so 50 per-mille is the slowest CRUISE, and

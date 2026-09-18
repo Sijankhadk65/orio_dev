@@ -79,14 +79,17 @@ BOTH = "both"
 
 @dataclass(frozen=True)
 class Bump:
-    """A confirmed stall: which side, when, and what it was pulling."""
+    """A confirmed stall: which side, when, and the evidence for it."""
 
     side: str  # "left" | "right" | "both"
     at: float
     current_a: float
+    erpm: tuple[int, int] = (0, 0)  # (left, right) at the moment it confirmed
+    duty: tuple[int, int] = (0, 0)  # what was being commanded
 
     def describe(self) -> str:
-        return f"{self.side} wheel stalled at {self.current_a:.1f} A"
+        return (f"{self.side} stalled — erpm L{self.erpm[0]:+d} R{self.erpm[1]:+d} "
+                f"at duty L{self.duty[0]:+d} R{self.duty[1]:+d}, {self.current_a:.2f} A")
 
 
 class StallDetector:
@@ -96,7 +99,8 @@ class StallDetector:
     is called once per control tick by whoever has both halves of the evidence,
     which is the one place a duty pair reaches the board (`body._drive_tick`).
 
-    A stall is duty commanded and the wheel not turning, held for `confirm_s`.
+    A stall is BOTH wheels commanded forward, one or both not turning, held for
+    `confirm_s`.
 
     There was a third condition — current being drawn — and measuring it on
     2026-09-18 retired it. At the 5% duty this robot is limited to, driving
@@ -139,6 +143,7 @@ class StallDetector:
         # and no indication of where it came from.
         self.max_gap_s = status_stale_s
         self._last_update: float | None = None
+        self._last_commanded: tuple[int, int] | None = None
         self._since: dict[str, float | None] = {LEFT: None, RIGHT: None}
         # The side-set currently confirmed, or None. Exposed so a caller can log
         # the edge without having to diff `update()`'s return value itself.
@@ -147,6 +152,7 @@ class StallDetector:
     def reset(self) -> None:
         self._since = {LEFT: None, RIGHT: None}
         self._last_update = None
+        self._last_commanded: tuple[int, int] | None = None
         self.active = None
 
     def update(self, now: float, commanded: tuple[int, int], status) -> Bump | None:
@@ -179,17 +185,44 @@ class StallDetector:
             self.reset()
             return None
 
+        # BOTH wheels must be driving forward. Not one of them — both.
+        #
+        # Found on the robot 2026-09-18, and it made the feature unusable: an
+        # in-place pivot commands one wheel forward and one reverse, and at the
+        # 4.5% that leaves, the forward wheel cannot scrub the robot round on a
+        # smooth floor. It reports zero eRPM with nothing in front of it, the
+        # bump pins `ahead` to 0.00 m, that keeps the policy pivoting, and the
+        # pivot stalls it again. The robot ping-ponged between a left bump and
+        # a right one and never drove at all.
+        #
+        # The rule that fixes it is also the honest one: this sensor answers
+        # "is something in front of me", and that question only means anything
+        # while the robot is trying to go forward. Scrubbing round on the spot
+        # is not driving, and a wheel that will not scrub is not a wheel that
+        # has hit something. Trap 3 (reversing) falls out of the same test.
+        if commanded[0] < self.min_duty or commanded[1] < self.min_duty:
+            self._since = {LEFT: None, RIGHT: None}
+            self._last_commanded = commanded
+            self.active = None
+            return None
+
+        # A new duty pair starts a new episode. Without this the timer keeps
+        # running across a change of command, so the tail of one manoeuvre can
+        # confirm a stall that belongs to the next.
+        if commanded != self._last_commanded:
+            self._since = {LEFT: None, RIGHT: None}
+            self._last_commanded = commanded
+
         wheels = getattr(status, "wheels", None) or {}
         stalled: list[str] = []
         current = 0.0
-        for side, duty in ((LEFT, commanded[0]), (RIGHT, commanded[1])):
+        erpm = {LEFT: 0, RIGHT: 0}
+        for side in (LEFT, RIGHT):
             tel = wheels.get(side)
-            if tel is None or not tel.valid or duty < self.min_duty:
-                # Trap 3 lives in `duty < min_duty`: a reverse duty is negative
-                # and can never clear the floor, so backing off into something
-                # is never recorded as an obstacle ahead.
+            if tel is None or not tel.valid:
                 self._since[side] = None
                 continue
+            erpm[side] = tel.erpm
             if abs(tel.erpm) > self.max_erpm:
                 self._since[side] = None
                 continue
@@ -211,7 +244,8 @@ class StallDetector:
             return None
         side = BOTH if len(stalled) == 2 else stalled[0]
         self.active = side
-        return Bump(side=side, at=now, current_a=current)
+        return Bump(side=side, at=now, current_a=current,
+                    erpm=(erpm[LEFT], erpm[RIGHT]), duty=tuple(commanded))
 
 
 class BumpMemory:

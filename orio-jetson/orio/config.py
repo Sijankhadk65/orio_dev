@@ -932,9 +932,12 @@ BUMP_ENABLED = _env("ORIO_BUMP", "0").strip().lower() not in (
 # here, which is the right division of labour: at 1% duty a hub motor cannot
 # pull BUMP_STALL_CURRENT_A whether it is jammed or not.
 #
-# Note a pivot commands one wheel NEGATIVE. A reverse duty can never clear this
-# floor, so pivoting against something is not recorded — the same gap as trap 3
-# in orio/bump.py, reached by a different route.
+# BOTH wheels must clear this floor, not one. A pivot commands one wheel
+# forward and one reverse, and at the ~4.5% that leaves, the forward wheel
+# cannot scrub the robot round on a smooth floor — it reads zero eRPM with
+# nothing in front of it. Recording that made the robot ping-pong between a
+# left bump and a right one and never drive at all (found on the robot
+# 2026-09-18). Reversing is excluded by the same test.
 BUMP_MIN_DUTY = int(_env("ORIO_BUMP_MIN_DUTY", "5"))
 
 # ELECTRICAL rpm, which is what the VESC reports, and with the current check
