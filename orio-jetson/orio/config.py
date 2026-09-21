@@ -332,6 +332,13 @@ AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
+# How long the robot may pivot with NOTHING known in its corridor before it
+# stops. The pivot timeout above only counts time pinned against a known
+# obstacle, so a blind pivot had no limit at all and, in open space, turned the
+# robot until it faced something within stereo range. Stopping is the bound;
+# driving on unknown is not. First guess — tune on the floor at the 5% ceiling.
+AVOID_BLIND_PIVOT_S = float(_env("ORIO_AVOID_BLIND_PIVOT_S", "3.0"))
+
 # Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
 # the move loop asks the policy for a fresh decision.
 AVOID_TICK_S = float(_env("ORIO_AVOID_TICK_S", "0.03"))

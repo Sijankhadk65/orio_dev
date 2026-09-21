@@ -195,6 +195,7 @@ class Avoider:
         commit_clear_s: float,
         pivot_timeout_s: float,
         backoff_s: float,
+        blind_pivot_s: float,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
@@ -210,10 +211,12 @@ class Avoider:
         self.enabled = True
         self.pivot_timeout_s = pivot_timeout_s
         self.backoff_s = backoff_s
+        self.blind_pivot_s = blind_pivot_s
         self._turn = 0.0  # smoothed steering state, permille
         self._committed_side = 0  # -1 left, +1 right, 0 none — damps oscillation
         self._blocked = False
         self._stuck_s = 0.0
+        self._blind_s = 0.0
         self._clear_s = 0.0
         self._must_clear = False
         self._last_tick: float | None = None
@@ -224,6 +227,7 @@ class Avoider:
         self._committed_side = 0
         self._blocked = False
         self._stuck_s = 0.0
+        self._blind_s = 0.0
         self._clear_s = 0.0
         self._must_clear = False
         self._backoff_until = 0.0
@@ -339,6 +343,19 @@ class Avoider:
         else:
             self._stuck_s = max(0.0, self._stuck_s - 2.0 * dt)
 
+        # "Blind" is the other way to end up pivoting, and the stuck timer above
+        # cannot see it: with nothing KNOWN in the corridor there is no near
+        # obstacle to be stuck against, so the back-off never fires. In open
+        # space that is the common case, not the corner one — beyond ~2.2 m only
+        # the centre sector is in the corridor at all, and past the 4 m range
+        # gate a clear run reads as unknown — so the robot pivoted until it came
+        # to face something it could range, i.e. an obstacle. Timed the same
+        # way as stuck, so one noisy known tick does not restart the clock.
+        if ahead is None:
+            self._blind_s += dt
+        else:
+            self._blind_s = max(0.0, self._blind_s - 2.0 * dt)
+
         # After backing off, turn to face clear road BEFORE driving again.
         # Without this the robot spends the space it just bought driving
         # straight back into the same obstacle: back off, steer, re-approach,
@@ -436,6 +453,19 @@ class Avoider:
         # above forces a back-off, and that clears the commitment so the next
         # attempt is free to choose the other way. An unbounded latch is what
         # made an earlier version pivot into a wall indefinitely.
+        #
+        # Bounded when blind: after --blind-pivot-s of pivoting with nothing
+        # known ahead, stop rather than keep turning in search of something to
+        # range. The halt holds for as long as the corridor stays unknown — the
+        # robot is no longer moving, so nothing about the view will change —
+        # and a new command resets it. Unknown still never counts as clear.
+        if ahead is None and self._blind_s > self.blind_pivot_s:
+            self._turn = 0.0
+            return Decision(
+                0, 0, "halted",
+                f"can't see the way ahead after {self._blind_s:.1f} s of turning",
+            )
+
         side = self._committed_side or self._roomier_side(reading)
         if side is not None:
             self._committed_side = side
@@ -496,4 +526,5 @@ def avoider_from_config() -> Avoider:
         commit_clear_s=config.AVOID_COMMIT_CLEAR_S,
         pivot_timeout_s=config.AVOID_PIVOT_TIMEOUT_S,
         backoff_s=config.AVOID_BACKOFF_S,
+        blind_pivot_s=config.AVOID_BLIND_PIVOT_S,
     )

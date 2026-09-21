@@ -215,6 +215,10 @@ def parse_args() -> argparse.Namespace:
         help="how long to reverse when stuck — REVERSES BLIND, there is no rear sensor",
     )
     parser.add_argument(
+        "--blind-pivot-s", type=float, default=3.0,
+        help="pivoting this long with nothing known ahead stops the robot",
+    )
+    parser.add_argument(
         "--motion-port", default=DEFAULT_MOTION_PORT,
         help="serial port of the MOTION board, which owns the neck servos — a "
              "different board and a different port from --port",
@@ -335,6 +339,7 @@ def main() -> int:
         commit_clear_s=args.commit_clear_s,
         pivot_timeout_s=args.pivot_timeout_s,
         backoff_s=args.backoff_s,
+        blind_pivot_s=args.blind_pivot_s,
     )
     avoider.enabled = not args.no_avoid
 
