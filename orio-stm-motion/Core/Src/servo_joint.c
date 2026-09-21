@@ -37,9 +37,13 @@
   *
   *         The arms take the pan servo's full 270 deg travel; the neck
   *         does not. Every window here is a restricted one except those:
-  *           neck:      pan 165.00 .. 185.00, tilt 20.00 .. 40.00 -- ten
-  *                      degrees either side of the neck's default pose
-  *                      (pan 175.00, tilt 30.00) on each axis. The default
+  *           neck:      pan 165.00 .. 185.00, tilt 25.00 .. 50.00 -- pan
+  *                      ten degrees either side of 175.00; tilt widened
+  *                      from 20..40 on 2026-09-21 once the body was
+  *                      levelled, so one sweep covers the 35..45 band the
+  *                      2026-09-09 sweep found usable (50 is at the
+  *                      head's mechanical stop). Default pose is therefore
+  *                      pan 175.00, tilt 37.50. The default
   *                      is not written anywhere as a constant: it is what
   *                      ServoJoint_NeutralAngles() derives as each
   *                      window's midpoint, so a symmetric window IS the
@@ -60,7 +64,7 @@
   */
 static const ServoJointLimits_t kJointLimits[SERVO_JOINT_POSITION_COUNT] =
 {
-  /* JOINT_POS_NECK */      { .pan = { 16500, 18500 }, .tilt = { 2000, 4000 } },
+  /* JOINT_POS_NECK */      { .pan = { 16500, 18500 }, .tilt = { 2500, 5000 } },
   /* JOINT_POS_LEFT_ARM */  { .pan = { 0, 27000 }, .tilt = { 3000, 9000 } },
   /* JOINT_POS_RIGHT_ARM */ { .pan = { 0, 27000 }, .tilt = { 3000, 9000 } },
 };
