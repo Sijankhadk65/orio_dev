@@ -1,0 +1,153 @@
+#!/bin/bash
+# orio-lte-watchdog — run every 30 s by orio-lte-watchdog.timer.
+#
+# Restarts ModemManager when orio-lte has been unhealthy for DOWN_LIMIT_S:
+# the connection is down, or MM has no modem / a failed modem / no SIM /
+# no supported IP families (the early-probe race after every SIM7600
+# re-enumeration — NM never retries that on its own). Re-enables GPS NMEA
+# afterwards, and on any run where a modem reset switched it off.
+#
+# Checks MM/NM state only — never sends traffic over LTE.
+# See orio-jetson/docs/lte_modem.md.
+
+set -u
+
+CONN=orio-lte
+USB_ID=1e0e:9001
+DOWN_LIMIT_S=180          # unhealthy this long -> restart ModemManager
+MIN_RESTART_GAP_S=300     # never restart more often than this
+BROWNOUT_WARN_PER_H=3     # more restarts than this per hour -> warn
+STATE=/run/orio-lte-watchdog
+
+log()  { logger -t orio-lte-watchdog -p daemon.notice -- "$*"; }
+warn() { logger -t orio-lte-watchdog -p daemon.warning -- "$*"; }
+
+now=$(date +%s)
+mkdir -p "$STATE"
+
+modem_kv() { mmcli -m any --output-keyvalue 2>/dev/null; }
+
+gps_nmea_on() {
+    mmcli -m any --location-status --output-keyvalue 2>/dev/null |
+        grep -qE '^modem\.location\.enabled\.value\[[0-9]+\] *: gps-nmea$'
+}
+
+# The SIM7600's second AT port (USB interface 3; normally ttyUSB3). Only MM uses it.
+at_port() {
+    local d
+    for d in /sys/bus/usb/devices/*; do
+        [ "$(cat "$d/idVendor" 2>/dev/null):$(cat "$d/idProduct" 2>/dev/null)" = "$USB_ID" ] || continue
+        ls "$d/$(basename "$d"):1.3" 2>/dev/null | grep -m1 '^ttyUSB' && return
+    done
+}
+
+# Restart MM with the modem's GNSS engine off. If MM restarts while the modem
+# stays powered, the engine keeps running, MM believes GPS is off, and its
+# enable (AT+CGPS=1) fails with "Unknown error". MM must be stopped so the AT
+# port is free.
+restart_mm() {
+    local port
+    systemctl stop ModemManager
+    port=$(at_port)
+    if [ -n "$port" ]; then
+        stty -F "/dev/$port" 115200 raw -echo 2>/dev/null
+        { printf 'AT+CGPS=0\r' >"/dev/$port"; timeout 3 cat "/dev/$port" >/dev/null; } 2>/dev/null
+    fi
+    systemctl start ModemManager
+}
+
+enable_gps() {
+    if mmcli -m any --location-enable-gps-nmea >/dev/null 2>&1; then
+        log "GPS NMEA re-enabled"
+        return 0
+    fi
+    return 1
+}
+
+# --- health -----------------------------------------------------------------
+
+reason=""
+kv=$(modem_kv)
+mm_state=$(sed -n 's/^modem\.generic\.state *: //p' <<<"$kv")
+sim=$(sed -n 's/^modem\.generic\.sim *: //p' <<<"$kv")
+
+if [ -z "$kv" ]; then
+    reason="ModemManager sees no modem"
+elif [ "$mm_state" = failed ]; then
+    reason="modem in failed state ($(sed -n 's/^modem\.generic\.state-failed-reason *: //p' <<<"$kv"))"
+elif [ -z "$sim" ] || [ "$sim" = "--" ]; then
+    reason="ModemManager reports no SIM"
+elif ! grep -q '^modem\.generic\.supported-ip-families\.value' <<<"$kv"; then
+    reason="modem has no supported IP families (stale probe)"
+elif [ "$(nmcli -g GENERAL.STATE con show "$CONN" 2>/dev/null)" != activated ]; then
+    reason="$CONN not activated (modem state: ${mm_state:-?})"
+fi
+
+if [ -z "$reason" ]; then
+    if [ -f "$STATE/down_since" ]; then
+        log "$CONN healthy again after $(( now - $(cat "$STATE/down_since") )) s"
+        rm -f "$STATE/down_since"
+    fi
+    # A brownout resets the modem and switches GPS off without any MM restart.
+    gps_nmea_on || enable_gps
+    exit 0
+fi
+
+# --- unhealthy --------------------------------------------------------------
+
+if [ ! -f "$STATE/down_since" ]; then
+    echo "$now" >"$STATE/down_since"
+    log "unhealthy: $reason"
+    exit 0
+fi
+down_for=$(( now - $(cat "$STATE/down_since") ))
+[ "$down_for" -lt "$DOWN_LIMIT_S" ] && exit 0
+
+if ! lsusb -d "$USB_ID" >/dev/null 2>&1; then
+    # Restarting MM can't bring back a modem that isn't on the bus.
+    [ -f "$STATE/usb_missing_logged" ] ||
+        warn "SIM7600 ($USB_ID) not on USB for ${down_for} s — not restarting ModemManager"
+    touch "$STATE/usb_missing_logged"
+    exit 0
+fi
+rm -f "$STATE/usb_missing_logged"
+
+last=$(cat "$STATE/last_restart" 2>/dev/null || echo 0)
+[ $(( now - last )) -lt "$MIN_RESTART_GAP_S" ] && exit 0
+
+warn "restarting ModemManager: $reason, for ${down_for} s"
+echo "$now" >"$STATE/last_restart"
+echo "$now" >>"$STATE/restarts"
+restart_mm
+
+# Keep only the last hour of restarts and warn if brownouts look frequent.
+awk -v cutoff=$(( now - 3600 )) '$1 >= cutoff' "$STATE/restarts" >"$STATE/restarts.tmp" &&
+    mv "$STATE/restarts.tmp" "$STATE/restarts"
+n=$(wc -l <"$STATE/restarts")
+[ "$n" -gt "$BROWNOUT_WARN_PER_H" ] &&
+    warn "$n ModemManager restarts in the last hour — likely modem brownouts, check its power supply"
+
+# Wait for the modem to come back enabled, then turn GPS NMEA back on.
+for _ in $(seq 1 30); do
+    sleep 2
+    case $(modem_kv | sed -n 's/^modem\.generic\.state *: //p') in
+        searching|registered|connecting|connected)
+            enable_gps && break ;;
+    esac
+done
+gps_nmea_on || warn "GPS NMEA not enabled after restart — next run will retry"
+
+# NM normally autoconnects the fresh modem. It won't if the connection was
+# blocked (e.g. a manual `nmcli con down`), so bring it up explicitly.
+sleep 15
+if [ "$(nmcli -g GENERAL.STATE con show "$CONN" 2>/dev/null)" != activated ]; then
+    if timeout 60 nmcli con up "$CONN" >/dev/null 2>&1; then
+        log "$CONN brought up after restart"
+    else
+        warn "$CONN failed to come up after restart"
+    fi
+fi
+
+# Restart the down-timer: give the fresh MM a full DOWN_LIMIT_S to connect.
+rm -f "$STATE/down_since"
+exit 0

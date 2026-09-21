@@ -1,0 +1,11 @@
+[Unit]
+Description=Orio LTE watchdog (restart ModemManager if orio-lte stays down)
+Documentation=file:///home/orio/Development/orio_dev/orio-jetson/docs/lte_modem.md
+After=ModemManager.service NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/orio-lte-watchdog
+RuntimeDirectory=orio-lte-watchdog
+RuntimeDirectoryPreserve=yes
+TimeoutStartSec=180
