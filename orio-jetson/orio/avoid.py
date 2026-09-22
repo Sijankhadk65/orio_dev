@@ -668,7 +668,12 @@ class Avoider:
             if not self._must_clear:
                 return Decision(0, 0, "hold", "can't see the way ahead — waiting")
 
-        if not self._must_clear and self._may_scan():
+        # Not when something is closer than stereo can range at all — in
+        # practice a bump, which reports 0 m. Aimed anywhere, the cameras return
+        # unknown for it, so the look finds nothing, and its ~2 s comes out of
+        # BUMP_MEMORY_S, which was sized for pivot + back-off without it.
+        touching = ahead is not None and ahead < config.STEREO_MIN_RANGE_M
+        if not self._must_clear and not touching and self._may_scan():
             return self._request_scan("boxed in")
 
         side = self._committed_side or self._roomier_side(reading)

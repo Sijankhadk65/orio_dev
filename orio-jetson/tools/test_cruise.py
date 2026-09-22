@@ -1008,6 +1008,30 @@ def test_escape_duty() -> None:
           f"L{d.left} R{d.right}")
 
 
+def test_contact_skips_the_look_around() -> None:
+    """A bump goes straight to pivot and back-off, without stopping to look.
+
+    Contact is closer than stereo can range, so a look-around finds nothing,
+    and its ~2 s would come out of BUMP_MEMORY_S — sized for the escape alone.
+    Something merely close, but still in stereo range, still gets the look.
+    """
+    print("\ncontact skips the look-around; a near obstacle does not")
+    av = avoider_from_config()
+    av.scan = True
+
+    def at(distance):
+        return Reading(tuple((a, distance) for a in SECTOR_ANGLES), distance,
+                       "blocked", time.monotonic())
+
+    d = av.decide((1, 1), 50, at(0.0))
+    check("touching: it pivots, it does not stop to look",
+          d.state == "pivot", f"{d.state}: {d.reason}")
+    av.reset()
+    d = av.decide((1, 1), 50, at(0.40))
+    check("in range but boxed in: it still looks first",
+          d.state == "scan", f"{d.state}: {d.reason}")
+
+
 def test_fakes_match_the_real_link() -> None:
     """The fakes must have the same SHAPE as `Drivetrain`, not just the same names.
 
@@ -1142,6 +1166,7 @@ def main() -> int:
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
         test_escape_duty,
+        test_contact_skips_the_look_around,
         test_stall_detection,
         test_fakes_match_the_real_link,
         test_bump_map,
