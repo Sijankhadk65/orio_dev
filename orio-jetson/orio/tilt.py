@@ -43,6 +43,7 @@ something.
 
 from __future__ import annotations
 
+import logging
 import time
 from dataclasses import dataclass
 
@@ -50,6 +51,8 @@ from . import config
 
 TIPPED = "tipped"
 LIFTED = "lifted"
+
+log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -167,3 +170,70 @@ class TiltGuard:
                 f"the robot is tipped {abs(reading.pitch_deg):.0f} degrees {way}"
             )
         return None
+
+
+class Attitude:
+    """The IMU and the guard as one thing, for anything that drives.
+
+    Every driving path needs the same three answers — what is the heading, may
+    I drive, and give me a tracker for this turn — and each of them has to cope
+    with there being no IMU at all. `Body` needs them, and so does
+    `tools/teleop_guarded.py`, which builds its own `Avoider` rather than going
+    through `Body`. Two copies of "is the reading fresh enough" would drift
+    apart, and the bench tool being the one that drifts is the worst case,
+    since it is what the thresholds get tuned on.
+
+    Never raises on open: a missing IMU costs the guard and the heading hold,
+    not the session's wheels.
+    """
+
+    def __init__(self, reader=None, guard: TiltGuard | None = None, note: str = "") -> None:
+        self.reader = reader
+        self.guard = guard
+        self.note = note  # one line for the caller to print or collect
+
+    @classmethod
+    def open(cls) -> "Attitude":
+        if not config.IMU_ENABLED:
+            return cls(note="IMU off (ORIO_IMU=0): turns are timed, no tip guard")
+        from .imu import reader_from_config
+
+        try:
+            reader = reader_from_config()
+            reader.open()
+        except Exception as exc:
+            log.warning("no IMU on %s: %s", config.IMU_PORT, exc)
+            return cls(note=(
+                f"⚠ no IMU on {config.IMU_PORT} ({exc}): driving without the tip/lift "
+                f"guard, with timed turns and no heading hold — as before the sensor"
+            ))
+        guard = TiltGuard() if config.TILT_GUARD_ENABLED else None
+        how = "tip/lift guard on" if guard else "guard OFF (ORIO_IMU_TILT_GUARD=0)"
+        return cls(reader=reader, guard=guard, note=f"IMU ready on {config.IMU_PORT} — {how}")
+
+    def heading(self) -> float | None:
+        """Body heading for the policy, or None — which holds nothing."""
+        if self.reader is None:
+            return None
+        reading = self.reader.fresh(max_age_s=config.IMU_STALE_S)
+        return None if reading is None else reading.heading_deg
+
+    def blocked(self) -> str | None:
+        """Why the wheels must be still, or None. Silent without an IMU."""
+        if self.reader is None or self.guard is None:
+            return None
+        alarm = self.guard.update(self.reader.fresh(max_age_s=config.IMU_STALE_S))
+        return None if alarm is None else alarm.reason
+
+    def tracker(self):
+        """A `TurnTracker` for one turn, or None when the turn must be timed."""
+        if self.reader is None:
+            return None
+        from .imu import TurnTracker
+
+        return TurnTracker(self.reader)
+
+    def close(self) -> None:
+        if self.reader is not None:
+            self.reader.close()
+            self.reader = None
