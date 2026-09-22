@@ -41,8 +41,9 @@ extern "C" {
 #define FW_VERSION_MAJOR 1u
 #define FW_VERSION_MINOR 0u
 /* 1.0.1: CMD_STATUS current_ca is really centi-amps (1.0.0 sent whole amps
- * in that field). The Jetson reads this version to scale it. */
-#define FW_VERSION_PATCH 1u
+ * in that field). The Jetson reads this version to scale it.
+ * 1.0.2: received frames are queued, not dropped while one is pending. */
+#define FW_VERSION_PATCH 2u
 #define PROTO_VERSION    1u
 
 /* Which subsystem a board is, as carried in a CMD_IDENTITY payload. Shares
