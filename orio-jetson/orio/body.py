@@ -374,6 +374,18 @@ class Body:
         alarm = self._tilt.update(self._imu.fresh(max_age_s=config.IMU_STALE_S))
         return None if alarm is None else alarm.reason
 
+    def _heading(self) -> float | None:
+        """The body's heading for the policy, or None when there is no IMU.
+
+        None is the whole fallback: `Avoider` holds nothing when it is handed
+        nothing, so a robot with an unplugged IMU drives exactly as it did
+        before the sensor was fitted.
+        """
+        if self._imu is None:
+            return None
+        reading = self._imu.fresh(max_age_s=config.IMU_STALE_S)
+        return None if reading is None else reading.heading_deg
+
     def turn_tracker(self) -> TurnTracker | None:
         """A fresh tracker for one turn, or None when there is no IMU.
 
@@ -603,7 +615,7 @@ class Body:
             # to report — just the reason nothing may move.
             return None, halted, None, last_sent
 
-        decision = self._avoider.decide(signs, duty, reading)
+        decision = self._avoider.decide(signs, duty, reading, self._heading())
         if decision.state == "halted":
             return decision.state, decision.reason, None, last_sent
         if decision.state == "scan":

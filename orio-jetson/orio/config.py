@@ -339,6 +339,35 @@ AVOID_RELEASE_M = float(_env("ORIO_AVOID_RELEASE_M", "0.12"))
 # sensor — which is why it is slow, brief, and entered only once truly stuck.
 AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
+
+# ── Heading hold (orio/avoid.py, needs the IMU) ───────────────────────────────
+# The fix for the Avoider's own admission that it "wanders rather than
+# travels": it remembers the heading of the first clear tick and trims the
+# wheels back to it while the corridor stays clear. With no IMU nothing is
+# passed in and nothing is held, which is last week's behaviour exactly.
+AVOID_HEADING_HOLD = _env("ORIO_AVOID_HEADING_HOLD", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# Per-mille of differential per degree of error. Deliberately gentler than
+# AVOID_TURN_GAIN, which exists to get around an obstacle: at 5% duty (50
+# per-mille) a 10 deg drift asks for 5 per-mille of differential, where
+# steering would ask for 10. This is a trim, not a manoeuvre.
+AVOID_HEADING_GAIN = float(_env("ORIO_AVOID_HEADING_GAIN", "0.5"))
+
+# The cap, as a fraction of the commanded duty, so it scales with speed rather
+# than becoming a pivot at low duty. 0.3 of 50 per-mille is 15 — enough to
+# come back over a few metres, not enough to swerve.
+AVOID_HEADING_MAX_TRIM = float(_env("ORIO_AVOID_HEADING_MAX_TRIM", "0.3"))
+
+# Below this the robot is on heading. Yaw itself is far steadier than this
+# (0.03 deg over 55 s standing still); the band is for the chassis, not the
+# sensor — a castor that re-points, a floor that is not flat — and it stops
+# the wheels being trimmed every tick over nothing.
+AVOID_HEADING_DEADBAND_DEG = float(_env("ORIO_AVOID_HEADING_DEADBAND_DEG", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
 # How long the robot may wait with NOTHING known in its corridor before it

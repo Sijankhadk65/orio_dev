@@ -284,9 +284,12 @@ class Avoider:
     That is the right amount of machinery for a bench tool, but it does set the
     limits worth knowing:
 
-    * It wanders rather than travels. Having avoided something it carries on in
-      whatever direction it ended up facing; nothing pulls it back to its
-      original heading, because nothing here knows what that was.
+    * It travels only as straight as the IMU lets it. Given a heading it holds
+      the one it set off on, so having avoided something it comes back to it;
+      given none — no IMU, or hold disabled — it reverts to what it always
+      did, which is to carry on in whatever direction it ended up facing. The
+      hold is a trim on a clear corridor and nothing more: it has no map, no
+      goal beyond "forward", and no idea where it has been.
     * A concave dead end is escaped only by luck and the back-off timer, not by
       reasoning. In simulation it does get out — but by reversing and trying
       another way, which is a different thing from knowing it is in a trap.
@@ -312,6 +315,9 @@ class Avoider:
         blind_hold_s: float,
         scan: bool = False,
         escape_duty: int = config.AVOID_ESCAPE_DUTY,
+        heading_gain: float = 0.0,
+        heading_max_trim: float = 0.0,
+        heading_deadband_deg: float = 0.0,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
@@ -320,6 +326,12 @@ class Avoider:
         self.stale_s = stale_s
         self.turn_penalty = turn_penalty
         self.turn_gain = turn_gain
+        # Heading hold. Zero gain disables it, which is what a robot with no
+        # IMU gets: `decide()` is then handed no heading and holds nothing.
+        self.heading_gain = heading_gain
+        self.heading_max_trim = heading_max_trim
+        self.heading_deadband_deg = heading_deadband_deg
+        self._hold_heading: float | None = None
         self.smooth = smooth
         self.hysteresis_m = hysteresis_m
         self.half_width = half_width
@@ -353,6 +365,11 @@ class Avoider:
         self._must_clear = False
         self._backoff_until = 0.0
         self._scanned = False
+        # Deliberately cleared here: reset() runs whenever the latch stops
+        # being "forward", so a hand-driven turn or a seek pivot re-bases the
+        # heading the next cruise holds. Otherwise the robot would fight its
+        # way back to a heading it was deliberately turned off.
+        self._hold_heading = None
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -478,9 +495,40 @@ class Avoider:
         right = max(-duty, min(duty, round(linear + turn)))
         return left, right
 
+    def _heading_trim(self, heading_deg: float | None, duty: int) -> tuple[float, float]:
+        """How hard to lean on the wheels to get back on the original heading.
+
+        Returns `(trim, error)`, both 0.0 when there is nothing to hold — no
+        IMU, hold disabled, or the first clear tick, which is what sets the
+        heading rather than correcting to it.
+
+        The sign convention is `_mix`'s: positive steers LEFT. Error is
+        `hold - heading` wrapped, so a robot that has drifted right needs a
+        positive (left) trim to come back.
+        """
+        if heading_deg is None or self.heading_gain <= 0.0:
+            return 0.0, 0.0
+        if self._hold_heading is None:
+            # The heading it set off on. Taken on the first clear tick of a
+            # run, not at the start of the hop: a hop that begins mid-avoidance
+            # would otherwise commit to whatever it was pointing at while
+            # dodging something.
+            self._hold_heading = heading_deg
+            return 0.0, 0.0
+        error = (self._hold_heading - heading_deg + 180.0) % 360.0 - 180.0
+        if abs(error) <= self.heading_deadband_deg:
+            return 0.0, error
+        cap = self.heading_max_trim * max(duty, 1)
+        # `_mix` clamps both wheels to `duty`, so a cruising robot corrects by
+        # SLOWING the inner wheel, never by driving the outer one faster: a
+        # heading correction cannot push the robot past the speed ceiling it
+        # was commanded at, which is the point of that ceiling.
+        return max(-cap, min(cap, self.heading_gain * error)), error
+
     # ── policy ───────────────────────────────────────────────────────────────
 
-    def decide(self, latch, duty: int, reading: Reading | None) -> Decision:
+    def decide(self, latch, duty: int, reading: Reading | None,
+               heading_deg: float | None = None) -> Decision:
         now = time.monotonic()
         dt = 0.0 if self._last_tick is None else min(0.2, now - self._last_tick)
         self._last_tick = now
@@ -565,8 +613,17 @@ class Avoider:
                     self._scanned = False
                 self._stuck_s = 0.0
                 self._turn *= 1.0 - self.smooth
-                left, right = self._mix(duty, self._turn, duty)
-                return Decision(left, right, "cruise", f"{ahead:.2f} m clear ahead")
+                # Hold the heading only while the way ahead is clear. Steering,
+                # pivoting and backing off are the policy deliberately leaving
+                # the heading, and trimming against them would be the robot
+                # arguing with itself; the target survives them, so the robot
+                # comes back to it once it is through.
+                trim, error = self._heading_trim(heading_deg, duty)
+                left, right = self._mix(duty, self._turn + trim, duty)
+                reason = f"{ahead:.2f} m clear ahead"
+                if trim:
+                    reason += f", {abs(error):.0f} deg off heading"
+                return Decision(left, right, "cruise", reason)
 
             # 2. Something is in the way but a sector is open: steer for it.
             target = self._pick(reading)
@@ -859,6 +916,9 @@ def avoider_from_config() -> Avoider:
         stale_s=config.AVOID_STALE_S,
         turn_penalty=config.AVOID_TURN_PENALTY,
         turn_gain=config.AVOID_TURN_GAIN,
+        heading_gain=config.AVOID_HEADING_GAIN if config.AVOID_HEADING_HOLD else 0.0,
+        heading_max_trim=config.AVOID_HEADING_MAX_TRIM,
+        heading_deadband_deg=config.AVOID_HEADING_DEADBAND_DEG,
         smooth=config.AVOID_SMOOTH,
         hysteresis_m=config.AVOID_HYSTERESIS_M,
         half_width=config.AVOID_HALF_WIDTH_M,
