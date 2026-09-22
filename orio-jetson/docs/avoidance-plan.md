@@ -300,7 +300,8 @@ allowed to *claim* an obstacle (the part the noise ruins).
 ### A jammed wheel is a sensor — 2026-09-18
 
 Added while the ToF bracket is off the robot, and it needs no bracket at all.
-`orio/bump.py`, `ORIO_BUMP` (default **0**).
+`orio/bump.py`, `ORIO_BUMP` (default **1** since 2026-09-22; was 0 until the
+thresholds were measured and the floor test passed).
 
 The request that started it was to point the head at whatever stopped the
 robot. That cannot work, for two reasons worth recording so it is not proposed

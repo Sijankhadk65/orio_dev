@@ -960,14 +960,14 @@ TOF_STALE_S = float(_env("ORIO_TOF_STALE_S", str(AVOID_STALE_S)))
 # in the cheap direction (a bump that decays unused) and must never be wrong in
 # the expensive one (contact invented from missing telemetry). Every threshold
 # below is set with that asymmetry in mind.
-# OFF until the two thresholds below are measured against a real jammed wheel,
-# the same discipline TOF_ENABLED is held to and for the same reason: a
-# constant that was estimated rather than measured is not yet a sensor. Both
-# are guesses today, and BUMP_STALL_ERPM is doubly so — it assumes ~15 pole
-# pairs, which hubmotor_control_reference.pdf p.2 makes its own gotcha. Too low
-# a current threshold invents 2.5 s of phantom obstacle; too high does nothing.
-# `ORIO_BUMP=1` opts in, which is how the bench runs it.
-BUMP_ENABLED = _env("ORIO_BUMP", "0").strip().lower() not in (
+# ON by default since 2026-09-22. It was held off, like TOF_ENABLED, until the
+# thresholds below were measured rather than estimated: a constant that was
+# guessed is not yet a sensor. They now are — current and confirm time from
+# wall tests on drivetrain firmware 1.0.1/1.0.2 (~/spinup2.csv), with both
+# wheels reporting — and teleop with it on avoided walls on the floor test.
+# `ORIO_BUMP=0` opts out, e.g. when the drivetrain firmware predates 1.0.2 and
+# STATUS polling starves the drive command.
+BUMP_ENABLED = _env("ORIO_BUMP", "1").strip().lower() not in (
     "0",
     "false",
     "no",
