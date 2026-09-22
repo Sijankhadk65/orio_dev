@@ -370,15 +370,20 @@ AVOID_SCAN_SETTLE_S = float(_env("ORIO_AVOID_SCAN_SETTLE_S", "0.4"))
 
 # Per-mille duty the ESCAPE manoeuvres get — pivoting in place, and backing
 # off. The one deliberate exception to DRIVE_SPEED_MAX_PERCENT, and it exists
-# because 5% cannot perform them.
+# because scrubbing the robot round in place needs more than cruising does.
 #
 # Observed on the robot 2026-09-18, driving into a real obstacle: cruising
-# forward at 5% works fine (0.30 m/s measured), but the escape it triggers does
-# not. A pivot leaves +/-45 per-mille to scrub the robot round in place against
-# two drive wheels and a castor, and the back-off runs at AVOID_MIN_SCALE of
-# that, about 17. Both were commanded, repeatedly, and the robot did not
-# noticeably move. Cruising and scrubbing are different loads and there is no
-# reason one duty should serve both.
+# forward at 5% works fine (0.30 m/s measured), but the escape it triggers did
+# not — pivots and back-offs were commanded repeatedly without the robot
+# noticeably moving, and this was set to 150 in response. That run was on
+# drivetrain firmware older than 1.0.2, which dropped a SET_DRIVE arriving
+# behind a GET_STATUS, and the bump sensing was polling status the whole time,
+# so part of that "did not move" was commands never reaching the wheels.
+#
+# Re-measured 2026-09-22 on firmware 1.0.2: 150 pivoted uncomfortably fast
+# (~13.5% per wheel after AVOID_TURN_GAIN), and 60 pivots reliably. Scrubbing
+# round in place is still a heavier load than rolling forward, so this stays
+# above the cruise duty, just not by 3x.
 #
 # Bounded in three ways, which is what makes the exception safe: it applies
 # ONLY in the pivot and back-off branches, those branches are time-limited
@@ -388,8 +393,10 @@ AVOID_SCAN_SETTLE_S = float(_env("ORIO_AVOID_SCAN_SETTLE_S", "0.4"))
 #
 # Raise it if the robot still will not turn; it is the value that decides
 # whether being stuck is recoverable. Note the back-off still scales this by
-# AVOID_MIN_SCALE, because it reverses BLIND and should stay slow and brief.
-AVOID_ESCAPE_DUTY = int(_env("ORIO_AVOID_ESCAPE_DUTY", "150"))
+# AVOID_MIN_SCALE, because it reverses BLIND and should stay slow and brief —
+# at 60 that is about 21 per-mille, which has NOT yet been seen to move the
+# robot. If back-offs stall, give them their own floor rather than raising this.
+AVOID_ESCAPE_DUTY = int(_env("ORIO_AVOID_ESCAPE_DUTY", "60"))
 
 # Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
 # the move loop asks the policy for a fresh decision.

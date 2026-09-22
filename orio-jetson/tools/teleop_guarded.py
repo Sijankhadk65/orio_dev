@@ -262,8 +262,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--escape-duty", type=int, default=config.AVOID_ESCAPE_DUTY,
         help="per-mille duty for pivoting and backing off. Deliberately above "
-             "the cruise ceiling: 5%% rolls the robot forward fine but will not "
-             "scrub it round in place",
+             "the cruise ceiling, because scrubbing the robot round in place is a "
+             "heavier load than rolling it forward",
     )
     parser.add_argument(
         "--no-bump", action="store_true",
