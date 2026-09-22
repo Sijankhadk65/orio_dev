@@ -1150,6 +1150,55 @@ IMU_PITCH_SIGN = int(_env("ORIO_IMU_PITCH_SIGN", "1"))
 IMU_ROLL_SIGN = int(_env("ORIO_IMU_ROLL_SIGN", "1"))
 IMU_YAW_SIGN = int(_env("ORIO_IMU_YAW_SIGN", "-1"))
 
+# ── Tip / lift guard (orio/tilt.py) ───────────────────────────────────────────
+# The wheels stop when the body is not sitting on them properly. UNVERIFIED ON
+# THE ROBOT: the limits below are argued from the chassis, not measured by
+# tipping it, and that experiment is worth doing deliberately rather than by
+# accident. `ORIO_IMU_TILT_GUARD=0` turns it off.
+TILT_GUARD_ENABLED = _env("ORIO_IMU_TILT_GUARD", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# ROLL IS THE TIGHTER LIMIT, because roll is the angle worth trusting (0.1 deg
+# of drift across a run) and because sideways is the direction this chassis
+# actually goes over: the track is 0.70 m, so the wheels are +/-0.35 m from
+# centre, while the mass sits high — the IMU alone is 0.45 m up. Static tipping
+# is somewhere past 35-40 deg; 12 stops things long before that and still
+# clears any floor this robot is meant to drive on.
+IMU_TILT_ROLL_DEG = float(_env("ORIO_IMU_TILT_ROLL_DEG", "12"))
+
+# PITCH IS NECESSARILY COARSER. The castor swivel moves rest pitch by ~1.7 deg
+# on its own (see the IMU block above), a 20 mm shim under the castor showed
+# 7.2 deg, and a ramp or a threshold is a real pitch that must not stop the
+# robot. 15 sits clear of all of that. Anything finer belongs to the pitch
+# gating in phase 5, which drops depth frames rather than stopping wheels.
+IMU_TILT_PITCH_DEG = float(_env("ORIO_IMU_TILT_PITCH_DEG", "15"))
+
+# Total specific force, in mg, outside which the robot is not simply sitting on
+# the floor. At rest it reads 986-990 mg. A LIFT IS A TRANSIENT, NOT A STATE:
+# held still in the air it reads 1 g again, indistinguishable from the floor
+# (see orio/tilt.py). These bounds catch the moment of being picked up, put
+# down hard, or dropped — 600 mg is a firm lift, 1400 a firm set-down, and a
+# free fall heads for 0.
+IMU_LIFT_LOW_MG = float(_env("ORIO_IMU_LIFT_LOW_MG", "600"))
+IMU_LIFT_HIGH_MG = float(_env("ORIO_IMU_LIFT_HIGH_MG", "1400"))
+
+# How long a fault must hold before the wheels stop. Tilt is debounced against
+# the body rocking on braking; lift is deliberately shorter, because the
+# evidence only exists during the transient and 0.2 s of it would be gone
+# before it confirmed.
+IMU_TILT_CONFIRM_S = float(_env("ORIO_IMU_TILT_CONFIRM_S", "0.20"))
+IMU_LIFT_CONFIRM_S = float(_env("ORIO_IMU_LIFT_CONFIRM_S", "0.05"))
+
+# How long it must look fine before driving is allowed again. Long compared to
+# the confirm times on purpose: getting going again is the dangerous
+# direction, and this is what stops the wheels stuttering while the robot is
+# balanced on the edge of the limit.
+IMU_TILT_CLEAR_S = float(_env("ORIO_IMU_TILT_CLEAR_S", "1.0"))
+
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each
 # profile is its own sqlite-vec collection under KB_DIR; swap ORIO_KB_PROFILE

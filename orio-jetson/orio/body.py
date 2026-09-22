@@ -63,6 +63,8 @@ from dataclasses import dataclass
 from . import config
 from .avoid import Sensor, avoider_from_config, look_around
 from .bump import StallDetector
+from .imu import RvcReader, reader_from_config
+from .tilt import TiltGuard
 from .drivetrain import DRIVE_REFRESH_S, Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
 
@@ -153,6 +155,11 @@ class Body:
         # rather than on `Sensor` because it needs the duty that was commanded,
         # and `_drive_tick` is the only place a duty pair reaches the board.
         self._stall = StallDetector()
+        # Body attitude: stops the wheels when the robot is tipping or being
+        # carried. Unlike the cameras this is not a condition of driving at
+        # all — see _open_imu() — so both may be None for the whole session.
+        self._imu: RvcReader | None = None
+        self._tilt = TiltGuard() if config.TILT_GUARD_ENABLED else None
         self._drive_sent_at = 0.0  # when the standing duty pair last went out
         # The cruise currently running, if any — at most one, since there is one
         # set of wheels. See cruise().
@@ -210,6 +217,7 @@ class Body:
             return self
 
         self._open_drivetrain()
+        self._open_imu()
         return self
 
     @property
@@ -329,6 +337,43 @@ class Body:
             f"drivetrain ready at {self.speed_percent:g}% speed ({link.identity})"
         )
 
+    def _open_imu(self) -> None:
+        """Open the IMU, and carry on without it if it will not open.
+
+        The only optional board on the robot. No IMU means no tip/lift guard
+        and, later, turns that are timed rather than measured — which is where
+        this robot was before the part was fitted, so it is not a reason to
+        refuse to drive. Contrast `_open_sensor`, where failing costs the
+        session its wheels.
+        """
+        if not (config.IMU_ENABLED and self._drive is not None):
+            return
+        try:
+            self._imu = reader_from_config()
+            self._imu.open()
+        except Exception as exc:
+            self._imu = None
+            self.notes.append(
+                f"⚠ no IMU on {config.IMU_PORT} ({exc}): driving without the "
+                f"tip/lift guard. Everything else works as it did before the "
+                f"sensor was fitted."
+            )
+            return
+        guard = "tip/lift guard on" if self._tilt is not None else "guard OFF (ORIO_IMU_TILT_GUARD=0)"
+        self.notes.append(f"IMU ready on {config.IMU_PORT} — {guard}")
+
+    def _guard_tilt(self) -> str | None:
+        """Why the body must not be driving right now, or None.
+
+        Silent when there is no IMU or no guard: absent evidence is not
+        evidence of a tipped robot, and this must not be the thing that stops
+        a robot with an unplugged sensor from moving.
+        """
+        if self._imu is None or self._tilt is None:
+            return None
+        alarm = self._tilt.update(self._imu.fresh(max_age_s=config.IMU_STALE_S))
+        return None if alarm is None else alarm.reason
+
     @property
     def sensor(self) -> Sensor | None:
         """The running stereo thread, for anything that needs a camera frame.
@@ -346,6 +391,9 @@ class Body:
             if self._drive is not None:
                 self._drive.close()  # zeroes the wheels and latches the e-stop
                 self._drive = None
+            if self._imu is not None:
+                self._imu.close()
+                self._imu = None
             if self._sensor is not None:
                 self._sensor.close()
                 self._sensor = None
@@ -530,6 +578,11 @@ class Body:
             # Every threshold is a distance through the driving pose; a head
             # left turned by a failed look-around measures somewhere else.
             return None, "the head isn't on the driving pose", None, last_sent
+        tipped = self._guard_tilt()
+        if tipped is not None:
+            # Attitude beats everything: a robot going over does not get to
+            # consult the obstacle policy about where to drive next.
+            return None, tipped, None, last_sent
         self._avoider.scan = config.AVOID_SCAN and self._neck is not None
 
         self._sense_bump(link, sensor, last_sent)
