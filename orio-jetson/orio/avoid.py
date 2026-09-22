@@ -36,6 +36,21 @@ ROBOT_WIDTH_M = 0.70
 CORRIDOR_MARGIN_M = 0.05
 DEFAULT_HALF_WIDTH_M = round(ROBOT_WIDTH_M / 2.0 + CORRIDOR_MARGIN_M, 3)
 
+# Sectors within this of straight ahead are the centre: neither side. Stereo's
+# centre sector is NOT at 0 — it sits at -0.1 deg, because the rectified optical
+# centre is a hair off the middle of the frame — so a bare sign test put it on
+# the left. Found on the robot 2026-09-22: a left bump zeroed the three left
+# sectors, `_roomier_side` still scored "left" by the unbumped centre, and the
+# robot pivoted into what it had just hit, every time. A quarter of a sector.
+CENTRE_DEG = 2.5
+
+
+def side_of(angle: float) -> int:
+    """-1 left, +1 right, 0 straight ahead (within CENTRE_DEG)."""
+    if abs(angle) < CENTRE_DEG:
+        return 0
+    return 1 if angle > 0 else -1
+
 @dataclass(frozen=True)
 class Reading:
     """The latest stereo reading, or the error that prevented one.
@@ -440,7 +455,7 @@ class Avoider:
             # Distance, minus a penalty for how far off-axis it is, plus a
             # bonus for staying on the side already committed to.
             score = distance - self.turn_penalty * abs(angle) / 45.0
-            if self._committed_side and (angle > 0) == (self._committed_side > 0):
+            if self._committed_side and side_of(angle) == self._committed_side:
                 score += self.hysteresis_m
             if score > best_score:
                 best_score, best = score, (angle, distance)
@@ -567,8 +582,8 @@ class Avoider:
                 # Only a genuinely off-axis heading changes the committed side.
                 # Letting a 0 deg target clear it lets the side flip freely on
                 # the next pivot, which is half of the dithering above.
-                if angle:
-                    self._committed_side = 1 if angle > 0 else -1
+                if side_of(angle):
+                    self._committed_side = side_of(angle)
                 desired = -self.turn_gain * (angle / 45.0) * duty
                 self._turn += self.smooth * (desired - self._turn)
                 near = min(ahead if ahead is not None else distance, distance)
@@ -758,8 +773,8 @@ class Avoider:
             # with the side left to depth noise.
             heading = max(candidates, key=lambda c: c[1])[0]
         self._committed_side = 0
-        if heading:
-            self._committed_side = 1 if heading > 0 else -1
+        if side_of(heading):
+            self._committed_side = side_of(heading)
             self._must_clear = True
         return heading
 
@@ -774,8 +789,8 @@ class Avoider:
         change its mind. In simulation it spent over half its time pivoting on
         the spot against a corridor wall.
         """
-        left = [d for a, d in reading.sectors if a < 0 and d is not None]
-        right = [d for a, d in reading.sectors if a > 0 and d is not None]
+        left = [d for a, d in reading.sectors if side_of(a) < 0 and d is not None]
+        right = [d for a, d in reading.sectors if side_of(a) > 0 and d is not None]
         if not left and not right:
             return None
         best_left = max(left, default=0.0)

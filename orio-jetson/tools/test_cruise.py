@@ -1032,6 +1032,29 @@ def test_contact_skips_the_look_around() -> None:
           d.state == "scan", f"{d.state}: {d.reason}")
 
 
+def test_bump_pivots_away_with_real_angles() -> None:
+    """A left bump turns the robot RIGHT, with the angles stereo really reports.
+
+    Stereo's centre sector sits at -0.1 deg, not 0. A bare sign test counted it
+    as left, so after a left bump the unbumped centre still made "left" look
+    roomy and the robot pivoted into what it had just hit (on the robot,
+    2026-09-22). The fixtures elsewhere use an exact 0 and could not see it.
+    """
+    print("\na bump turns the robot away, with stereo's real sector angles")
+    angles = (-31.4, -21.0, -10.5, -0.1, 10.3, 20.8, 31.3)
+    for side, bumped, want in (("left", lambda a: a < -1, "right"),
+                               ("right", lambda a: a > 1, "left")):
+        av = avoider_from_config()
+        av.scan = False
+        # The centre reads farther than anything on the open side: the case
+        # that fooled it.
+        sectors = tuple((a, 0.0 if bumped(a) else (1.6 if abs(a) < 1 else 1.3))
+                        for a in angles)
+        d = av.decide((1, 1), 50, Reading(sectors, 0.0, "bump", time.monotonic()))
+        check(f"a {side} bump pivots {want}",
+              d.state == "pivot" and d.reason.endswith(want), f"{d.state}: {d.reason}")
+
+
 def test_fakes_match_the_real_link() -> None:
     """The fakes must have the same SHAPE as `Drivetrain`, not just the same names.
 
@@ -1167,6 +1190,7 @@ def main() -> int:
         test_tof_one_quiet_sensor,
         test_escape_duty,
         test_contact_skips_the_look_around,
+        test_bump_pivots_away_with_real_angles,
         test_stall_detection,
         test_fakes_match_the_real_link,
         test_bump_map,
