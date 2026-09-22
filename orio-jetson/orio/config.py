@@ -197,49 +197,38 @@ NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
 # from that servo's own zero end). Pan 175 is a few degrees off the neck's 180
 # home, so "straight ahead" for the cameras is straight ahead for the chassis.
 #
-# TILT IS THE AVOIDANCE POLICY'S AIM AND IT IS NARROW. Measured on the robot,
-# 2026-09-09, by sweeping the joint and reading the sector map at each angle:
+# TILT IS THE AVOIDANCE POLICY'S AIM AND IT IS NARROW. Re-measured 2026-09-22
+# with the body levelled, the neck window widened to 25..50 and the stereo pair
+# freshly calibrated (a measured 1.00 m reads 1.02 m). tools/tilt_sweep.py, centre
+# sector median at pan 175, centre known 100% at every tilt in both runs:
 #
-#     tilt 30   straight ahead 2.87 m   the UPPER WALL and ceiling. No floor in
-#                                       frame at all, so an obstacle standing on
-#                                       the ground is not merely far, it is
-#                                       invisible. This was the default, taken
-#                                       from the teleop tool, and it was wrong.
-#     tilt 40   straight ahead 2.27 m   floor ahead plus the wall beyond it; a
-#                                       person at 0.90 m read correctly
-#     tilt 45   straight ahead 1.06 m   mostly floor — and note this is already
-#                                       BELOW AVOID_CLEAR_M, so the ground
-#                                       itself reads as an obstacle and the
-#                                       robot would never cruise, only steer
-#     tilt 50+  straight ahead ~1.15 m  unchanged from 50 to 80: the joint is
-#                                       against a mechanical stop and commanding
-#                                       further just stalls the servo
+#     tilt   empty floor   cloth at ~1 m
+#      25      2.70 m         0.96 m      mostly the far wall, little floor
+#      30      2.30 m         0.96 m
+#      35      1.95 m         0.94 m
+#      40      1.52 m         0.92 m      floor ahead, 0.32 m above AVOID_CLEAR_M
+#      45      1.35 m         0.95 m      only 0.15 m of margin: a pitch on
+#                                         braking would turn the floor into an
+#                                         obstacle
+#      50      1.15 m         0.95 m      BELOW AVOID_CLEAR_M: the floor itself
+#                                         reads as an obstacle, and 50 is the
+#                                         head's mechanical stop
 #
-# On that sweep the usable window was roughly 35-45, with 40 the middle of it.
+# 25..45 all pass (floor above AVOID_CLEAR_M, 1 m target seen). 40 is the most
+# downward of those that keeps real margin over AVOID_CLEAR_M, so it sees the
+# most ground close in. If floor tests show false stops on empty floor, drop to
+# 35 before touching the thresholds.
 #
-# CHANGED 2026-09-10: the default is now 30, set deliberately because the neck
-# bracket sits on an INCLINED body rather than a square one, so the servo's own
-# scale does not read level where the sweep above assumed it did. The firmware
-# window was narrowed to match (tilt 20..40, pan 165..185 — ten degrees either
-# side of the default on each axis; see kJointLimits[] in
-# Core/Src/servo_joint.c).
+# The 2026-09-09 sweep (inclined body) put 40 at 2.27 m and 45 at 1.06 m, and
+# the 2026-09-10 default of 30 was set against that incline; neither applies to
+# the levelled body. Re-measure after ANY change to the head geometry or the
+# camera mount — every AVOID_* distance is measured through this aim.
 #
-# READ THIS BEFORE TRUSTING ANY AVOID_* DISTANCE. The sweep above was taken
-# one day earlier and it records 30 as seeing ceiling with no floor in frame —
-# the aim at which an obstacle standing on the ground is invisible rather than
-# merely far. Either the head geometry changed between the two, or the sweep
-# needs re-running against the incline; that has NOT been re-measured here. Every
-# AVOID_* threshold below is a distance measured through the head at
-# NECK_PAN_DEG/NECK_TILT_DEG, so until the sweep is redone at 30 those numbers
-# describe ground the camera may no longer be looking at, and nothing
-# downstream can tell. Re-measure after ANY change to the head geometry or the
-# camera mount.
-#
-# The firmware validates both angles against kJointLimits[] and NACKs anything
-# outside, moving nothing; the window is now narrow on both axes, so a pose
-# that worked against the old full-travel table can start being refused.
+# The firmware validates both angles against kJointLimits[] (pan 165..185,
+# tilt 25..50; see Core/Src/servo_joint.c) and NACKs anything outside, moving
+# nothing.
 NECK_PAN_DEG = float(_env("ORIO_NECK_PAN_DEG", "175"))
-NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "30"))
+NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "40"))
 
 # Open the drivetrain and give the LLM the tools to move. Off means Orio says it
 # cannot drive rather than pretending it can (see DRIVE_PROMPT / NO_DRIVE_PROMPT).
@@ -389,37 +378,37 @@ SEEK_SCAN_OFFSETS_DEG = tuple(
 # across every pan and found immediately at 26, and one standing closer was
 # found only at 13. Hence both lists reach well above the driving pose.
 #
-# THAT REACH IS NOW GONE, and it is the real cost of the +/-10 tilt window.
-# Relative to the driving pose the old lists went 27 degrees up (40 -> 13);
-# this one can go 10 (30 -> 20). If the new 30 degree aim points where the old
-# 40 did, the angles that actually found a close-in person map to roughly 16
-# and 3 — both below the window floor of 20, so no tilt in this list can reach
-# them. Expect a person at arm's length to be missed until either the window is
-# widened or the sweep is re-measured against the inclined mount.
+# THAT REACH IS STILL MOSTLY GONE. Relative to the driving pose the old lists
+# went 27 degrees up (40 -> 13); this one goes 10 (40 -> 30), and the window
+# floor is 25. The 26 that found a person at 0.77 m is back in reach of a
+# plain look (LOOK_TILT_SWEEP_DEG starts at 25), but 13 is not, so expect a
+# person closer than that to be missed. Those angles were measured on the
+# inclined body and have not been re-measured on the levelled one.
 #
 # The scan tries the driving tilt across every pan first, because that is where
 # something on the floor is, and stops the moment it finds the target.
 SEEK_SCAN_TILTS_DEG = tuple(
-    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "30,25,20").split(",") if x
+    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "40,35,30").split(",") if x
 )
 
 # Tilts sampled by a plain look ("what do you see", "look left"). Four stops
 # span the tilt window end to end without making a look take all day — each
 # costs SEEK_SETTLE_S plus one detector pass.
 #
-# All three lists were rescaled 2026-09-10 into the 20..40 window (was
-# "13,26,40,48" / "0,13,26" / "40,48" against the old 40 degree aim). The up
+# All three lists were re-centred 2026-09-22 on the 40 degree aim inside the
+# 25..50 window (were "20,27,33,40" / "30,25,20" / "30,35,40" for the 20..40
+# window). Down stops at 48, short of the mechanical stop at 50. The up
 # and down lists now START at the driving tilt and step outward from it, which
 # is both less head travel and the only way to spend their stops inside a
 # window this narrow; the sweep list walks the whole window top to bottom.
 LOOK_TILT_SWEEP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "20,27,33,40").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "25,32,40,47").split(",") if x
 )
 LOOK_TILT_UP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "30,25,20").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "40,35,30").split(",") if x
 )
 LOOK_TILT_DOWN_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "30,35,40").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "40,44,48").split(",") if x
 )
 
 # How far the head turns for a plain "look left" / "look right". Was 35, which
