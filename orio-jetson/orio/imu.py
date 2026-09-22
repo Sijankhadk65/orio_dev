@@ -256,6 +256,27 @@ class RvcReader:
                 log.exception("IMU on_reading callback failed")
 
 
+def reader_from_config(on_reading=None) -> RvcReader:
+    """An `RvcReader` carrying the measured mount calibration.
+
+    Every caller that wants BODY angles builds the reader through here, so the
+    offsets and signs live in `config.py` and not in each call site. The
+    calibration tools deliberately do NOT use this: they measure the raw sensor,
+    and applying the calibration while measuring it would fold it in twice.
+    """
+    from . import config
+
+    return RvcReader(
+        port=config.IMU_PORT,
+        pitch_offset_deg=config.IMU_PITCH_OFFSET_DEG,
+        roll_offset_deg=config.IMU_ROLL_OFFSET_DEG,
+        pitch_sign=config.IMU_PITCH_SIGN,
+        roll_sign=config.IMU_ROLL_SIGN,
+        yaw_sign=config.IMU_YAW_SIGN,
+        on_reading=on_reading,
+    )
+
+
 def _wrap180(deg: float) -> float:
     """Fold an angle into [-180, 180). Yaw wraps; every difference must."""
     return (deg + 180.0) % 360.0 - 180.0

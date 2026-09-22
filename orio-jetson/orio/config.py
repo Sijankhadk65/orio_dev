@@ -1095,6 +1095,61 @@ BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "5.0"))
 # right for something already touching the robot.
 BUMP_DISTANCE_M = float(_env("ORIO_BUMP_DISTANCE_M", "0.0"))
 
+# ── IMU: how the body is sitting and which way it is pointing ─────────────────
+# A BNO085 on the Jetson's 40-pin UART in UART-RVC mode: it streams yaw, pitch,
+# roll and acceleration at 100 Hz and takes no commands at all. See orio/imu.py
+# for why the datasheet's axis names do not survive this mount.
+IMU_PORT = _env("ORIO_IMU_PORT", "/dev/ttyTHS1")
+
+# ENABLED BY DEFAULT, AND NOT SAFETY-CRITICAL. A missing or stale IMU drops the
+# turns back to being timed, the way they were before the part existed — it does
+# not stop the robot. That is the opposite of sight (no reading, no driving),
+# and the difference is that the cameras are what make driving safe while this
+# only makes it accurate. `ORIO_IMU=0` opts out.
+IMU_ENABLED = _env("ORIO_IMU", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# How old a reading may be before a caller falls back to timed behaviour. The
+# sensor sends every 10 ms, so 0.2 s is twenty missed packets: a link that is
+# down, not one that hiccuped.
+IMU_STALE_S = float(_env("ORIO_IMU_STALE_S", "0.20"))
+
+# THE MOUNT, MEASURED — do not hand-edit these; re-run the tool.
+#   uv run python tools/imu_calibrate_drive.py   (drives, then three shim poses)
+#   uv run python tools/imu_calibrate.py         (no driving at all)
+#
+# Measured 2026-09-22 with a 20 mm shim (/tmp/imucal.csv), board ~35 cm above
+# the drive axle with +Y forward:
+#
+#   rest pose        pitch -3.41, roll +5.15   <- the offsets below
+#   castor shimmed   pitch -7.20 vs flat, roll +0.16   -> nose down reads NEGATIVE
+#   left wheel up    pitch +3.06, roll +1.70   } one wheel tilts this three-point
+#   right wheel up   pitch +3.73, roll -1.83   } chassis DIAGONALLY, so the lean
+#   (left-right)/2   pitch -0.76, roll +1.76   <- is the difference: leaning
+#                                                 right reads POSITIVE
+#   pivot left -70.8 deg, pivot right +72.4 deg -> a left turn reads NEGATIVE
+#
+# The offsets are what the body reads sitting still, and subtracting them is
+# what makes "level" mean this robot's own resting pose — the pose every
+# AVOID_* distance and the NECK_TILT_DEG sweep were measured in. It is NOT a
+# spirit level's idea of level: the body really does sit ~5 deg leaning and
+# ~3 deg nose-down.
+#
+# THE CASTOR MOVES THE PITCH OFFSET. Rest windows across that one run read
+# -3.41, -3.17, -3.03, -2.18 and -1.67 deg, all with nothing touching the
+# robot: the castor swivels and the body pitches with it (see the chassis note
+# in the KB). So treat pitch as +/-1.7 deg uncertain at rest, and set any
+# tip-guard threshold well outside that band — 1 deg of pitch means nothing on
+# this chassis. Roll held to 0.1 deg across the same windows and is the
+# trustworthy one.
+IMU_PITCH_OFFSET_DEG = float(_env("ORIO_IMU_PITCH_OFFSET_DEG", "-3.41"))
+IMU_ROLL_OFFSET_DEG = float(_env("ORIO_IMU_ROLL_OFFSET_DEG", "5.15"))
+
+# Signs that turn the sensor's convention into the body's: pitch + is nose UP,
+# roll + is leaning RIGHT, yaw + is a LEFT turn.
+IMU_PITCH_SIGN = int(_env("ORIO_IMU_PITCH_SIGN", "1"))
+IMU_ROLL_SIGN = int(_env("ORIO_IMU_ROLL_SIGN", "1"))
+IMU_YAW_SIGN = int(_env("ORIO_IMU_YAW_SIGN", "-1"))
+
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each
 # profile is its own sqlite-vec collection under KB_DIR; swap ORIO_KB_PROFILE
