@@ -61,7 +61,7 @@ import time
 from dataclasses import dataclass
 
 from . import config
-from .avoid import Sensor, avoider_from_config
+from .avoid import Sensor, avoider_from_config, look_around
 from .drivetrain import Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
 
@@ -93,6 +93,8 @@ _STATE_WORDS = {
     "steer": "steering around something in the way",
     "pivot": "turning on the spot to find a way past something",
     "backoff": "backing away from something it got too close to",
+    "hold": "stopping to wait for a clear view ahead",
+    "scan": "stopping to look left and right for a way through",
 }
 
 # A hop that ends before this has not really moved, so it is reported as a
@@ -125,7 +127,7 @@ class Hop:
         """The robot did not get anywhere: it halted, or spent the hop turning."""
         if self.halted is not None:
             return True
-        return bool(self.states) and set(self.states) <= {"pivot", "backoff"}
+        return bool(self.states) and set(self.states) <= {"pivot", "backoff", "hold", "scan"}
 
 
 def _clamp(value: float, low: float, high: float) -> float:
@@ -463,9 +465,15 @@ class Body:
             deadline = started + span
             try:
                 while time.monotonic() < deadline:
+                    tick_started = time.monotonic()
                     state, halted, rejection, last_sent = self._drive_tick(
                         link, sensor, signs, duty, last_sent
                     )
+                    if state == "scan":
+                        # Standing still with the head turning is not distance
+                        # covered, and the span is a bound on distance: give
+                        # the hop its look back rather than let it eat the move.
+                        deadline += time.monotonic() - tick_started
                     if state is not None and (not states or states[-1] != state):
                         states.append(state)
                     if halted is not None or rejection is not None:
@@ -494,6 +502,12 @@ class Body:
         a bounded hop can break out of its loop and a cruise can keep ticking
         through the same condition. Both must be holding `self._lock`.
         """
+        if self._neck is not None and not self.head_is_driving_pose:
+            # Every threshold is a distance through the driving pose; a head
+            # left turned by a failed look-around measures somewhere else.
+            return None, "the head isn't on the driving pose", None, last_sent
+        self._avoider.scan = config.AVOID_SCAN and self._neck is not None
+
         reading = sensor.reading
         halted = self._blind(reading)
         if halted is not None:
@@ -504,12 +518,41 @@ class Body:
         decision = self._avoider.decide(signs, duty, reading)
         if decision.state == "halted":
             return decision.state, decision.reason, None, last_sent
+        if decision.state == "scan":
+            return self._scan(link, sensor, last_sent)
 
         command = (decision.left, decision.right)
         if command != last_sent:
             link.set_drive(*command)
             last_sent = command
         return decision.state, None, link.take_rejection(), last_sent
+
+    def _scan(self, link, sensor, last_sent):
+        """Stop, look left and right, and hand what was seen to the policy.
+
+        The wheels are zeroed BEFORE the head moves: a look-around is two
+        seconds of the cameras pointing away from the direction of travel. See
+        `Avoider.take_scan` for what is done with the views, and
+        `config.AVOID_SCAN` for when this happens at all.
+        """
+        if last_sent != (0, 0):
+            link.set_drive(0, 0)
+            last_sent = (0, 0)
+        views, home = look_around(
+            lambda offset: self.look(config.NECK_PAN_DEG + offset),
+            sensor,
+            config.AVOID_SCAN_PANS_DEG,
+            config.AVOID_SCAN_SETTLE_S,
+        )
+        if not home:
+            return "scan", "the head didn't come back from looking around", None, last_sent
+        heading = self._avoider.take_scan(views)
+        log.info(
+            "look-around: %d views, %s",
+            len(views),
+            "nothing usable" if heading is None else f"heading {heading:+.0f} deg",
+        )
+        return "scan", None, link.take_rejection(), last_sent
 
     def cruise(self) -> "Cruise":
         """Start a guarded drive that outlives the call which started it.
@@ -598,7 +641,7 @@ class Body:
             return f"{moved} for {elapsed:.1f} seconds and then stopped: {halted}"
 
         # Forward that spent the whole hop pivoting never actually advanced.
-        if direction == "forward" and states and set(states) <= {"pivot", "backoff"}:
+        if direction == "forward" and states and set(states) <= {"pivot", "backoff", "hold", "scan"}:
             return (
                 f"couldn't go forward — something was in the way, so Orio spent the "
                 f"{elapsed:.1f} seconds {detours[0] if detours else 'looking for a way past'}"

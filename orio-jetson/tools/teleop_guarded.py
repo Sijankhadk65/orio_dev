@@ -44,11 +44,13 @@ Straight on is preferred and only given up when it has to be. Each tick:
     ahead blocked but a sector is     steer toward the best sector, forward
       open beyond --stop-m              speed reduced by how hard it turns
     nothing open beyond --stop-m      pivot in place toward the roomier side
+    nothing KNOWN ahead               wait in place; halt after --blind-hold-s
     nothing KNOWN anywhere            stop; blind is not a heading
 
-"Best" is the most distant sector, penalised for how far it sits off straight
-ahead (`--turn-penalty`), so a marginally roomier route 30 deg off-axis loses
-to a good-enough one dead ahead. The robot commits to a turn once it starts —
+"Best" is the smallest turn whose corridor is clear out to --clear-m, so the
+robot goes round an obstacle by the least it can and otherwise drives straight.
+Only when no heading clears does it fall back to the most distant sector,
+penalised for how far it sits off straight ahead (`--turn-penalty`). The robot commits to a turn once it starts —
 a same-side bonus plus a low-pass on the steering output — because a policy
 that re-picks freely will happily oscillate between two equally good gaps and
 make no progress at all.
@@ -104,9 +106,9 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import config
-from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor
+from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor, look_around
 from orio.drivetrain import Drivetrain
-from orio.motion import JOINT_NECK, Motion
+from orio.motion import JOINT_NECK, Motion, travel_time_s
 
 # The drivetrain board, by its stable udev name — never a raw /dev/ttyACM*,
 # whose number is enumeration order and can point at the motion board
@@ -215,8 +217,13 @@ def parse_args() -> argparse.Namespace:
         help="how long to reverse when stuck — REVERSES BLIND, there is no rear sensor",
     )
     parser.add_argument(
-        "--blind-pivot-s", type=float, default=3.0,
-        help="pivoting this long with nothing known ahead stops the robot",
+        "--blind-hold-s", type=float, default=3.0,
+        help="waiting this long with nothing known ahead stops the robot",
+    )
+    parser.add_argument(
+        "--no-scan", action="store_true",
+        help="never stop to pan the head for a way through (config.AVOID_SCAN); "
+        "always off with --no-neck",
     )
     parser.add_argument(
         "--motion-port", default=DEFAULT_MOTION_PORT,
@@ -339,7 +346,7 @@ def main() -> int:
         commit_clear_s=args.commit_clear_s,
         pivot_timeout_s=args.pivot_timeout_s,
         backoff_s=args.backoff_s,
-        blind_pivot_s=args.blind_pivot_s,
+        blind_hold_s=args.blind_hold_s,
     )
     avoider.enabled = not args.no_avoid
 
@@ -357,6 +364,19 @@ def main() -> int:
         except Exception as exc:
             print(f"\n{exc}")
             return 1
+
+    avoider.scan = neck is not None and config.AVOID_SCAN and not args.no_scan
+    head = {"pan": args.neck_pan}
+
+    def point(offset: float) -> str | None:
+        """Aim the head at the run's pan plus `offset`, and wait out the travel."""
+        pan = args.neck_pan + offset
+        rejection = neck.move_to(JOINT_NECK, pan, args.neck_tilt)
+        if rejection is not None:
+            return rejection.reason
+        time.sleep(travel_time_s(abs(pan - head["pan"])))
+        head["pan"] = pan
+        return None
 
     try:
         print("--- opening stereo (both sensors, ~2 s) ---")
@@ -439,6 +459,29 @@ def main() -> int:
                     reading = sensor.reading
                     decision = avoider.decide(latch, round(duty_percent * 10), reading)
 
+                    # Stop, look left and right, and let the policy choose from
+                    # the wider view. Keys are not read for the ~2 s this takes,
+                    # but the wheels are already stopped.
+                    if decision.state == "scan":
+                        dt.set_drive(0, 0)
+                        last_sent = (0, 0)
+                        print(f"\nSCAN: {decision.reason}")
+                        views, home = look_around(
+                            point, sensor, config.AVOID_SCAN_PANS_DEG, config.AVOID_SCAN_SETTLE_S,
+                        )
+                        if not home:
+                            print("\nHALTED: the head didn't come back from looking around")
+                            latch = None
+                            avoider.reset()
+                        else:
+                            heading = avoider.take_scan(views)
+                            print(
+                                f"  {len(views)} views → "
+                                + ("nothing usable" if heading is None else f"heading {heading:+.0f}°")
+                            )
+                        last_state = decision.state
+                        continue
+
                     # A halt is terminal: the robot is blind or boxed in with
                     # nowhere known to go, so drop the latch rather than sit there
                     # re-deciding. Steering and pivoting are progress and keep it.
@@ -447,7 +490,7 @@ def main() -> int:
                         latch = None
                         avoider.reset()
                     elif decision.state != last_state and decision.state in (
-                        "steer", "pivot", "backoff",
+                        "steer", "pivot", "backoff", "hold",
                     ):
                         print(f"\n{decision.state.upper()}: {decision.reason}")
                     last_state = decision.state

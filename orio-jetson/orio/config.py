@@ -332,12 +332,32 @@ AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
-# How long the robot may pivot with NOTHING known in its corridor before it
-# stops. The pivot timeout above only counts time pinned against a known
-# obstacle, so a blind pivot had no limit at all and, in open space, turned the
-# robot until it faced something within stereo range. Stopping is the bound;
-# driving on unknown is not. First guess — tune on the floor at the 5% ceiling.
-AVOID_BLIND_PIVOT_S = float(_env("ORIO_AVOID_BLIND_PIVOT_S", "3.0"))
+# How long the robot may wait with NOTHING known in its corridor before it
+# halts. Blind used to mean pivoting toward whatever it could range, which in
+# open space turned every depth dropout into a turn and the robot went round in
+# circles; it now stands still and waits for the view to come back (renamed
+# from AVOID_BLIND_PIVOT_S on 2026-09-22 when that changed). Stopping is the
+# bound; driving on unknown is not. First guess — tune on the floor.
+AVOID_BLIND_HOLD_S = float(_env("ORIO_AVOID_BLIND_HOLD_S", "3.0"))
+
+# Stop and look around before committing to a way past something. When the
+# policy has no clear way on in the view it has — an obstacle ahead and no
+# clear corridor anywhere in frame, boxed in, or the way ahead unknown for a
+# second — it zeroes the wheels, pans the head through AVOID_SCAN_PANS_DEG,
+# merges what it saw into one wider sector map, and pivots toward the smallest
+# clear turn in it. Once per episode (clear road, or a back-off, re-arms it).
+#
+# The pan window is only +/-10 of NECK_PAN_DEG (kJointLimits, 165..185), so a
+# look-around widens the view from +/-31 to +/-41 deg of sector centres — it
+# finds a gap just out of frame, not one behind the robot. Each stop costs the
+# travel plus AVOID_SCAN_SETTLE_S for the exposure and a fresh depth reading,
+# about 2 s for the whole look. Positive pan is head LEFT. First guesses —
+# tune on the floor.
+AVOID_SCAN = _env("ORIO_AVOID_SCAN", "1").strip().lower() not in ("0", "false", "no", "off", "")
+AVOID_SCAN_PANS_DEG = tuple(
+    float(x) for x in _env("ORIO_AVOID_SCAN_PANS_DEG", "10,-10").split(",") if x
+)
+AVOID_SCAN_SETTLE_S = float(_env("ORIO_AVOID_SCAN_SETTLE_S", "0.4"))
 
 # Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
 # the move loop asks the policy for a fresh decision.

@@ -157,7 +157,8 @@ class Decision:
 
     left: int
     right: int
-    state: str  # "cruise" | "steer" | "pivot" | "halted" | "off" | "manual"
+    # "cruise" | "steer" | "pivot" | "backoff" | "hold" | "scan" | "halted" | "off" | "manual"
+    state: str
     reason: str
     heading_deg: float = 0.0
 
@@ -195,7 +196,8 @@ class Avoider:
         commit_clear_s: float,
         pivot_timeout_s: float,
         backoff_s: float,
-        blind_pivot_s: float,
+        blind_hold_s: float,
+        scan: bool = False,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
@@ -211,7 +213,11 @@ class Avoider:
         self.enabled = True
         self.pivot_timeout_s = pivot_timeout_s
         self.backoff_s = backoff_s
-        self.blind_pivot_s = blind_pivot_s
+        self.blind_hold_s = blind_hold_s
+        # Whether a "scan" decision may be returned at all. Off unless whoever
+        # runs the loop can actually move the head and call `take_scan()`.
+        self.scan = scan
+        self._scanned = False  # one look-around per episode; see _may_scan
         self._turn = 0.0  # smoothed steering state, permille
         self._committed_side = 0  # -1 left, +1 right, 0 none — damps oscillation
         self._blocked = False
@@ -231,6 +237,7 @@ class Avoider:
         self._clear_s = 0.0
         self._must_clear = False
         self._backoff_until = 0.0
+        self._scanned = False
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -263,18 +270,73 @@ class Avoider:
                 near = distance if near is None else min(near, distance)
         return near
 
-    def _pick(self, reading: Reading) -> tuple[float, float] | None:
+    def _corridor_clear(self, reading: Reading, heading: float, beyond: float = 0.0) -> bool:
+        """Whether a corridor pointed `heading` degrees off straight ahead is
+        free of anything KNOWN nearer than `clear_m + beyond`.
+
+        The same geometric test as `_ahead`, rotated: a sector counts when its
+        point lies ahead of the robot and within `half_width` of the new centre
+        line. The heading's own sector must be known — unknown is never a way
+        through.
+        """
+        own_known = False
+        for angle, distance in reading.sectors:
+            if distance is None:
+                continue
+            if angle == heading:
+                own_known = True
+            off = math.radians(angle - heading)
+            if math.cos(off) <= 0.0:
+                continue
+            if abs(distance * math.sin(off)) <= self.half_width and distance < self.clear_m + beyond:
+                return False
+        return own_known
+
+    def _pick(self, reading: Reading, beyond: float = 0.0) -> tuple[float, float] | None:
         """Best (angle, distance) to head for, or None if nothing qualifies.
+
+        The SMALLEST turn that clears the corridor wins, not the most open
+        sector. Scoring by distance made every obstacle an excuse to swing
+        toward the farthest wall in the room — a far wall 30 deg off beat
+        open floor 10 deg off by metres — so each detour left the robot
+        pointing somewhere new. For a robot that is meant to walk behind
+        somebody, the right detour is the least one. (It does not stop the
+        FLOOR triggering steers: that is the aim's job, see NECK_TILT_DEG.)
+
+        Within an episode the committed side is kept whenever it has any
+        usable sector at all, for the same reason the pivot latches: choosing
+        afresh every tick flip-flops between two equal gaps and passes neither.
 
         Only KNOWN sectors are candidates. Unknown ones are skipped rather than
         scored as obstacles: sector 0 is permanently unknown (the rectification
         border), and treating that as a wall would bias every turn rightward.
+        If no heading clears the corridor, falls back to the farthest-sector
+        score below, which at least points away from what is closest.
         """
+        candidates = [
+            (angle, distance)
+            for angle, distance in reading.sectors
+            if distance is not None and distance > self.stop_m
+        ]
+        # Once committed, the other side is not on the table while this side
+        # has anything to offer. A bias is not enough here: a single depth
+        # dropout can empty the committed side's clear headings for a frame,
+        # the other side wins that tick, and the commitment flips with it, so
+        # the robot alternates gaps instead of passing either. Changing sides
+        # is the pivot's and the back-off's job, not the steer's.
+        side = self._committed_side
+        if side:
+            same = [c for c in candidates if c[0] == 0 or (c[0] > 0) == (side > 0)]
+            if same:
+                candidates = same
+
+        clear = [c for c in candidates if self._corridor_clear(reading, c[0], beyond)]
+        if clear:
+            return min(clear, key=lambda c: abs(c[0]))
+
         best = None
         best_score = float("-inf")
-        for angle, distance in reading.sectors:
-            if distance is None or distance <= self.stop_m:
-                continue
+        for angle, distance in candidates:
             # Distance, minus a penalty for how far off-axis it is, plus a
             # bonus for staying on the side already committed to.
             score = distance - self.turn_penalty * abs(angle) / 45.0
@@ -343,14 +405,13 @@ class Avoider:
         else:
             self._stuck_s = max(0.0, self._stuck_s - 2.0 * dt)
 
-        # "Blind" is the other way to end up pivoting, and the stuck timer above
-        # cannot see it: with nothing KNOWN in the corridor there is no near
+        # "Blind" is the other way to end up not driving, and the stuck timer
+        # above cannot see it: with nothing KNOWN in the corridor there is no near
         # obstacle to be stuck against, so the back-off never fires. In open
         # space that is the common case, not the corner one — beyond ~2.2 m only
         # the centre sector is in the corridor at all, and past the 4 m range
-        # gate a clear run reads as unknown — so the robot pivoted until it came
-        # to face something it could range, i.e. an obstacle. Timed the same
-        # way as stuck, so one noisy known tick does not restart the clock.
+        # gate a clear run reads as unknown. Timed the same way as stuck, so one
+        # noisy known tick does not restart the clock.
         if ahead is None:
             self._blind_s += dt
         else:
@@ -377,6 +438,7 @@ class Avoider:
                 self._clear_s += dt
                 if self._clear_s > self.commit_clear_s:
                     self._committed_side = 0
+                    self._scanned = False
                 self._stuck_s = 0.0
                 self._turn *= 1.0 - self.smooth
                 left, right = self._mix(duty, self._turn, duty)
@@ -384,6 +446,12 @@ class Avoider:
 
             # 2. Something is in the way but a sector is open: steer for it.
             target = self._pick(reading)
+            if (
+                target is not None
+                and not self._corridor_clear(reading, target[0])
+                and self._may_scan()
+            ):
+                return self._request_scan("nothing clear in view")
             if target is not None:
                 angle, distance = target
                 self._clear_s = 0.0
@@ -431,6 +499,7 @@ class Avoider:
         if now < self._backoff_until or self._stuck_s > self.pivot_timeout_s:
             if now >= self._backoff_until:
                 self._backoff_until = now + self.backoff_s
+                self._scanned = False
                 self._stuck_s = 0.0
                 self._committed_side = 0
                 self._must_clear = True
@@ -454,17 +523,39 @@ class Avoider:
         # attempt is free to choose the other way. An unbounded latch is what
         # made an earlier version pivot into a wall indefinitely.
         #
-        # Bounded when blind: after --blind-pivot-s of pivoting with nothing
-        # known ahead, stop rather than keep turning in search of something to
-        # range. The halt holds for as long as the corridor stays unknown — the
-        # robot is no longer moving, so nothing about the view will change —
-        # and a new command resets it. Unknown still never counts as clear.
-        if ahead is None and self._blind_s > self.blind_pivot_s:
+        # Blind is a reason to wait, not to turn. Nothing KNOWN in the corridor
+        # is not an obstacle to get around, so pivoting away from it has no
+        # direction to go in: the robot used to turn toward whichever side it
+        # could range, and in open space — where a flicker of unknown is the
+        # common case — every flicker became a turn and it went round in
+        # circles. It now stands still and waits for the view to come back,
+        # which a depth dropout usually does within a few frames.
+        #
+        # The one exception is the turn after a back-off, which is already a
+        # pivot toward clear road and carries on through a blind moment.
+        #
+        # Bounded: after --blind-hold-s with nothing known ahead, halt. The
+        # halt holds for as long as the corridor stays unknown — the robot is
+        # not moving, so nothing about the view will change — and a new
+        # command resets it. Unknown still never counts as clear.
+        if ahead is None:
             self._turn = 0.0
-            return Decision(
-                0, 0, "halted",
-                f"can't see the way ahead after {self._blind_s:.1f} s of turning",
-            )
+            if (
+                not self._must_clear
+                and self._blind_s > _BLIND_SCAN_AFTER_S
+                and self._may_scan()
+            ):
+                return self._request_scan("can't see the way ahead")
+            if self._blind_s > self.blind_hold_s:
+                return Decision(
+                    0, 0, "halted",
+                    f"can't see the way ahead after {self._blind_s:.1f} s",
+                )
+            if not self._must_clear:
+                return Decision(0, 0, "hold", "can't see the way ahead — waiting")
+
+        if not self._must_clear and self._may_scan():
+            return self._request_scan("boxed in")
 
         side = self._committed_side or self._roomier_side(reading)
         if side is not None:
@@ -478,6 +569,77 @@ class Avoider:
         # 5. Nothing known anywhere. Blind is not a heading.
         self.reset()
         return Decision(0, 0, "halted", "no known clearance in any sector")
+
+    # ── looking around ───────────────────────────────────────────────────────
+
+    def _may_scan(self) -> bool:
+        return self.scan and not self._scanned
+
+    def _request_scan(self, why: str) -> Decision:
+        """Stop and ask the caller to pan the head: see `take_scan()`."""
+        self._scanned = True
+        self._turn = 0.0
+        return Decision(0, 0, "scan", f"{why} — stopping to look left and right")
+
+    def take_scan(self, views: list[tuple[float, Reading]]) -> float | None:
+        """Choose a way on from a look-around, and commit to turning toward it.
+
+        `views` is `(pan_offset_deg, reading)` per head position, from
+        `look_around()`; POSITIVE PAN IS HEAD LEFT, as everywhere in config.
+        A sector's angle is relative to where the head pointed, and sector
+        angles run negative-left, so on the chassis it sits at
+        `angle - pan_offset`. Merged, the views are one wider sector map, and
+        the same choice `_pick` makes on a single view is made on that: the
+        smallest turn whose corridor clears, else the most open direction.
+
+        The side is chosen afresh — being boxed in after steering one way is
+        exactly when the other way deserves a look — and then committed, with
+        `_must_clear` set so the robot pivots toward it and only drives once
+        the corridor ahead actually reads clear. A chosen heading of 0 means
+        the way ahead is fine after all (the block was noise) and nothing is
+        committed. Returns the chosen heading in chassis degrees, or None if
+        the look-around saw nothing usable, which leaves the policy to carry on
+        as if it had not looked.
+        """
+        merged = tuple(
+            sorted(
+                (angle - offset, distance)
+                for offset, reading in views
+                if reading is not None and reading.error is None
+                for angle, distance in reading.sectors
+            )
+        )
+        if not merged:
+            return None
+        view = Reading(merged, None, "look-around", time.monotonic())
+        candidates = [(a, d) for a, d in merged if d is not None and d > self.stop_m]
+        if not candidates:
+            return None
+        # Judged to clear_m + release_m, not clear_m. A look-around starts at
+        # the moment something crossed clear_m, so the thing that stopped the
+        # robot sits right on that line, and on the fresh frames depth noise
+        # puts it just past it as often as not — at clear_m, the look "found"
+        # the way straight ahead clear, committed to nothing, and the robot
+        # drove on into the thing it had stopped for. The same Schmitt margin
+        # the stop uses.
+        clear = [
+            c for c in candidates
+            if self._corridor_clear(view, c[0], beyond=self.release_m)
+        ]
+        if clear:
+            heading = min(clear, key=lambda c: abs(c[0]))[0]
+        else:
+            # Nothing clears even with the wider view: turn toward the most
+            # open direction. Not `_pick`'s fallback score — its off-axis
+            # penalty exists to keep a MOVING robot near its heading, and here
+            # it picks "nearly straight on" into a wall that spans the view,
+            # with the side left to depth noise.
+            heading = max(candidates, key=lambda c: c[1])[0]
+        self._committed_side = 0
+        if heading:
+            self._committed_side = 1 if heading > 0 else -1
+            self._must_clear = True
+        return heading
 
     def _roomier_side(self, reading: Reading) -> int | None:
         """-1 (left) or +1 (right), by the best KNOWN distance on each side.
@@ -503,6 +665,47 @@ class Avoider:
         return -1 if best_left > best_right else 1
 
 
+# How long the way ahead must stay unknown before it is worth stopping to look
+# around. Shorter, and every depth dropout in open space — a single centre
+# sector going unknown is enough, since past ~2.2 m it is the only sector in the
+# corridor — becomes a stop and a look, which is the circling problem again at
+# walking pace. The halt after AVOID_BLIND_HOLD_S still bounds the wait.
+_BLIND_SCAN_AFTER_S = 1.0
+
+
+def look_around(point, sensor: Sensor, offsets, settle_s: float):
+    """Pan the head through `offsets` and take a fresh reading at each stop.
+
+    Returns `(views, home)`: `(pan_offset_deg, reading)` per stop, and whether
+    the head made it back to offset 0. `point(offset)` aims the head at the
+    driving pan plus `offset` and returns only once it has arrived — None on
+    success, or why it could not. A refused stop is skipped, not fatal; failing
+    to get back IS, for the caller, because every threshold is measured through
+    the driving pose and a panned head measures somewhere else. The reading
+    taken back at 0 is included, so the caller is left with one that is fresh.
+
+    "Fresh" means published after the head settled: the sensor thread keeps
+    running through the pan, and a reading from mid-travel is a smear of two
+    directions charged to one.
+    """
+    views: list[tuple[float, Reading]] = []
+    home = False
+    for offset in [*offsets, 0.0]:
+        if point(offset) is not None:
+            continue
+        home = offset == 0.0
+        time.sleep(settle_s)
+        settled = time.monotonic()
+        deadline = settled + 1.0
+        reading = sensor.reading
+        while (reading is None or reading.timestamp < settled) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            reading = sensor.reading
+        if reading is not None and reading.timestamp >= settled:
+            views.append((offset, reading))
+    return views, home
+
+
 def _signs(latch, duty: int) -> tuple[int, int]:
     """The raw wheel pair a latched direction asks for, ungated."""
     if latch is None:
@@ -526,5 +729,6 @@ def avoider_from_config() -> Avoider:
         commit_clear_s=config.AVOID_COMMIT_CLEAR_S,
         pivot_timeout_s=config.AVOID_PIVOT_TIMEOUT_S,
         backoff_s=config.AVOID_BACKOFF_S,
-        blind_pivot_s=config.AVOID_BLIND_PIVOT_S,
+        blind_hold_s=config.AVOID_BLIND_HOLD_S,
+        scan=config.AVOID_SCAN,
     )
