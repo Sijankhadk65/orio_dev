@@ -1030,12 +1030,13 @@ BUMP_STALL_ERPM_PER_MILLE = float(_env("ORIO_BUMP_STALL_ERPM_PER_MILLE", "2.7"))
 # It was 0.0 (disabled) after 2026-09-18 read driving as 0.04 A and a jam as
 # 0.06 A. Those numbers were 100x low: drivetrain firmware 1.0.0 divided the
 # VESC's centi-amps by 100 and sent whole amps in a centi-amp field (see
-# drivetrain._current_scale). Real values, from ~/spinup.csv on 2026-09-22 at
-# 5% duty — 10 runs, left wheel only, in 1 A steps:
+# drivetrain._current_scale). Real values at 5% duty, from ~/spinup.csv on
+# 2026-09-22 (10 runs, left wheel only, 1 A steps) and confirmed on firmware
+# 1.0.1 in centi-amps, both wheels, into a wall (~/spinup2.csv):
 #
-#     cruising                  ~1 A
-#     spin-up from rest          3-4 A for at most 0.17 s, eRPM climbing
-#     jammed / pushing           4-6 A, eRPM at or near 0
+#     cruising                  ~1 A (0.8-1.4 median)
+#     spin-up from rest          3-4.3 A for at most 0.19 s, eRPM climbing
+#     jammed / pushing           4.3-5.8 A (median ~5.7), eRPM at or near 0
 #     ESC not driving            0 A, eRPM 0
 #
 # eRPM alone could not tell spin-up from a jam: the wheel takes ~0.3 s to pass
@@ -1046,13 +1047,19 @@ BUMP_STALL_ERPM_PER_MILLE = float(_env("ORIO_BUMP_STALL_ERPM_PER_MILLE", "2.7"))
 #
 # Not scaled by duty. A stall at the ~2% duty steering throttles to draws less
 # and can be missed — the cheap direction, the same as having no bump sensor.
-# Re-measure once 1.0.1 is flashed: it reports centi-amps, not 1 A steps.
 BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "3.5"))
 
 # How long all three must hold. NOT noise filtering: a hub motor coming up from
 # rest looks exactly like a stall for real milliseconds — duty high, eRPM ~0,
 # current at its peak — so confirming instantly reports a bump on every start.
-BUMP_CONFIRM_S = float(_env("ORIO_BUMP_CONFIRM_S", "0.25"))
+#
+# 0.25 -> 0.35 on 2026-09-22, from a wall test on firmware 1.0.1 (centi-amps,
+# both wheels, ~/spinup2.csv): spin-up held >= 3.5 A with eRPM under the limit
+# for up to 0.19 s, 0.06 s short of confirming — too thin for a floor with more
+# drag. Spin-up peaks at ~4.3 A and a wheel against the wall dips to 4.3 A, so
+# raising BUMP_STALL_CURRENT_A cannot separate them; time can. At 0.35 all 11
+# recorded runs still catch every jam, about 0.1 s later (3 cm at 0.30 m/s).
+BUMP_CONFIRM_S = float(_env("ORIO_BUMP_CONFIRM_S", "0.35"))
 
 # Telemetry older than this is treated as no telemetry at all. Unknown is not
 # stalled: inventing contact from a quiet link stops the robot for as long as

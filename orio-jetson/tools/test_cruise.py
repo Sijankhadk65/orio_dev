@@ -729,7 +729,7 @@ def status(left=None, right=None, at=None, age_s=0.0, estopped=False):
     )
 
 
-def confirm(det, t0, make, duty=(300, 300), ticks=8, step=0.05):
+def confirm(det, t0, make, duty=(300, 300), ticks=None, step=0.05):
     """Tick the detector forward and return the FIRST bump it confirmed.
 
     First, not last: the question every test below asks is whether the evidence
@@ -739,6 +739,9 @@ def confirm(det, t0, make, duty=(300, 300), ticks=8, step=0.05):
     `make(now)` builds the status for that tick, so a fixture can follow the
     simulated clock instead of being stamped once.
     """
+    if ticks is None:
+        # Comfortably past the confirm window, whatever it is set to.
+        ticks = int(config.BUMP_CONFIRM_S / step) + 4
     first = None
     for i in range(ticks):
         now = t0 + i * step
@@ -920,12 +923,13 @@ def test_stall_detection() -> None:
     # cannot confirm a stall that belongs to the next.
     det = StallDetector()
     make = jammed()
-    for i in range(6):
+    held = config.BUMP_CONFIRM_S + 0.05
+    for i in range(int(held / 0.05)):
         det.update(t0 + i * 0.05, (50, 50), make(t0 + i * 0.05))
     check("a stall is confirmed while the command is steady",
-          det.update(t0 + 0.30, (50, 50), make(t0 + 0.30)) is not None)
+          det.update(t0 + held, (50, 50), make(t0 + held)) is not None)
     check("and a new duty pair restarts the timer",
-          det.update(t0 + 0.35, (60, 60), make(t0 + 0.35)) is None)
+          det.update(t0 + held + 0.05, (60, 60), make(t0 + held + 0.05)) is None)
 
     # Regression: BUMP_MIN_DUTY was first set above the duty this robot
     # actually drives at, and the detector armed in no test and on no hop.
@@ -972,8 +976,8 @@ def test_stall_on_recorded_telemetry() -> None:
         return out
 
     check("starting from rest is not a bump", replay(StallDetector(), _SPIN_UP) is None)
-    check("which eRPM alone would have called one",
-          replay(StallDetector(min_current_a=0.0), _SPIN_UP) is not None)
+    check("which eRPM alone, at the old 0.25 s, would have called one",
+          replay(StallDetector(min_current_a=0.0, confirm_s=0.25), _SPIN_UP) is not None)
     check("a recorded jam at 4-5 A still confirms", replay(StallDetector(), _JAM) is not None)
 
 
