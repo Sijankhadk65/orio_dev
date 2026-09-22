@@ -5,13 +5,23 @@
 
 Left pane is the RECTIFIED left camera with sector distances drawn over it;
 right pane is the colourised depth map (warm = near, cool = far, black =
-unknown). Rectified, because that is the frame the depth map is computed in —
+unknown), or — press G — the HEIGHT CLASSIFICATION that ORIO_STEREO_GROUND_PLANE
+steers on: grey floor, red obstacle, blue driven-under, black unknown.
+
+That second view is the one to tune STEREO_CAM_HEIGHT_M and
+STEREO_CAM_PITCH_DEG against, and doing it by eye is not a shortcut: a degree
+or two of pitch error tilts the fitted plane enough that distant floor turns
+red, and the robot then refuses to leave `steer` for `cruise` in an empty room.
+Red creeping up the floor toward the horizon means the pitch is too shallow;
+a box that stays grey means it is too steep. Rectified, because that is the frame the depth map is computed in —
 the raw capture is displaced from it by enough to make the comparison useless.
 Black borders in the left pane are therefore real: they are the part of the
 output frame that rectification leaves undefined, and no depth can exist there. The bar
 under each sector shows its distance, and a sector with too few valid pixels
 reads UNKNOWN rather than a number — the distinction that matters, since
-"unknown" must never be acted on as "clear".
+"unknown" must never be acted on as "clear". The tag above each bar names the
+sensor that produced it, which is how a disagreement between the cameras and
+the ToF fan becomes visible rather than arguable.
 
 A dev aid only: it reads the cameras and prints, and drives nothing. Q or Esc
 quits. Note it holds both sensors, so nothing else can capture while it runs.
@@ -44,6 +54,26 @@ def colourise(depth):
     out = cv2.applyColorMap(norm, cv2.COLORMAP_TURBO)
     out[~valid] = 0
     return out
+
+
+# Floor / obstacle / above-the-robot / unknown, in the order sectors.classify
+# numbers them. Deliberately not a pretty palette: the only question this view
+# answers is which pixels the policy is about to act on.
+CLASS_COLOURS = {
+    0: (0, 0, 0),         # unknown — no depth
+    1: (70, 70, 70),      # floor — eliminated by geometry, not by cropping
+    2: (40, 40, 235),     # obstacle — between the floor tolerance and the robot
+    3: (150, 90, 0),      # above the robot — driven under
+}
+
+
+def colourise_classes(classes, stride, shape):
+    """Per-pixel class -> BGR, upscaled back to the depth map's size."""
+    out = np.zeros(classes.shape + (3,), np.uint8)
+    for value, colour in CLASS_COLOURS.items():
+        out[classes == value] = colour
+    h, w = shape
+    return cv2.resize(out, (w, h), interpolation=cv2.INTER_NEAREST)
 
 
 def draw_sectors(frame, omap):
@@ -80,6 +110,12 @@ def draw_sectors(frame, omap):
                     0.45, colour, 1, cv2.LINE_AA)
         cv2.putText(frame, f"{s.valid_frac:.0%}", (x0 + 4, y0 - 4),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.35, (200, 200, 200), 1, cv2.LINE_AA)
+        if s.source:
+            # Which sensor won this sector. "band" is the row crop, "ground" the
+            # height classification, anything else is a ToF array.
+            tag = s.source.replace("stereo-", "")
+            cv2.putText(frame, tag, (x0 + 4, y1 + 12), cv2.FONT_HERSHEY_SIMPLEX,
+                        0.32, (210, 210, 210), 1, cv2.LINE_AA)
 
     # Blend so the scene stays readable underneath the bars.
     cv2.addWeighted(overlay, 0.55, frame, 0.45, 0, frame)
@@ -95,6 +131,12 @@ def main() -> int:
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     last = time.monotonic()
     fps = 0.0
+    show_classes = config.STEREO_GROUND_PLANE
+    if not config.STEREO_GROUND_PLANE:
+        print("ground-plane classification is OFF (ORIO_STEREO_GROUND_PLANE=0) — "
+              "G still shows what it WOULD classify, using STEREO_CAM_HEIGHT_M "
+              f"{config.STEREO_CAM_HEIGHT_M:.2f} m / pitch "
+              f"{config.STEREO_CAM_PITCH_DEG:g} deg")
 
     try:
         while True:
@@ -103,18 +145,28 @@ def main() -> int:
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-6))
             last = now
 
-            view = np.hstack([draw_sectors(left.copy(), omap), colourise(depth)])
+            if show_classes:
+                classes, stride = det._estimator.classify(depth)
+                right_pane = colourise_classes(classes, stride, depth.shape)
+            else:
+                right_pane = colourise(depth)
+            view = np.hstack([draw_sectors(left.copy(), omap), right_pane])
             # Upscale for viewing: matching runs at 320x180 by design, which is
             # unreadably small on screen but is the resolution that actually
             # gives both speed and the most valid pixels.
             if view.shape[1] < 960:
                 view = cv2.resize(view, None, fx=960 / view.shape[1], fy=960 / view.shape[1],
                                   interpolation=cv2.INTER_NEAREST)
-            cv2.putText(view, f"{fps:4.1f} fps   {omap.describe()}", (8, 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+            mode = "height classes" if show_classes else "depth"
+            cv2.putText(view, f"{fps:4.1f} fps   {omap.describe()}   [{mode}, G toggles]",
+                        (8, 22), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1,
+                        cv2.LINE_AA)
             cv2.imshow(window, view)
 
-            if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("g"), ord("G")):
+                show_classes = not show_classes
+            elif key in (ord("q"), ord("Q"), 27):
                 return 0
     finally:
         det.close()

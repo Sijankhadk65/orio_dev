@@ -253,11 +253,36 @@ way.
 | `ORIO_STEREO_MIN_VALID_FRAC` | `0.10` | Valid-pixel floor before a sector reports a distance |
 | `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.35` / `0.71` | Image band that can hold a collidable obstacle |
 | `ORIO_STEREO_CALIBRATION` | `models/stereo/calibration.npz` | Calibration from `tools/calibrate_stereo.py` |
+| `ORIO_STEREO_GROUND_PLANE` | `0` | `1` to classify depth by *height above the floor* instead of by image row — needs the two measurements below |
+| `ORIO_STEREO_CAM_HEIGHT_M` / `_CAM_PITCH_DEG` | `0.35` / `0.0` | **Placeholders.** Camera height and downward pitch at the current neck pose; measure before switching the line above on |
+| `ORIO_STEREO_FLOOR_TOL_M` | `0.03` | A point this far above the floor *is* the floor |
+| `ORIO_ROBOT_HEIGHT_M` | `0.60` | **Placeholder.** Anything taller is driven under, not around |
+| `ORIO_STEREO_HEIGHT_TRUST_M` | `1.2` | Past this the disparity noise swamps the height estimate and the row band takes over |
+| `ORIO_STEREO_GROUND_STRIDE` | `2` | Pixel decimation for the ground-plane reduction |
+| `ORIO_TOF` | `0` | `1` to open the VL53L5CX fan and fuse it into the sector map |
+| `ORIO_TOF_BUSES` / `_ADDRESSES` | `7,1` / `0x29,0x29` | One sensor per I2C bus — which is why the shared 0x29 never has to be changed |
+| `ORIO_TOF_NAMES` | `tof-left,tof-right` | Per-sector provenance in the debug views |
+| `ORIO_TOF_HEIGHTS_M` / `_PITCHES_DEG` / `_YAWS_DEG` | `0.64,0.64` / `8.1,7.8` / `-5.0,2.1` | **Measured** 2026-09-17 on the as-built bracket (`tools/tof_pose.py`). Note this is 0.64 m looking 8° down, not the low level mount the plan specifies — see `config.py` before enabling `ORIO_TOF` |
+| `ORIO_TOF_FOV_DEG` | `45.0` | Angular span of the 8x8 zone array (ST's figure) |
+| `ORIO_TOF_RESOLUTION` / `_FREQ_HZ` | `64` / `15` | 8x8 at 15 Hz, the ULD's ceiling. Reached on bus 7 (400 kHz); bus 1 (100 kHz) delivers 4.7 Hz whatever it is asked for |
+| `ORIO_TOF_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.02` / `3.0` | The near end is the point: well inside the 0.25 m the cameras cannot reach |
+| `ORIO_TOF_TRUSTED_STATUS` | `5,6,9` | Per-zone `target_status` values whose distance is believed; everything else is unknown, never max range |
+| `ORIO_TOF_FLIP_H` / `_FLIP_V` | `0` / `0` | Zone-order flips, once you have seen which corner is zone 0 |
+| `ORIO_TOF_STALE_S` | `0.5` | Older than this and a sensor drops out of the fusion — **per sensor**, so the slow one cannot take the healthy one with it. Both quiet and stereo decides alone, rather than the robot halting |
+| `ORIO_BUMP` | `1` | Read a jammed wheel as contact and fuse it into the sector map (`orio/bump.py`). On by default since 2026-09-22, after the floor test; `0` opts out |
+| `ORIO_BUMP_STALL_CURRENT_A` | `3.5` | Stall needs at least this much current. Measured 2026-09-22 on firmware 1.0.1 (centi-amps): cruise ~1 A, spin-up up to ~4.3 A, jam ~5.7 A. Zero skips the check |
+| `ORIO_BUMP_STALL_ERPM` | `50` | Absolute floor for the stall test. Driving reads a median 447 eRPM; a wheel jammed on a wall reads 0 |
+| `ORIO_BUMP_STALL_ERPM_PER_MILLE` | `2.7` | The real test: a wheel doing under ~⅓ of what its duty asked for. Free-running is 8.9 eRPM per per-mille. A *real* obstacle makes the wheels **creep**, not stop — measured at 0–23% of normal — and a flat floor caught only one wheel of each stalled pair |
+| `ORIO_BUMP_MIN_DUTY` | `5` | Per-mille floor below which nothing was really commanded. Must stay under the slowest duty `Avoider` emits (9), or the detector never arms |
+| `ORIO_BUMP_CONFIRM_S` | `0.35` | How long all three conditions must hold. Not noise filtering — a hub motor coming up from rest looks exactly like a stall |
+| `ORIO_BUMP_STATUS_STALE_S` | `0.3` | Telemetry older than this is no telemetry. Unknown is not stalled |
+| `ORIO_BUMP_MEMORY_S` | `5.0` | How long a bump stays in the map. Must outlast the whole escape — pivot (2.0) + back-off (1.0) + commit (0.8). At 2.5 it expired mid-escape and the robot drove back into the same obstacle |
+| `ORIO_BUMP_DISTANCE_M` | `0.0` | The range a bump reports. Zero is honest and puts it inside the corridor at every angle |
 | `ORIO_DRIVETRAIN_PORT` | `/dev/orio_drive` | Drivetrain board's serial port — a udev symlink, never a raw `ttyACM*` |
 | `ORIO_MOTION_PORT` | `/dev/orio_motion` | Motion board's serial port (neck + arm servos) |
 | `ORIO_DRIVE` | `1` | `0` to leave the drivetrain closed — Orio then says it can't move |
 | `ORIO_DRIVE_SPEED_PERCENT` | `5` | Starting duty; `set_speed` moves it within the min/max below |
-| `ORIO_DRIVE_SPEED_MIN_PERCENT` / `_MAX_PERCENT` | `5` / `60` | Speed window the LLM cannot drive outside of |
+| `ORIO_DRIVE_SPEED_MIN_PERCENT` / `_MAX_PERCENT` | `5` / `5` | Speed window the LLM cannot drive outside of. **Pinned at 5% since 2026-09-18** — every measured distance in `config.py` (the `AVOID_*` thresholds, the corridor, the `BUMP_*` stall thresholds) was measured there, and `tools/teleop_guarded.py` now honours this ceiling too. Raise it deliberately and re-check the braking distances |
 | `ORIO_DRIVE_STEP_S` | `1.5` | How long one forward/backward hop lasts when the model doesn't say |
 | `ORIO_TURN_STEP_S` | `0.7` | Same, for a turn in place |
 | `ORIO_DRIVE_MAX_STEP_S` | `4.0` | Hard ceiling on a single hop — the bound on one wrong command |
@@ -276,6 +301,7 @@ way.
 | `ORIO_AVOID_COMMIT_CLEAR_S` | `0.8` | Clear road before Orio stops favouring the side it was turning to |
 | `ORIO_AVOID_PIVOT_TIMEOUT_S` | `2.0` | Pivoting longer than this without clearing triggers a back-off |
 | `ORIO_AVOID_BACKOFF_S` | `1.0` | How long the back-off reverses for — **reverses blind, no rear sensor** |
+| `ORIO_AVOID_ESCAPE_DUTY` | `150` | Per-mille duty for pivoting and backing off — the one deliberate exception to the 5% ceiling. 5% rolls the robot forward at 0.30 m/s but will not scrub it round in place; both escapes were commanded repeatedly on the robot without moving it. Bounded to those two branches, which are themselves time-limited and only run when already stuck |
 | `ORIO_AVOID_TICK_S` | `0.03` | How often a move asks the policy for a fresh decision |
 | `ORIO_SEEK_SCAN_OFFSETS_DEG` | `0,-30,30,-55,55` | Head pan offsets swept looking for a target (+ is left) |
 | `ORIO_SEEK_SCAN_TILTS_DEG` | `40,26,13` | Tilts swept at each pan; driving tilt first |
@@ -492,6 +518,15 @@ See it live — the stereo counterpart to `ORIO_VISION_DEBUG`:
 
 ```bash
 uv run python tools/stereo_debug.py
+```
+
+The ToF fan has the same two tools:
+
+```bash
+uv run python tools/tof_debug.py             # the 8x8 grids, classes, sector map
+uv run python tools/wheel_telemetry.py --duty 5   # per-wheel eRPM/current, for the bump thresholds
+uv run python tools/tof_pose.py --selftest   # check the pose maths, no hardware
+uv run python tools/tof_pose.py --wall       # squared to a wall: pitch and yaw
 ```
 
 Left pane is the camera with per-sector distance and valid-pixel percentage,

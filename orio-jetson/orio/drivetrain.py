@@ -123,6 +123,18 @@ MAX_PERMILLE = 1000
 # dropped frames before it trips.
 HEARTBEAT_INTERVAL_S = 0.2
 
+# How often a caller should re-send a drive command it is still holding, even
+# though nothing changed. Firmware 1.0.1 and earlier DROPPED any frame that
+# arrived while another was waiting to be handled, and a caller that only sends
+# on change never finds out: the HUD shows the duty sent, the wheels never turn.
+# Re-sending bounds any such loss to this long. 1.0.2 queues frames instead.
+DRIVE_REFRESH_S = 0.25
+
+# The firmware refreshes each wheel's telemetry every 100 ms (one side per
+# 50 ms poll), so asking more often than this only adds traffic — and on
+# firmware 1.0.1 and earlier, traffic is what got drive commands dropped.
+STATUS_MIN_INTERVAL_S = 0.05
+
 
 def crc16_ccitt(data: bytes) -> int:
     """CRC-16/CCITT-FALSE. Must match `crc16_ccitt()` in Core/Src/protocol.c."""
@@ -227,6 +239,7 @@ class Drivetrain:
         self._identity: Identity | None = None
         self._identity_seen = threading.Event()
         self._acks = 0
+        self._status_requested_at = 0.0
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -379,7 +392,16 @@ class Drivetrain:
 
     def request_status(self) -> None:
         """Ask for telemetry. The answer arrives asynchronously in
-        `last_status` — this does not block waiting for it."""
+        `last_status` — this does not block waiting for it.
+
+        At most once per STATUS_MIN_INTERVAL_S; calls in between do nothing.
+        Send drive commands BEFORE this in a tick, not after: on firmware 1.0.1
+        and earlier the second of two back-to-back frames is dropped, and a
+        GET_STATUS immediately ahead of SET_DRIVE lost 100 of 100 of them."""
+        now = time.monotonic()
+        if now - self._status_requested_at < STATUS_MIN_INTERVAL_S:
+            return
+        self._status_requested_at = now
         self._write(build_frame(CMD_GET_STATUS))
 
     @property
@@ -451,7 +473,7 @@ class Drivetrain:
                     timestamp=time.monotonic(),
                 )
             elif cmd == CMD_STATUS and payload:
-                self._last_status = _parse_status(payload)
+                self._last_status = _parse_status(payload, _current_scale(self._identity))
             elif cmd == CMD_IDENTITY and len(payload) >= 5:
                 self._identity = _parse_identity(payload)
                 self._identity_seen.set()
@@ -495,7 +517,23 @@ def _parse_identity(payload: bytes) -> Identity:
     )
 
 
-def _parse_status(payload: bytes) -> Status:
+def _current_scale(identity: Identity | None) -> float:
+    """Amps per count of the STATUS current field, for the firmware that sent it.
+
+    Drivetrain firmware 1.0.0 divided the VESC's centi-amps by 100 before
+    storing them in a field documented as centi-amps, so it sent WHOLE amps,
+    and read as centi-amps every current came out 100x low: a 5 A stall showed
+    as "0.05 A", which is how current got written off as useless for bump
+    sensing. 1.0.1 sends real centi-amps. Scaling by version keeps both right,
+    so nothing depends on when the board gets flashed — 1.0.0 just stays in
+    1 A steps.
+    """
+    if identity is not None and (identity.fw_major, identity.fw_minor, identity.fw_patch) <= (1, 0, 0):
+        return 1.0
+    return 0.01
+
+
+def _parse_status(payload: bytes, current_scale: float = 0.01) -> Status:
     """[estopped] then, per side: [erpm 4B][current_ca 2B][v_in_dv 2B][fault][valid]."""
     body = payload[1:]
     wheels = {}
@@ -503,7 +541,7 @@ def _parse_status(payload: bytes) -> Status:
         side = i // 10
         wheels[WHEEL_SIDE_NAMES.get(side, side)] = WheelTelemetry(
             erpm=int.from_bytes(body[i : i + 4], "little", signed=True),
-            current_a=int.from_bytes(body[i + 4 : i + 6], "little", signed=True) / 100.0,
+            current_a=int.from_bytes(body[i + 4 : i + 6], "little", signed=True) * current_scale,
             v_in=int.from_bytes(body[i + 6 : i + 8], "little", signed=True) / 10.0,
             fault_code=body[i + 8],
             valid=bool(body[i + 9]),

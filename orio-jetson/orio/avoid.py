@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 
 from . import config
+from .sectors import fuse
 from .stereo import ObstacleDetector
 
 # Orio measures 0.70 m across the drive wheels, so its body half-width is
@@ -34,6 +35,21 @@ from .stereo import ObstacleDetector
 ROBOT_WIDTH_M = 0.70
 CORRIDOR_MARGIN_M = 0.05
 DEFAULT_HALF_WIDTH_M = round(ROBOT_WIDTH_M / 2.0 + CORRIDOR_MARGIN_M, 3)
+
+# Sectors within this of straight ahead are the centre: neither side. Stereo's
+# centre sector is NOT at 0 — it sits at -0.1 deg, because the rectified optical
+# centre is a hair off the middle of the frame — so a bare sign test put it on
+# the left. Found on the robot 2026-09-22: a left bump zeroed the three left
+# sectors, `_roomier_side` still scored "left" by the unbumped centre, and the
+# robot pivoted into what it had just hit, every time. A quarter of a sector.
+CENTRE_DEG = 2.5
+
+
+def side_of(angle: float) -> int:
+    """-1 left, +1 right, 0 straight ahead (within CENTRE_DEG)."""
+    if abs(angle) < CENTRE_DEG:
+        return 0
+    return 1 if angle > 0 else -1
 
 @dataclass(frozen=True)
 class Reading:
@@ -49,6 +65,11 @@ class Reading:
     describe: str
     timestamp: float
     error: str | None = None
+    # Which sensor produced each sector, left to right — "stereo-band",
+    # "stereo-ground", a ToF name, or "" where nothing knew. The policy does not
+    # read it; it exists for the debug views and for the inevitable argument
+    # about which sensor is lying.
+    sources: tuple[str, ...] = ()
 
     @staticmethod
     def failed(exc: Exception) -> "Reading":
@@ -63,7 +84,15 @@ class Reading:
 
 class Sensor:
     """Runs the stereo pipeline on its own thread and publishes the latest
-    reading.
+    reading, fused with the ToF fan when there is one.
+
+    Fusion happens HERE, at the `ObstacleMap`, and not at the pixels. The two
+    sensors have different frames, rates (30 Hz vs 15 Hz), latencies and failure
+    modes; a shared point cloud is the better long-term answer and the wrong
+    thing to build first, because a bug anywhere in that stack presents as bad
+    steering with no way to tell which sensor lied. Sector-level fusion keeps
+    provenance — every sector says which sensor produced it — and `Avoider`
+    below is not touched at all.
 
     Threaded rather than inline because a reading costs ~33 ms (measured, and
     frame-rate bound), which would be felt as keyboard lag on a 30 ms tick — and
@@ -73,9 +102,31 @@ class Sensor:
     pointing the safe way.
     """
 
-    def __init__(self, guard_sectors: int = 3) -> None:
+    def __init__(self, guard_sectors: int = 3, use_tof: bool | None = None,
+                 tof=None, bumps=None, use_bump: bool | None = None) -> None:
         self._guard_sectors = guard_sectors
         self._detector = ObstacleDetector()
+        # The bump memory, when there is one. Unlike the ToF fan this opens no
+        # hardware and cannot fail — it is a shared dataclass that the control
+        # loop writes (`body._drive_tick`) and this thread reads. It is here
+        # rather than inside the loop because fusion happens at ObstacleMap
+        # level, and by the time a `Reading` exists the sectors have already
+        # been flattened to tuples.
+        if bumps is None and (config.BUMP_ENABLED if use_bump is None else use_bump):
+            from .bump import BumpMemory
+
+            bumps = BumpMemory()
+        self._bumps = bumps
+        # The ToF fan, when there is one. Constructed here rather than passed in
+        # so that `Sensor()` keeps meaning "the robot's obstacle sensing,
+        # however much of it exists"; `tof=` is for tests and bench tools that
+        # want to supply their own.
+        if tof is None and (config.TOF_ENABLED if use_tof is None else use_tof):
+            from .tof import ToFDetector
+
+            tof = ToFDetector()
+        self._tof = tof
+        self.tof_error: str | None = None
         self._reading: Reading | None = None
         # The rectified left eye from the most recent reading. Published here
         # because these two cameras are the only ones there are: with avoidance
@@ -89,6 +140,21 @@ class Sensor:
         self.calibrated = False
 
     def start(self) -> None:
+        # The ToF fan first, because its firmware upload is seconds of I2C per
+        # sensor and it can run while Argus is still waking up. Failing to open
+        # it is NOT fatal: it is an addition to a guard that already works, and
+        # a new sensor that can stop the robot is a new way for the robot to be
+        # stopped. The cameras keep the halting power they have always had.
+        if self._tof is not None:
+            try:
+                self._tof.start()
+            except Exception as exc:
+                self.tof_error = f"{type(exc).__name__}: {exc}"
+                try:
+                    self._tof.close()
+                finally:
+                    self._tof = None
+
         # The first reading opens both Argus pipelines and takes ~2 s. Do it
         # here, before the terminal goes into cbreak mode, so any camera error
         # is readable and lands before the operator can press a key.
@@ -99,6 +165,34 @@ class Sensor:
         self._thread.start()
 
     def _publish(self, omap, frame) -> None:
+        # Fuse the ToF fan in, if it has said anything recently. `fresh_map()`
+        # returns None once the fan goes quiet, which drops it out of the
+        # fusion and leaves stereo deciding alone — degrading, not halting.
+        #
+        # Staleness deliberately stays measured against the STEREO frame: the
+        # reading is stamped now, and the ToF contribution is at most
+        # TOF_STALE_S old by construction. 8x8 runs at 15 Hz, so there is 67 ms
+        # between ToF frames against an AVOID_STALE_S of 0.5 s — it will not
+        # trip it, and nobody needs to "fix" that threshold on its account.
+        if self._tof is not None:
+            try:
+                tof_map = self._tof.fresh_map()
+                self.tof_error = self._tof.error
+            except Exception as exc:  # noqa: BLE001 - never let the fan halt stereo
+                tof_map, self.tof_error = None, f"{type(exc).__name__}: {exc}"
+            if tof_map is not None:
+                omap = fuse(omap, tof_map)
+
+        # The bump memory last, because contact outranks everything: `fuse()`
+        # takes the nearest, and nothing a ranged sensor reports is nearer than
+        # a wheel that is already against the obstacle. `fresh_map()` returns
+        # None whenever the robot is not stalled, which is nearly always, so
+        # for the whole of a normal run this contributes nothing at all.
+        if self._bumps is not None:
+            bump_map = self._bumps.fresh_map()
+            if bump_map is not None:
+                omap = fuse(omap, bump_map)
+
         with self._lock:
             self._frame = frame
             self._reading = Reading(
@@ -106,6 +200,7 @@ class Sensor:
                 clearance_m=omap.clearance_ahead(self._guard_sectors),
                 describe=omap.describe(),
                 timestamp=time.monotonic(),
+                sources=omap.sources,
             )
 
     def _loop(self) -> None:
@@ -144,11 +239,29 @@ class Sensor:
         with self._lock:
             return self._frame
 
+    @property
+    def bumps(self):
+        """The shared bump memory, or None when bump sensing is off.
+
+        `body._drive_tick` writes it and this thread reads it; handing it out
+        here keeps one memory per `Sensor` rather than leaving the two halves
+        to find each other.
+        """
+        return self._bumps
+
+    @property
+    def tof_names(self) -> tuple[str, ...]:
+        """Which ToF sensors actually opened. Empty when the fan is off or
+        failed — which is what `tof_error` explains."""
+        return () if self._tof is None else self._tof.names
+
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._detector.close()
+        if self._tof is not None:
+            self._tof.close()
 
 
 @dataclass(frozen=True)
@@ -157,7 +270,8 @@ class Decision:
 
     left: int
     right: int
-    state: str  # "cruise" | "steer" | "pivot" | "halted" | "off" | "manual"
+    # "cruise" | "steer" | "pivot" | "backoff" | "hold" | "scan" | "halted" | "off" | "manual"
+    state: str
     reason: str
     heading_deg: float = 0.0
 
@@ -195,9 +309,13 @@ class Avoider:
         commit_clear_s: float,
         pivot_timeout_s: float,
         backoff_s: float,
+        blind_hold_s: float,
+        scan: bool = False,
+        escape_duty: int = config.AVOID_ESCAPE_DUTY,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
+        self.escape_duty = escape_duty
         self.min_scale = min_scale
         self.stale_s = stale_s
         self.turn_penalty = turn_penalty
@@ -210,10 +328,16 @@ class Avoider:
         self.enabled = True
         self.pivot_timeout_s = pivot_timeout_s
         self.backoff_s = backoff_s
+        self.blind_hold_s = blind_hold_s
+        # Whether a "scan" decision may be returned at all. Off unless whoever
+        # runs the loop can actually move the head and call `take_scan()`.
+        self.scan = scan
+        self._scanned = False  # one look-around per episode; see _may_scan
         self._turn = 0.0  # smoothed steering state, permille
         self._committed_side = 0  # -1 left, +1 right, 0 none — damps oscillation
         self._blocked = False
         self._stuck_s = 0.0
+        self._blind_s = 0.0
         self._clear_s = 0.0
         self._must_clear = False
         self._last_tick: float | None = None
@@ -224,9 +348,11 @@ class Avoider:
         self._committed_side = 0
         self._blocked = False
         self._stuck_s = 0.0
+        self._blind_s = 0.0
         self._clear_s = 0.0
         self._must_clear = False
         self._backoff_until = 0.0
+        self._scanned = False
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -259,26 +385,90 @@ class Avoider:
                 near = distance if near is None else min(near, distance)
         return near
 
-    def _pick(self, reading: Reading) -> tuple[float, float] | None:
+    def _corridor_clear(self, reading: Reading, heading: float, beyond: float = 0.0) -> bool:
+        """Whether a corridor pointed `heading` degrees off straight ahead is
+        free of anything KNOWN nearer than `clear_m + beyond`.
+
+        The same geometric test as `_ahead`, rotated: a sector counts when its
+        point lies ahead of the robot and within `half_width` of the new centre
+        line. The heading's own sector must be known — unknown is never a way
+        through.
+        """
+        own_known = False
+        for angle, distance in reading.sectors:
+            if distance is None:
+                continue
+            if angle == heading:
+                own_known = True
+            off = math.radians(angle - heading)
+            if math.cos(off) <= 0.0:
+                continue
+            if abs(distance * math.sin(off)) <= self.half_width and distance < self.clear_m + beyond:
+                return False
+        return own_known
+
+    def _pick(self, reading: Reading, beyond: float = 0.0) -> tuple[float, float] | None:
         """Best (angle, distance) to head for, or None if nothing qualifies.
+
+        The SMALLEST turn that clears the corridor wins, not the most open
+        sector. Scoring by distance made every obstacle an excuse to swing
+        toward the farthest wall in the room — a far wall 30 deg off beat
+        open floor 10 deg off by metres — so each detour left the robot
+        pointing somewhere new. For a robot that is meant to walk behind
+        somebody, the right detour is the least one. (It does not stop the
+        FLOOR triggering steers: that is the aim's job, see NECK_TILT_DEG.)
+
+        Within an episode the committed side is kept whenever it has any
+        usable sector at all, for the same reason the pivot latches: choosing
+        afresh every tick flip-flops between two equal gaps and passes neither.
 
         Only KNOWN sectors are candidates. Unknown ones are skipped rather than
         scored as obstacles: sector 0 is permanently unknown (the rectification
         border), and treating that as a wall would bias every turn rightward.
+        If no heading clears the corridor, falls back to the farthest-sector
+        score below, which at least points away from what is closest.
         """
+        candidates = [
+            (angle, distance)
+            for angle, distance in reading.sectors
+            if distance is not None and distance > self.stop_m
+        ]
+        # Once committed, the other side is not on the table while this side
+        # has anything to offer. A bias is not enough here: a single depth
+        # dropout can empty the committed side's clear headings for a frame,
+        # the other side wins that tick, and the commitment flips with it, so
+        # the robot alternates gaps instead of passing either. Changing sides
+        # is the pivot's and the back-off's job, not the steer's.
+        side = self._committed_side
+        if side:
+            same = [c for c in candidates if c[0] == 0 or (c[0] > 0) == (side > 0)]
+            if same:
+                candidates = same
+
+        clear = [c for c in candidates if self._corridor_clear(reading, c[0], beyond)]
+        if clear:
+            return min(clear, key=lambda c: abs(c[0]))
+
         best = None
         best_score = float("-inf")
-        for angle, distance in reading.sectors:
-            if distance is None or distance <= self.stop_m:
-                continue
+        for angle, distance in candidates:
             # Distance, minus a penalty for how far off-axis it is, plus a
             # bonus for staying on the side already committed to.
             score = distance - self.turn_penalty * abs(angle) / 45.0
-            if self._committed_side and (angle > 0) == (self._committed_side > 0):
+            if self._committed_side and side_of(angle) == self._committed_side:
                 score += self.hysteresis_m
             if score > best_score:
                 best_score, best = score, (angle, distance)
         return best
+
+    def _escape(self, duty: int) -> int:
+        """Duty for the escape manoeuvres, never less than the cruise duty.
+
+        The `max` matters: `escape_duty` is a floor for a robot that cruises
+        slowly, not a cap on one that does not. Raising the cruise duty above
+        it must not quietly make the escape the slowest thing the robot does.
+        """
+        return max(duty, self.escape_duty)
 
     def _mix(self, linear: int, turn: float, duty: int) -> tuple[int, int]:
         """Differential mix. `turn` > 0 steers LEFT, matching the sign of the
@@ -339,6 +529,18 @@ class Avoider:
         else:
             self._stuck_s = max(0.0, self._stuck_s - 2.0 * dt)
 
+        # "Blind" is the other way to end up not driving, and the stuck timer
+        # above cannot see it: with nothing KNOWN in the corridor there is no near
+        # obstacle to be stuck against, so the back-off never fires. In open
+        # space that is the common case, not the corner one — beyond ~2.2 m only
+        # the centre sector is in the corridor at all, and past the 4 m range
+        # gate a clear run reads as unknown. Timed the same way as stuck, so one
+        # noisy known tick does not restart the clock.
+        if ahead is None:
+            self._blind_s += dt
+        else:
+            self._blind_s = max(0.0, self._blind_s - 2.0 * dt)
+
         # After backing off, turn to face clear road BEFORE driving again.
         # Without this the robot spends the space it just bought driving
         # straight back into the same obstacle: back off, steer, re-approach,
@@ -360,6 +562,7 @@ class Avoider:
                 self._clear_s += dt
                 if self._clear_s > self.commit_clear_s:
                     self._committed_side = 0
+                    self._scanned = False
                 self._stuck_s = 0.0
                 self._turn *= 1.0 - self.smooth
                 left, right = self._mix(duty, self._turn, duty)
@@ -367,14 +570,20 @@ class Avoider:
 
             # 2. Something is in the way but a sector is open: steer for it.
             target = self._pick(reading)
+            if (
+                target is not None
+                and not self._corridor_clear(reading, target[0])
+                and self._may_scan()
+            ):
+                return self._request_scan("nothing clear in view")
             if target is not None:
                 angle, distance = target
                 self._clear_s = 0.0
                 # Only a genuinely off-axis heading changes the committed side.
                 # Letting a 0 deg target clear it lets the side flip freely on
                 # the next pivot, which is half of the dithering above.
-                if angle:
-                    self._committed_side = 1 if angle > 0 else -1
+                if side_of(angle):
+                    self._committed_side = side_of(angle)
                 desired = -self.turn_gain * (angle / 45.0) * duty
                 self._turn += self.smooth * (desired - self._turn)
                 near = min(ahead if ahead is not None else distance, distance)
@@ -414,10 +623,16 @@ class Avoider:
         if now < self._backoff_until or self._stuck_s > self.pivot_timeout_s:
             if now >= self._backoff_until:
                 self._backoff_until = now + self.backoff_s
+                self._scanned = False
                 self._stuck_s = 0.0
                 self._committed_side = 0
                 self._must_clear = True
-            speed = round(duty * self.min_scale)
+            # Escape duty, not cruise duty. See config.AVOID_ESCAPE_DUTY: at
+            # the 5% this robot cruises at, AVOID_MIN_SCALE of it is about 17
+            # per-mille, which was commanded repeatedly on the robot without
+            # moving it. Still scaled by min_scale, because this reverses BLIND
+            # and wants to stay slow and brief.
+            speed = round(self._escape(duty) * self.min_scale)
             self._turn = 0.0
             return Decision(-speed, -speed, "backoff", "stuck — backing off to turn")
 
@@ -436,11 +651,54 @@ class Avoider:
         # above forces a back-off, and that clears the commitment so the next
         # attempt is free to choose the other way. An unbounded latch is what
         # made an earlier version pivot into a wall indefinitely.
+        #
+        # Blind is a reason to wait, not to turn. Nothing KNOWN in the corridor
+        # is not an obstacle to get around, so pivoting away from it has no
+        # direction to go in: the robot used to turn toward whichever side it
+        # could range, and in open space — where a flicker of unknown is the
+        # common case — every flicker became a turn and it went round in
+        # circles. It now stands still and waits for the view to come back,
+        # which a depth dropout usually does within a few frames.
+        #
+        # The one exception is the turn after a back-off, which is already a
+        # pivot toward clear road and carries on through a blind moment.
+        #
+        # Bounded: after --blind-hold-s with nothing known ahead, halt. The
+        # halt holds for as long as the corridor stays unknown — the robot is
+        # not moving, so nothing about the view will change — and a new
+        # command resets it. Unknown still never counts as clear.
+        if ahead is None:
+            self._turn = 0.0
+            if (
+                not self._must_clear
+                and self._blind_s > _BLIND_SCAN_AFTER_S
+                and self._may_scan()
+            ):
+                return self._request_scan("can't see the way ahead")
+            if self._blind_s > self.blind_hold_s:
+                return Decision(
+                    0, 0, "halted",
+                    f"can't see the way ahead after {self._blind_s:.1f} s",
+                )
+            if not self._must_clear:
+                return Decision(0, 0, "hold", "can't see the way ahead — waiting")
+
+        # Not when something is closer than stereo can range at all — in
+        # practice a bump, which reports 0 m. Aimed anywhere, the cameras return
+        # unknown for it, so the look finds nothing, and its ~2 s comes out of
+        # BUMP_MEMORY_S, which was sized for pivot + back-off without it.
+        touching = ahead is not None and ahead < config.STEREO_MIN_RANGE_M
+        if not self._must_clear and not touching and self._may_scan():
+            return self._request_scan("boxed in")
+
         side = self._committed_side or self._roomier_side(reading)
         if side is not None:
             self._committed_side = side
-            self._turn = -side * self.turn_gain * duty
-            left, right = self._mix(0, self._turn, duty)
+            # Scrubbing the robot round in place is a heavier load than rolling
+            # it forward, and 5% does not do it — see config.AVOID_ESCAPE_DUTY.
+            escape = self._escape(duty)
+            self._turn = -side * self.turn_gain * escape
+            left, right = self._mix(0, self._turn, escape)
             where = "left" if side < 0 else "right"
             why = "turning to clear" if self._must_clear else "boxed in"
             return Decision(left, right, "pivot", f"{why}, pivoting {where}")
@@ -448,6 +706,77 @@ class Avoider:
         # 5. Nothing known anywhere. Blind is not a heading.
         self.reset()
         return Decision(0, 0, "halted", "no known clearance in any sector")
+
+    # ── looking around ───────────────────────────────────────────────────────
+
+    def _may_scan(self) -> bool:
+        return self.scan and not self._scanned
+
+    def _request_scan(self, why: str) -> Decision:
+        """Stop and ask the caller to pan the head: see `take_scan()`."""
+        self._scanned = True
+        self._turn = 0.0
+        return Decision(0, 0, "scan", f"{why} — stopping to look left and right")
+
+    def take_scan(self, views: list[tuple[float, Reading]]) -> float | None:
+        """Choose a way on from a look-around, and commit to turning toward it.
+
+        `views` is `(pan_offset_deg, reading)` per head position, from
+        `look_around()`; POSITIVE PAN IS HEAD LEFT, as everywhere in config.
+        A sector's angle is relative to where the head pointed, and sector
+        angles run negative-left, so on the chassis it sits at
+        `angle - pan_offset`. Merged, the views are one wider sector map, and
+        the same choice `_pick` makes on a single view is made on that: the
+        smallest turn whose corridor clears, else the most open direction.
+
+        The side is chosen afresh — being boxed in after steering one way is
+        exactly when the other way deserves a look — and then committed, with
+        `_must_clear` set so the robot pivots toward it and only drives once
+        the corridor ahead actually reads clear. A chosen heading of 0 means
+        the way ahead is fine after all (the block was noise) and nothing is
+        committed. Returns the chosen heading in chassis degrees, or None if
+        the look-around saw nothing usable, which leaves the policy to carry on
+        as if it had not looked.
+        """
+        merged = tuple(
+            sorted(
+                (angle - offset, distance)
+                for offset, reading in views
+                if reading is not None and reading.error is None
+                for angle, distance in reading.sectors
+            )
+        )
+        if not merged:
+            return None
+        view = Reading(merged, None, "look-around", time.monotonic())
+        candidates = [(a, d) for a, d in merged if d is not None and d > self.stop_m]
+        if not candidates:
+            return None
+        # Judged to clear_m + release_m, not clear_m. A look-around starts at
+        # the moment something crossed clear_m, so the thing that stopped the
+        # robot sits right on that line, and on the fresh frames depth noise
+        # puts it just past it as often as not — at clear_m, the look "found"
+        # the way straight ahead clear, committed to nothing, and the robot
+        # drove on into the thing it had stopped for. The same Schmitt margin
+        # the stop uses.
+        clear = [
+            c for c in candidates
+            if self._corridor_clear(view, c[0], beyond=self.release_m)
+        ]
+        if clear:
+            heading = min(clear, key=lambda c: abs(c[0]))[0]
+        else:
+            # Nothing clears even with the wider view: turn toward the most
+            # open direction. Not `_pick`'s fallback score — its off-axis
+            # penalty exists to keep a MOVING robot near its heading, and here
+            # it picks "nearly straight on" into a wall that spans the view,
+            # with the side left to depth noise.
+            heading = max(candidates, key=lambda c: c[1])[0]
+        self._committed_side = 0
+        if side_of(heading):
+            self._committed_side = side_of(heading)
+            self._must_clear = True
+        return heading
 
     def _roomier_side(self, reading: Reading) -> int | None:
         """-1 (left) or +1 (right), by the best KNOWN distance on each side.
@@ -460,8 +789,8 @@ class Avoider:
         change its mind. In simulation it spent over half its time pivoting on
         the spot against a corridor wall.
         """
-        left = [d for a, d in reading.sectors if a < 0 and d is not None]
-        right = [d for a, d in reading.sectors if a > 0 and d is not None]
+        left = [d for a, d in reading.sectors if side_of(a) < 0 and d is not None]
+        right = [d for a, d in reading.sectors if side_of(a) > 0 and d is not None]
         if not left and not right:
             return None
         best_left = max(left, default=0.0)
@@ -471,6 +800,47 @@ class Avoider:
         elif self._committed_side > 0:
             best_right += self.hysteresis_m
         return -1 if best_left > best_right else 1
+
+
+# How long the way ahead must stay unknown before it is worth stopping to look
+# around. Shorter, and every depth dropout in open space — a single centre
+# sector going unknown is enough, since past ~2.2 m it is the only sector in the
+# corridor — becomes a stop and a look, which is the circling problem again at
+# walking pace. The halt after AVOID_BLIND_HOLD_S still bounds the wait.
+_BLIND_SCAN_AFTER_S = 1.0
+
+
+def look_around(point, sensor: Sensor, offsets, settle_s: float):
+    """Pan the head through `offsets` and take a fresh reading at each stop.
+
+    Returns `(views, home)`: `(pan_offset_deg, reading)` per stop, and whether
+    the head made it back to offset 0. `point(offset)` aims the head at the
+    driving pan plus `offset` and returns only once it has arrived — None on
+    success, or why it could not. A refused stop is skipped, not fatal; failing
+    to get back IS, for the caller, because every threshold is measured through
+    the driving pose and a panned head measures somewhere else. The reading
+    taken back at 0 is included, so the caller is left with one that is fresh.
+
+    "Fresh" means published after the head settled: the sensor thread keeps
+    running through the pan, and a reading from mid-travel is a smear of two
+    directions charged to one.
+    """
+    views: list[tuple[float, Reading]] = []
+    home = False
+    for offset in [*offsets, 0.0]:
+        if point(offset) is not None:
+            continue
+        home = offset == 0.0
+        time.sleep(settle_s)
+        settled = time.monotonic()
+        deadline = settled + 1.0
+        reading = sensor.reading
+        while (reading is None or reading.timestamp < settled) and time.monotonic() < deadline:
+            time.sleep(0.01)
+            reading = sensor.reading
+        if reading is not None and reading.timestamp >= settled:
+            views.append((offset, reading))
+    return views, home
 
 
 def _signs(latch, duty: int) -> tuple[int, int]:
@@ -496,4 +866,7 @@ def avoider_from_config() -> Avoider:
         commit_clear_s=config.AVOID_COMMIT_CLEAR_S,
         pivot_timeout_s=config.AVOID_PIVOT_TIMEOUT_S,
         backoff_s=config.AVOID_BACKOFF_S,
+        blind_hold_s=config.AVOID_BLIND_HOLD_S,
+        scan=config.AVOID_SCAN,
+        escape_duty=config.AVOID_ESCAPE_DUTY,
     )

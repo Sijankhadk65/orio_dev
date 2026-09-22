@@ -197,49 +197,49 @@ NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
 # from that servo's own zero end). Pan 175 is a few degrees off the neck's 180
 # home, so "straight ahead" for the cameras is straight ahead for the chassis.
 #
-# TILT IS THE AVOIDANCE POLICY'S AIM AND IT IS NARROW. Measured on the robot,
-# 2026-09-09, by sweeping the joint and reading the sector map at each angle:
+# TILT IS THE AVOIDANCE POLICY'S AIM AND IT IS NARROW. Re-measured 2026-09-22
+# with the body levelled, the neck window widened to 25..50 and the stereo pair
+# freshly calibrated (a measured 1.00 m reads 1.02 m). tools/tilt_sweep.py, centre
+# sector median at pan 175, centre known 100% at every tilt in both runs:
 #
-#     tilt 30   straight ahead 2.87 m   the UPPER WALL and ceiling. No floor in
-#                                       frame at all, so an obstacle standing on
-#                                       the ground is not merely far, it is
-#                                       invisible. This was the default, taken
-#                                       from the teleop tool, and it was wrong.
-#     tilt 40   straight ahead 2.27 m   floor ahead plus the wall beyond it; a
-#                                       person at 0.90 m read correctly
-#     tilt 45   straight ahead 1.06 m   mostly floor — and note this is already
-#                                       BELOW AVOID_CLEAR_M, so the ground
-#                                       itself reads as an obstacle and the
-#                                       robot would never cruise, only steer
-#     tilt 50+  straight ahead ~1.15 m  unchanged from 50 to 80: the joint is
-#                                       against a mechanical stop and commanding
-#                                       further just stalls the servo
+#     tilt   empty floor   cloth at ~1 m
+#      25      2.70 m         0.96 m      mostly the far wall, little floor
+#      30      2.30 m         0.96 m
+#      35      1.95 m         0.94 m
+#      40      1.52 m         0.92 m      floor ahead, 0.32 m above AVOID_CLEAR_M
+#      45      1.35 m         0.95 m      only 0.15 m of margin: a pitch on
+#                                         braking would turn the floor into an
+#                                         obstacle
+#      50      1.15 m         0.95 m      BELOW AVOID_CLEAR_M: the floor itself
+#                                         reads as an obstacle, and 50 is the
+#                                         head's mechanical stop
 #
-# On that sweep the usable window was roughly 35-45, with 40 the middle of it.
+# 25..45 all pass (floor above AVOID_CLEAR_M, 1 m target seen). 40 was chosen
+# first, as the most downward with real margin, but on the floor (2026-09-22)
+# 35-40 had the robot driving while looking at the floor instead of at what
+# was in front of it; 25 was the sweet spot on the floor. 25 is also where a
+# person at following distance is in frame (26 found one at 0.77 m in the
+# 09-09 sweep), which is the job this robot is being built for.
 #
-# CHANGED 2026-09-10: the default is now 30, set deliberately because the neck
-# bracket sits on an INCLINED body rather than a square one, so the servo's own
-# scale does not read level where the sweep above assumed it did. The firmware
-# window was narrowed to match (tilt 20..40, pan 165..185 — ten degrees either
-# side of the default on each axis; see kJointLimits[] in
-# Core/Src/servo_joint.c).
+# THE COST: at 25 the empty floor ranges at 2.70 m, so the floor never trips
+# AVOID_CLEAR_M — but ground close in is mostly out of the depth band, and a
+# LOW obstacle (a box, a shoe) can pass under the view before AVOID_STOP_M. The
+# 1 m cloth still read 0.96 m. Check a low box on the floor before trusting
+# it; the ToF fan (feature/extend-avoidance-sensors) is meant to cover that ground.
 #
-# READ THIS BEFORE TRUSTING ANY AVOID_* DISTANCE. The sweep above was taken
-# one day earlier and it records 30 as seeing ceiling with no floor in frame —
-# the aim at which an obstacle standing on the ground is invisible rather than
-# merely far. Either the head geometry changed between the two, or the sweep
-# needs re-running against the incline; that has NOT been re-measured here. Every
-# AVOID_* threshold below is a distance measured through the head at
-# NECK_PAN_DEG/NECK_TILT_DEG, so until the sweep is redone at 30 those numbers
-# describe ground the camera may no longer be looking at, and nothing
-# downstream can tell. Re-measure after ANY change to the head geometry or the
-# camera mount.
+# 25 is also the window's floor: nothing above the driving tilt can be
+# commanded, so every LOOK/SEEK list below starts at 25 and only steps down.
 #
-# The firmware validates both angles against kJointLimits[] and NACKs anything
-# outside, moving nothing; the window is now narrow on both axes, so a pose
-# that worked against the old full-travel table can start being refused.
+# The 2026-09-09 sweep (inclined body) put 40 at 2.27 m and 45 at 1.06 m, and
+# the 2026-09-10 default of 30 was set against that incline; neither applies to
+# the levelled body. Re-measure after ANY change to the head geometry or the
+# camera mount — every AVOID_* distance is measured through this aim.
+#
+# The firmware validates both angles against kJointLimits[] (pan 165..185,
+# tilt 25..50; see Core/Src/servo_joint.c) and NACKs anything outside, moving
+# nothing.
 NECK_PAN_DEG = float(_env("ORIO_NECK_PAN_DEG", "175"))
-NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "30"))
+NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "25"))
 
 # Open the drivetrain and give the LLM the tools to move. Off means Orio says it
 # cannot drive rather than pretending it can (see DRIVE_PROMPT / NO_DRIVE_PROMPT).
@@ -251,9 +251,18 @@ DRIVE_ENABLED = _env("ORIO_DRIVE", "1").strip().lower() not in (
 # set_speed tool moves this within the MIN/MAX window and cannot leave it: the
 # ceiling is a limit on the robot, not a preference, since nothing is watching
 # for obstacles yet.
+#
+# CEILING LOWERED TO 5% — 2026-09-18. It was 60, which meant the robot could be
+# talked into twelve times the duty it actually drives at, and `tools/
+# teleop_guarded.py` ignored the window entirely and defaulted to 30. Every
+# distance in this file that was measured — the AVOID_* thresholds, the
+# corridor, the stall thresholds in the BUMP_* block — was measured at 5, and a
+# guard tuned at one speed is not a guard at twelve times it. Raise it with
+# ORIO_DRIVE_SPEED_MAX_PERCENT deliberately, and re-check the braking distances
+# when you do.
 DRIVE_SPEED_PERCENT = float(_env("ORIO_DRIVE_SPEED_PERCENT", "5"))
 DRIVE_SPEED_MIN_PERCENT = float(_env("ORIO_DRIVE_SPEED_MIN_PERCENT", "5"))
-DRIVE_SPEED_MAX_PERCENT = float(_env("ORIO_DRIVE_SPEED_MAX_PERCENT", "60"))
+DRIVE_SPEED_MAX_PERCENT = float(_env("ORIO_DRIVE_SPEED_MAX_PERCENT", "5"))
 
 # Every LLM-commanded move is a bounded hop: these are how long one lasts when
 # the model does not say, and the hard ceiling when it does. Turns are shorter
@@ -332,6 +341,63 @@ AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
+# How long the robot may wait with NOTHING known in its corridor before it
+# halts. Blind used to mean pivoting toward whatever it could range, which in
+# open space turned every depth dropout into a turn and the robot went round in
+# circles; it now stands still and waits for the view to come back (renamed
+# from AVOID_BLIND_PIVOT_S on 2026-09-22 when that changed). Stopping is the
+# bound; driving on unknown is not. First guess — tune on the floor.
+AVOID_BLIND_HOLD_S = float(_env("ORIO_AVOID_BLIND_HOLD_S", "3.0"))
+
+# Stop and look around before committing to a way past something. When the
+# policy has no clear way on in the view it has — an obstacle ahead and no
+# clear corridor anywhere in frame, boxed in, or the way ahead unknown for a
+# second — it zeroes the wheels, pans the head through AVOID_SCAN_PANS_DEG,
+# merges what it saw into one wider sector map, and pivots toward the smallest
+# clear turn in it. Once per episode (clear road, or a back-off, re-arms it).
+#
+# The pan window is only +/-10 of NECK_PAN_DEG (kJointLimits, 165..185), so a
+# look-around widens the view from +/-31 to +/-41 deg of sector centres — it
+# finds a gap just out of frame, not one behind the robot. Each stop costs the
+# travel plus AVOID_SCAN_SETTLE_S for the exposure and a fresh depth reading,
+# about 2 s for the whole look. Positive pan is head LEFT. First guesses —
+# tune on the floor.
+AVOID_SCAN = _env("ORIO_AVOID_SCAN", "1").strip().lower() not in ("0", "false", "no", "off", "")
+AVOID_SCAN_PANS_DEG = tuple(
+    float(x) for x in _env("ORIO_AVOID_SCAN_PANS_DEG", "10,-10").split(",") if x
+)
+AVOID_SCAN_SETTLE_S = float(_env("ORIO_AVOID_SCAN_SETTLE_S", "0.4"))
+
+# Per-mille duty the ESCAPE manoeuvres get — pivoting in place, and backing
+# off. The one deliberate exception to DRIVE_SPEED_MAX_PERCENT, and it exists
+# because scrubbing the robot round in place needs more than cruising does.
+#
+# Observed on the robot 2026-09-18, driving into a real obstacle: cruising
+# forward at 5% works fine (0.30 m/s measured), but the escape it triggers did
+# not — pivots and back-offs were commanded repeatedly without the robot
+# noticeably moving, and this was set to 150 in response. That run was on
+# drivetrain firmware older than 1.0.2, which dropped a SET_DRIVE arriving
+# behind a GET_STATUS, and the bump sensing was polling status the whole time,
+# so part of that "did not move" was commands never reaching the wheels.
+#
+# Re-measured 2026-09-22 on firmware 1.0.2: 150 pivoted uncomfortably fast
+# (~13.5% per wheel after AVOID_TURN_GAIN), and 60 pivots reliably. Scrubbing
+# round in place is still a heavier load than rolling forward, so this stays
+# above the cruise duty, just not by 3x.
+#
+# Bounded in three ways, which is what makes the exception safe: it applies
+# ONLY in the pivot and back-off branches, those branches are time-limited
+# (AVOID_PIVOT_TIMEOUT_S then AVOID_BACKOFF_S), and they only run when the
+# robot is already stuck and going nowhere. Cruise and steer are untouched and
+# still obey the 5% ceiling.
+#
+# Raise it if the robot still will not turn; it is the value that decides
+# whether being stuck is recoverable. Note the back-off still scales this by
+# AVOID_MIN_SCALE, because it reverses BLIND and should stay slow and brief —
+# at 60 that is about 21 per-mille, which has NOT yet been seen to move the
+# robot. If back-offs stall, give them their own floor rather than raising this.
+AVOID_ESCAPE_DUTY = int(_env("ORIO_AVOID_ESCAPE_DUTY", "60"))
+
 # Control tick. The sensor runs at ~30 Hz on its own thread; this is how often
 # the move loop asks the policy for a fresh decision.
 AVOID_TICK_S = float(_env("ORIO_AVOID_TICK_S", "0.03"))
@@ -382,37 +448,37 @@ SEEK_SCAN_OFFSETS_DEG = tuple(
 # across every pan and found immediately at 26, and one standing closer was
 # found only at 13. Hence both lists reach well above the driving pose.
 #
-# THAT REACH IS NOW GONE, and it is the real cost of the +/-10 tilt window.
-# Relative to the driving pose the old lists went 27 degrees up (40 -> 13);
-# this one can go 10 (30 -> 20). If the new 30 degree aim points where the old
-# 40 did, the angles that actually found a close-in person map to roughly 16
-# and 3 — both below the window floor of 20, so no tilt in this list can reach
-# them. Expect a person at arm's length to be missed until either the window is
-# widened or the sweep is re-measured against the inclined mount.
+# Since 2026-09-22 the driving tilt IS the top of the window (25), so the
+# person-finding angle is the one the robot drives on and there is no reach
+# above it: 26 found a person at 0.77 m, 13 is not commandable, so expect a
+# person much closer than that to be missed. Those angles were measured on the
+# inclined body and have not been re-measured on the levelled one.
 #
-# The scan tries the driving tilt across every pan first, because that is where
-# something on the floor is, and stops the moment it finds the target.
+# The scan tries the driving tilt across every pan first — where a person at
+# following distance is — then steps down toward the floor, and stops the
+# moment it finds the target.
 SEEK_SCAN_TILTS_DEG = tuple(
-    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "30,25,20").split(",") if x
+    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "25,32,40").split(",") if x
 )
 
 # Tilts sampled by a plain look ("what do you see", "look left"). Four stops
 # span the tilt window end to end without making a look take all day — each
 # costs SEEK_SETTLE_S plus one detector pass.
 #
-# All three lists were rescaled 2026-09-10 into the 20..40 window (was
-# "13,26,40,48" / "0,13,26" / "40,48" against the old 40 degree aim). The up
-# and down lists now START at the driving tilt and step outward from it, which
-# is both less head travel and the only way to spend their stops inside a
-# window this narrow; the sweep list walks the whole window top to bottom.
+# Re-centred twice on 2026-09-22: first on a 40 degree aim, then on 25 when
+# the floor tests moved the driving tilt there. The up and down lists START at
+# the driving tilt and step outward from it; with 25 at the window's top, "up"
+# has nowhere to go and is just the driving tilt, and "down" walks toward the
+# floor, stopping short of the mechanical stop at 50. The sweep list walks the
+# whole window top to bottom.
 LOOK_TILT_SWEEP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "20,27,33,40").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "25,32,40,47").split(",") if x
 )
 LOOK_TILT_UP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "30,25,20").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "25").split(",") if x
 )
 LOOK_TILT_DOWN_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "30,35,40").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "25,35,45").split(",") if x
 )
 
 # How far the head turns for a plain "look left" / "look right". Was 35, which
@@ -621,9 +687,11 @@ STEREO_CALIBRATION = Path(
 # 240 tall, stored as a fraction so it scales with STEREO_HEIGHT. It was 31 px
 # at 360 on the 1080p crop; the ratio between the two is exactly the 1.71x crop
 # factor, which is a satisfying independent confirmation of both numbers.
+# 2026-09-22: the module has since shifted; check_stereo_eyes.py now reads
+# -4.8 px at 360 tall (1066 inliers, 5 trials agreeing), so 4.8/360.
 STEREO_BASELINE_M = float(_env("ORIO_STEREO_BASELINE_M", "0.06"))
 STEREO_FALLBACK_FOCAL_PX_AT_640 = float(_env("ORIO_STEREO_FOCAL_PX_AT_640", "432"))
-STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(9.0 / 240.0)))
+STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(4.8 / 360.0)))
 
 # Horizontal field of view of the uncropped binned frame, from the datasheet
 # (83/73/50 deg diagonal/horizontal/vertical). Only the *uncalibrated* path uses
@@ -658,6 +726,374 @@ STEREO_MIN_VALID_FRAC = float(_env("ORIO_STEREO_MIN_VALID_FRAC", "0.10"))
 # tools/stereo_debug.py, since the original tuning was visual too.
 STEREO_BAND_TOP = float(_env("ORIO_STEREO_BAND_TOP", "0.35"))
 STEREO_BAND_BOTTOM = float(_env("ORIO_STEREO_BAND_BOTTOM", "0.71"))
+
+# ── Ground-plane classification (docs/avoidance-plan.md, Fix A) ───────────────
+# The band above is a CROP, not a classification. It works by keeping the floor
+# outside the kept rows, which also throws away every obstacle low enough to sit
+# below the band edge — a box, a shoe, a door threshold: tall enough to stop the
+# wheels, too low to be looked at. Computed from the committed calibration at
+# 320x240 (focal 216.0 px, cy 117.1), the band bottom is 13.9 deg below the
+# optical axis while the frame runs to 29.6 deg: 15.7 degrees of view the
+# cameras already deliver that nothing ever reads.
+#
+# Classifying each depth pixel by its HEIGHT ABOVE THE FLOOR instead eliminates
+# the floor by geometry, and the whole lower frame becomes usable. See
+# orio/sectors.py for the arithmetic.
+#
+# OFF BY DEFAULT, and it must stay off until the two numbers below are MEASURED.
+# The plan's Phase 0 is what measures them. Switching this on against a guessed
+# pitch tilts the fitted plane, distant floor reads as an obstacle, and the
+# robot refuses to leave `steer` for `cruise` in an empty room — the same
+# failure the tilt-45 row in the neck sweep above records. Set to 1 once
+# STEREO_CAM_HEIGHT_M and STEREO_CAM_PITCH_DEG carry measurements, and keep 0
+# reachable: a regression should be one env var away from being confirmed
+# rather than argued about.
+STEREO_GROUND_PLANE = _env("ORIO_STEREO_GROUND_PLANE", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# *** NOT MEASURED. PLACEHOLDERS. ***  Height of the stereo pair above the floor
+# and how far below horizontal its optical axis looks, with the head at
+# NECK_PAN_DEG/NECK_TILT_DEG. Both are properties of the NECK POSE, not of the
+# camera: re-aim the head and both change, which is why they sit next to a tilt
+# whose own sweep is stale (read the NECK_TILT_DEG block above before trusting
+# anything here).
+#
+# Phase 0 of the plan measures them together and they are cheap to get: run a
+# tape measure along the floor, and in tools/stereo_debug.py read the floor
+# distance at the bottom row of the rectified frame and at the band-bottom row.
+# Two rows, two known off-axis angles (29.6 and 13.9 deg at the committed
+# calibration), two floor distances — solve for height and pitch, then
+# cross-check the height against the tape directly. Positive pitch is DOWN.
+STEREO_CAM_HEIGHT_M = float(_env("ORIO_STEREO_CAM_HEIGHT_M", "0.35"))
+STEREO_CAM_PITCH_DEG = float(_env("ORIO_STEREO_CAM_PITCH_DEG", "0.0"))
+
+# A point this far above the floor is the floor. It absorbs depth noise, the
+# ~1 cm of range error a single pixel of disparity is worth at 0.5 m, and small
+# errors in the pitch above; raising it makes the robot blind to genuinely flat
+# obstacles (a cable, a threshold strip) rather than making it safer.
+STEREO_FLOOR_TOL_M = float(_env("ORIO_STEREO_FLOOR_TOL_M", "0.03"))
+
+# *** NOT MEASURED. *** Anything taller than this is driven under, not around —
+# a doorway lintel, a tabletop the robot passes beneath. Too large is the safe
+# direction (overhead things read as obstacles); too small drives into a table.
+ROBOT_HEIGHT_M = float(_env("ORIO_ROBOT_HEIGHT_M", "0.60"))
+
+# Beyond this range the height estimate is worth less than the disparity noise
+# allows, so the row band takes over and the two fuse by min(). One pixel of
+# disparity error at the committed calibration is worth 1.8 cm at 0.5 m, 7.3 cm
+# at 1.0 m, 16.5 cm at 1.5 m and 29.3 cm at 2.0 m: classifying a 5 cm object by
+# its height is comfortable at 0.5 m and meaningless at 1.5 m. That is fine —
+# low obstacles only matter close — but the height test must DEGRADE back to the
+# band with range rather than pretending to measure heights out to 4 m.
+STEREO_HEIGHT_TRUST_M = float(_env("ORIO_STEREO_HEIGHT_TRUST_M", "1.2"))
+
+# Take every Nth pixel in each axis for the ground-plane reduction. The band
+# path reduces ~27k pixels; the ground path would see the whole 77k frame, and
+# the percentile per sector sorts them. 2 keeps a quarter of the frame, which is
+# ~19k points over 7 sectors — far more than the percentile needs — and keeps
+# the reduction well inside the 33 ms frame budget. Set 1 to use every pixel.
+STEREO_GROUND_STRIDE = int(_env("ORIO_STEREO_GROUND_STRIDE", "2"))
+
+
+# ── ToF fan (VL53L5CX x2, docs/avoidance-plan.md, Fix B) ──────────────────────
+# Two 8x8 time-of-flight arrays at wheel height looking forward, covering the
+# volume no camera pixel reaches at all: below the frame edge, and closer than
+# the 0.25 m stereo near gate that a 60 mm baseline genuinely cannot triangulate
+# inside. They also work in the dark and against blank walls, which is exactly
+# where SGBM is weakest.
+#
+# They hang off the JETSON's 40-pin I2C, not either STM32. Settled 2026-09-16
+# and the reasoning is in the plan: the motion board (32 KB flash, 12 KB RAM)
+# cannot host ST's ~84 KB firmware blob at all, and the drivetrain board would
+# need the 24-byte PROTO_MAX_PAYLOAD raised — a wire-format change on the link
+# that carries the e-stop heartbeat — to move 384 bytes of grid per reading.
+#
+# WIRED AND RANGING as of 2026-09-17: both parts answer at 0x29, one per bus,
+# and the pair opens, ranges and fuses through orio/tof.py. What is NOT done is
+# the bracket — the mount poses below are still the plan's intent rather than a
+# measurement.
+#
+# STILL OFF BY DEFAULT — but no longer for want of a measurement. The pose
+# below IS measured now. It is off because of what the measurement says: the
+# bracket sits at 0.64 m looking 8 deg down, so the fan clears the floor only
+# past 1.22 m and flies over exactly the low obstacles it was added to catch,
+# reporting the floor behind them as clear road. Read the block at
+# TOF_HEIGHTS_M before switching this on; `ORIO_TOF=1` runs it today and the
+# geometry is right, so it is a fair experiment — just not one to leave armed.
+# A ToF that fails to open degrades to stereo-only either way.
+TOF_ENABLED = _env("ORIO_TOF", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+
+# One sensor per I2C bus, which is the whole reason there is no address dance:
+# both parts boot at 0x29, and two buses means no LPn sequencing, no GPIO, no
+# mux, and no volatile address to re-apply after every power cycle.
+#
+# VERIFY THE BUS NUMBERS BEFORE WIRING — numbering varies by Jetson model and
+# JetPack version. `i2cdetect -l` is the authority. On this Orin Nano, 40-pin
+# pins 3/5 are /dev/i2c-7 (c250000.i2c) and pins 27/28 are /dev/i2c-1
+# (c240000.i2c), both confirmed from the device tree. Bus 1 already carries two
+# driver-claimed carrier-board devices at 0x25 and 0x40 (they show as UU), which
+# does not collide with 0x29 but does mean the bus is not private.
+#
+# THE TWO BUSES RUN AT DIFFERENT CLOCKS, and with the parts wired that turned
+# out to matter more than the sharing does. From the device tree: bus 7 is
+# 400 kHz, bus 1 is 100 kHz. Measured 2026-09-17, the sensor on bus 1 takes
+# 8.78 s to accept its ~84 KB firmware blob against 2.73 s on bus 7, and then
+# delivers 4.7 Hz against 15.3 Hz because it cannot move ~1 KB of results per
+# frame any faster. The consequences are handled in orio/tof.py (per-sensor
+# reader threads, per-sensor staleness), but the FIX is to raise bus 1 to
+# 400 kHz — a device-tree change on a bus the carrier board's own drivers use,
+# so it is a decision to take deliberately rather than a tweak. The faster bus
+# is worth giving to whichever sensor covers the more important arc.
+TOF_BUSES = tuple(int(b, 0) for b in _env("ORIO_TOF_BUSES", "7,1").split(",") if b.strip())
+TOF_ADDRESSES = tuple(
+    int(a, 0) for a in _env("ORIO_TOF_ADDRESSES", "0x29,0x29").split(",") if a.strip()
+)
+TOF_NAMES = tuple(n.strip() for n in _env("ORIO_TOF_NAMES", "tof-left,tof-right").split(","))
+
+# MEASURED 2026-09-17 on the as-built bracket. Height above the floor (tape
+# measure), pitch positive DOWN and yaw positive RIGHT, both solved from a flat
+# wall by tools/tof_pose.py over five repeats per sensor:
+#
+#     tof-left  (bus 7)   pitch +8.13 +/- 0.08 deg   yaw -5.03 +/- 0.21 deg
+#     tof-right (bus 1)   pitch +7.80 +/- 0.05 deg   yaw +2.07 +/- 0.03 deg
+#     both                height 0.64 m
+#
+# The yaws carry however square the robot was to that wall; the DIFFERENCE
+# between them does not, and it is 7.1 deg.
+#
+# THE BRACKET IS NOT WHAT THIS PLAN ASSUMED, AND THE NUMBERS ABOVE ARE HOW YOU
+# CAN TELL. The intent was LOW and LEVEL — 3-6 cm off the floor, splayed 22.5
+# deg each way so two 45 deg squares abut into ~90 deg of cover. What is built
+# sits at 0.64 m, looks 8 deg DOWN, and splays 7.1 deg, so the two fields
+# overlap almost entirely and span about 52 deg of the 73.1 deg sector grid.
+#
+# What that costs, and it is the whole reason the fan was specified: at 0.64 m
+# and 8 deg down, the LOWEST zone centre passes the floor only at 1.22 m. Nearer
+# than that the fan flies over everything short:
+#
+#     at 0.25 m   nothing below 0.51 m is in the beam
+#     at 0.50 m   nothing below 0.38 m
+#     at 1.00 m   nothing below 0.12 m
+#     at 1.22 m   the beam finally reaches the floor
+#
+# So the 5 cm box this plan was written around enters the fan at about 1 m and
+# LEAVES IT AGAIN as the robot closes — invisible exactly when it matters. Worse
+# than invisible: the beam passes over the box and lands on the floor behind it,
+# so the sector is reported as ground verified free out to 1.2 m, fill_clear
+# turns that into a DISTANCE, and a sector stereo cannot see into either (which
+# is the premise — the box is below the camera band) fuses to "clear road".
+#
+# That is why ORIO_TOF stays 0. The pose here is correct and worth having; the
+# mount is a decision. Low and level covers the volume the cameras cannot, and
+# this one does not.
+#
+# Unlike the cameras, this mount is fixed to the CHASSIS, not the neck. That is
+# a feature: the ToF fan does not move when the head looks around, so it is
+# immune to the whole neck-aim problem the stereo thresholds live with.
+TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.64,0.64").split(","))
+TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "8.1,7.8").split(","))
+TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-5.0,2.1").split(","))
+
+# Angular span of the 8x8 grid, per ST: 45 x 45 deg (the 65 deg figure in the
+# marketing is the diagonal of the full optical field, not the zone array). Each
+# zone is therefore 5.625 deg across.
+TOF_FOV_DEG = float(_env("ORIO_TOF_FOV_DEG", "45.0"))
+
+# 8x8 at 15 Hz REQUESTED. The ULD caps 8x8 at 15 Hz (4x4 goes to 60), and the
+# sensor on bus 7 reaches it — 15.3 Hz measured. The one on bus 1 does not and
+# cannot: 4.7 Hz measured, bounded by the 100 kHz bus rather than by the part,
+# so asking it for more simply means every read returns the newest frame. This
+# is a single knob for both sensors; if the pair ever needs different rates,
+# that is the moment to make it per-sensor rather than the moment to lower it
+# for the healthy one.
+TOF_RESOLUTION = int(_env("ORIO_TOF_RESOLUTION", "64"))
+TOF_FREQ_HZ = int(_env("ORIO_TOF_FREQ_HZ", "15"))
+
+# Range gate. ST quotes up to 400 cm, in the dark, against a good target; indoor
+# ambient light and a dark carpet cut that hard, and a grazing floor return at
+# the far end of the fan is noise rather than information. The near end is the
+# point of the part — 2 cm is well inside the 25 cm the cameras cannot reach.
+TOF_MIN_RANGE_M = float(_env("ORIO_TOF_MIN_RANGE_M", "0.02"))
+TOF_MAX_RANGE_M = float(_env("ORIO_TOF_MAX_RANGE_M", "3.0"))
+
+# Per-zone target_status values whose distance is believed. 5 is a trusted
+# range; 6 (no wrap check) and 9 (valid, large pulse) are usable with caveats.
+# EVERYTHING ELSE IS UNKNOWN, NOT MAX RANGE. This is the same rule valid_frac
+# enforces for the cameras, and the one that bites hardest if it is got wrong,
+# because "no return" flattened to 4.0 m reads as "clear" and the failure is
+# silent. 255 (no target) in particular is not clear road — it is a surface too
+# dark, too angled, or too far to answer.
+TOF_TRUSTED_STATUS = frozenset(
+    int(s) for s in _env("ORIO_TOF_TRUSTED_STATUS", "5,6,9").split(",") if s.strip()
+)
+
+# Zone 0 is the sensor's own top-left, and which physical corner that is depends
+# on how the breakout is turned on the bracket. Flip here once the grid has been
+# looked at with a hand in front of it, rather than rotating the bracket.
+TOF_FLIP_H = _env("ORIO_TOF_FLIP_H", "0").strip().lower() not in ("0", "false", "no", "off", "")
+TOF_FLIP_V = _env("ORIO_TOF_FLIP_V", "0").strip().lower() not in ("0", "false", "no", "off", "")
+
+# A ToF reading older than this is dropped from the fusion rather than fused.
+# It mirrors AVOID_STALE_S and exists separately so a slow ToF degrades to
+# stereo-only instead of halting the robot: a new sensor that can stop the robot
+# is a new way for the robot to be stopped, and this is an ADDITION to a working
+# guard. A stereo failure keeps halting exactly as it does today.
+#
+# Applied PER SENSOR, not to the fan as a whole — see ToFDetector._republish.
+# The slow sensor on bus 1 is starved by its faster neighbour often enough to
+# cross this threshold on its own (900+ ms between frames, measured), and under
+# a whole-fan rule it took the healthy sensor down with it every time it did.
+# Raise this only with that in mind: it is the window in which a sensor may say
+# nothing before its sectors go unknown, and unknown is not clear.
+TOF_STALE_S = float(_env("ORIO_TOF_STALE_S", str(AVOID_STALE_S)))
+
+# ── Bump: a stalled wheel, read as an obstacle ────────────────────────────────
+# See orio/bump.py. A wheel that will not turn under duty is contact, which is a
+# more certain obstacle reading than any ranged sensor produces — and it covers
+# exactly the case stereo cannot: the thing is touching the robot, a quarter of
+# a metre inside STEREO_MIN_RANGE_M, and below the camera band besides.
+#
+# This is an ADDITION to a guard that already works, so it is free to be wrong
+# in the cheap direction (a bump that decays unused) and must never be wrong in
+# the expensive one (contact invented from missing telemetry). Every threshold
+# below is set with that asymmetry in mind.
+# ON by default since 2026-09-22. It was held off, like TOF_ENABLED, until the
+# thresholds below were measured rather than estimated: a constant that was
+# guessed is not yet a sensor. They now are — current and confirm time from
+# wall tests on drivetrain firmware 1.0.1/1.0.2 (~/spinup2.csv), with both
+# wheels reporting — and teleop with it on avoided walls on the floor test.
+# `ORIO_BUMP=0` opts out, e.g. when the drivetrain firmware predates 1.0.2 and
+# STATUS polling starves the drive command.
+BUMP_ENABLED = _env("ORIO_BUMP", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# All three conditions must hold together for BUMP_CONFIRM_S. Duty alone says
+# nothing about the world, a still wheel alone is every stationary robot, and
+# current alone is a carpet or a ramp — load, not contact.
+#
+# Per-mille, matching what reaches the board, and it has to sit under the
+# SLOWEST duty the policy ever commands or the detector never arms at all.
+# That floor is lower than it looks: DRIVE_SPEED_MIN_PERCENT is 5, so the
+# slowest cruise is 50 per-mille, and `Avoider` scales that again by
+# AVOID_MIN_SCALE (0.35) and by its turn factor while steering — 9 at the
+# extreme, which a floor of 10 sat just above, arming the detector on no hop
+# this robot can actually drive. 5 clears the whole commandable range while
+# still meaning "something was genuinely asked for".
+#
+# Almost all the discrimination therefore comes from current and eRPM, not from
+# here, which is the right division of labour: at 1% duty a hub motor cannot
+# pull BUMP_STALL_CURRENT_A whether it is jammed or not.
+#
+# BOTH wheels must clear this floor, not one. A pivot commands one wheel
+# forward and one reverse, and at the ~4.5% that leaves, the forward wheel
+# cannot scrub the robot round on a smooth floor — it reads zero eRPM with
+# nothing in front of it. Recording that made the robot ping-pong between a
+# left bump and a right one and never drive at all (found on the robot
+# 2026-09-18). Reversing is excluded by the same test.
+BUMP_MIN_DUTY = int(_env("ORIO_BUMP_MIN_DUTY", "5"))
+
+# ELECTRICAL rpm, which is what the VESC reports, and with the current check
+# disabled this is now THE stall signal rather than one of three.
+#
+# Measured 2026-09-18 at 5% duty: driving reads a median 447 eRPM and a jam
+# reads 0 on 49 of 50 samples, so 50 sits an order of magnitude below the
+# driving population and a hair above the jammed one. Spin-up under the robot's
+# own weight clears it by 151 ms, inside BUMP_CONFIRM_S, so starting from rest
+# does not confirm.
+#
+# At ~15 pole pairs (confirm against FOC detection before trusting it —
+# hubmotor_control_reference.pdf p.2 makes this its own gotcha) 447 eRPM is
+# ~30 wheel-rpm, about 0.30 m/s on 19 cm wheels, which is what the robot
+# visibly does. The conversion checks out.
+BUMP_STALL_ERPM = int(_env("ORIO_BUMP_STALL_ERPM", "50"))
+
+# ...but a fixed floor turned out to be the wrong SHAPE, measured against a real
+# obstacle 2026-09-18. A wheel jammed against a wall reads a clean 0. A wheel
+# pushing a real obstacle CREEPS: the three bumps logged on the robot reported
+# (L68 R22), (L0 R92) and (L101 R0) — both wheels between 0 and 23% of the 447
+# they turn at freely, but a flat 50 caught only one of each pair. So the robot
+# marked one side, never both, `_roomier_side` kept finding an open side that
+# was not open, and it drove back into the same obstacle.
+#
+# A stall is better defined as "far slower than this duty should be turning
+# it". Free-running measures 8.9 eRPM per per-mille (447 at duty 50), so 2.7 is
+# a wheel doing under a third of what it was asked for. The threshold scales
+# with the command, which matters because `Avoider` throttles down to duty 22
+# while steering, where a FIXED 135 would call legitimate slow driving a stall:
+#
+#     duty 50 (cruise) -> max(50, 135) = 135   catches all three logged bumps
+#     duty 22 (steer)  -> max(50,  59) =  59   against ~197 expected. Clear.
+BUMP_STALL_ERPM_PER_MILLE = float(_env("ORIO_BUMP_STALL_ERPM_PER_MILLE", "2.7"))
+
+# Amps, and the condition that stops a start from reading as a bump.
+#
+# It was 0.0 (disabled) after 2026-09-18 read driving as 0.04 A and a jam as
+# 0.06 A. Those numbers were 100x low: drivetrain firmware 1.0.0 divided the
+# VESC's centi-amps by 100 and sent whole amps in a centi-amp field (see
+# drivetrain._current_scale). Real values at 5% duty, from ~/spinup.csv on
+# 2026-09-22 (10 runs, left wheel only, 1 A steps) and confirmed on firmware
+# 1.0.1 in centi-amps, both wheels, into a wall (~/spinup2.csv):
+#
+#     cruising                  ~1 A (0.8-1.4 median)
+#     spin-up from rest          3-4.3 A for at most 0.19 s, eRPM climbing
+#     jammed / pushing           4.3-5.8 A (median ~5.7), eRPM at or near 0
+#     ESC not driving            0 A, eRPM 0
+#
+# eRPM alone could not tell spin-up from a jam: the wheel takes ~0.3 s to pass
+# the 135 eRPM limit and BUMP_CONFIRM_S is 0.25, so it confirmed a bump on 8 of
+# those 10 starts — on the robot it bumped every time W was pressed. Replaying
+# the runs through StallDetector: at 3.5 A no start confirms, and every jam and
+# slow push still does. 4.5 A missed a real jam that sat at 4.x A.
+#
+# Not scaled by duty. A stall at the ~2% duty steering throttles to draws less
+# and can be missed — the cheap direction, the same as having no bump sensor.
+BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "3.5"))
+
+# How long all three must hold. NOT noise filtering: a hub motor coming up from
+# rest looks exactly like a stall for real milliseconds — duty high, eRPM ~0,
+# current at its peak — so confirming instantly reports a bump on every start.
+#
+# 0.25 -> 0.35 on 2026-09-22, from a wall test on firmware 1.0.1 (centi-amps,
+# both wheels, ~/spinup2.csv): spin-up held >= 3.5 A with eRPM under the limit
+# for up to 0.19 s, 0.06 s short of confirming — too thin for a floor with more
+# drag. Spin-up peaks at ~4.3 A and a wheel against the wall dips to 4.3 A, so
+# raising BUMP_STALL_CURRENT_A cannot separate them; time can. At 0.35 all 11
+# recorded runs still catch every jam, about 0.1 s later (3 cm at 0.30 m/s).
+BUMP_CONFIRM_S = float(_env("ORIO_BUMP_CONFIRM_S", "0.35"))
+
+# Telemetry older than this is treated as no telemetry at all. Unknown is not
+# stalled: inventing contact from a quiet link stops the robot for as long as
+# the memory lasts, and the failure is silent.
+BUMP_STATUS_STALE_S = float(_env("ORIO_BUMP_STATUS_STALE_S", "0.30"))
+
+# How long a bump stays in the map after the wheel stops reporting jammed.
+# Long enough to survive the back-off it triggers (AVOID_BACKOFF_S) and the
+# pivot that follows, and no longer: a bump is a fact about a moment of
+# contact, not a landmark, and a permanent one walls off a side of the map
+# forever. Note this is the memory's LIFETIME, never its timestamp — see trap 1
+# in orio/bump.py.
+# RAISED from 2.5 to 5.0 on 2026-09-18: 2.5 expired mid-escape. The escape is
+# AVOID_PIVOT_TIMEOUT_S (2.0) of pivoting, then AVOID_BACKOFF_S (1.0) of
+# reversing, then AVOID_COMMIT_CLEAR_S (0.8) before cruise resumes — about 4 s.
+# With a 2.5 s memory the bump vanished during the back-off, stereo reported
+# the clear road it always saw (the obstacle is below the camera band, which is
+# the entire reason this sensor exists), `_must_clear` was satisfied instantly,
+# and the robot drove back into the thing it had just hit. Observed three times
+# in one run.
+BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "5.0"))
+
+# The range a bump reports. Zero is the honest answer and it is also the useful
+# one: Avoider._ahead() qualifies a sector by `distance * sin(angle)`, so a
+# zero-range reading is inside the corridor at every angle, which is exactly
+# right for something already touching the robot.
+BUMP_DISTANCE_M = float(_env("ORIO_BUMP_DISTANCE_M", "0.0"))
 
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each

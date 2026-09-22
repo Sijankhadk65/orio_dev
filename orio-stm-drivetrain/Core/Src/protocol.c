@@ -24,11 +24,29 @@ static uint8_t s_rx_idx;
 static uint8_t s_rx_buf[1u + PROTO_MAX_PAYLOAD]; /* CMD + PAYLOAD */
 static uint16_t s_rx_crc;
 
-/* Latched frame, filled from ISR context, drained by Protocol_Process(). */
-static volatile uint8_t s_frame_ready;
-static uint8_t s_frame_cmd;
-static uint8_t s_frame_payload[PROTO_MAX_PAYLOAD];
-static uint8_t s_frame_payload_len;
+/* Received frames, queued from ISR context and drained by Protocol_Process().
+ *
+ * A queue, not one latched slot. Firmware 1.0.1 and earlier kept a single
+ * frame and DROPPED any frame that arrived while it was still pending -- and
+ * the main loop is regularly busy for several ms polling the ESCs. The Jetson
+ * polling CMD_GET_STATUS every tick with CMD_SET_DRIVE right behind it lost
+ * 100 of 100 drive commands (measured 2026-09-22), and heartbeats and
+ * CMD_STOP could be lost the same way.
+ *
+ * Single producer (the UART ISR writes s_q_head) and single consumer (the main
+ * loop writes s_q_tail); uint8_t indices are atomic on this core. A full queue
+ * drops the NEW frame, which is only possible if the main loop stalls for
+ * RX_QUEUE_LEN frames' worth of traffic. */
+#define RX_QUEUE_LEN 8u /* power of two */
+typedef struct
+{
+  uint8_t cmd;
+  uint8_t payload_len;
+  uint8_t payload[PROTO_MAX_PAYLOAD];
+} RxFrame;
+static RxFrame s_queue[RX_QUEUE_LEN];
+static volatile uint8_t s_q_head; /* next slot the ISR fills */
+static volatile uint8_t s_q_tail; /* next slot Protocol_Process() handles */
 
 static volatile uint32_t s_last_heartbeat_tick;
 static volatile uint8_t s_estopped;
@@ -294,12 +312,15 @@ static void on_byte_received(uint8_t byte)
         crc_input[0] = s_rx_len;
         memcpy(&crc_input[1], s_rx_buf, s_rx_len);
 
-        if ((crc16_ccitt(crc_input, (uint16_t)(1u + s_rx_len)) == s_rx_crc) && !s_frame_ready)
+        uint8_t next = (uint8_t)((s_q_head + 1u) & (RX_QUEUE_LEN - 1u));
+        if ((crc16_ccitt(crc_input, (uint16_t)(1u + s_rx_len)) == s_rx_crc) && (next != s_q_tail))
         {
-          s_frame_cmd = s_rx_buf[0];
-          s_frame_payload_len = (uint8_t)(s_rx_len - 1u);
-          memcpy(s_frame_payload, &s_rx_buf[1], s_frame_payload_len);
-          s_frame_ready = 1u;
+          RxFrame *f = &s_queue[s_q_head];
+          f->cmd = s_rx_buf[0];
+          f->payload_len = (uint8_t)(s_rx_len - 1u);
+          memcpy(f->payload, &s_rx_buf[1], f->payload_len);
+          __DMB(); /* the slot is written before the consumer can see it */
+          s_q_head = next;
         }
       }
       break;
@@ -319,7 +340,8 @@ void Protocol_Init(UART_HandleTypeDef *huart)
 {
   s_huart = huart;
   s_rx_state = RX_WAIT_STX;
-  s_frame_ready = 0u;
+  s_q_head = 0u;
+  s_q_tail = 0u;
   s_estopped = 1u; /* stay stopped until the first heartbeat arrives */
   s_last_heartbeat_tick = HAL_GetTick();
   Wheel_Stop();
@@ -344,17 +366,19 @@ void Protocol_UART_RxCpltCallback(UART_HandleTypeDef *huart)
 
 void Protocol_Process(void)
 {
+  /* Every queued frame, in arrival order. Drained BEFORE the watchdog check so
+   * a heartbeat that arrived while the loop was busy counts. */
+  while (s_q_tail != s_q_head)
+  {
+    const RxFrame *f = &s_queue[s_q_tail];
+    handle_frame(f->cmd, f->payload, f->payload_len);
+    __DMB(); /* finished with the slot before handing it back to the ISR */
+    s_q_tail = (uint8_t)((s_q_tail + 1u) & (RX_QUEUE_LEN - 1u));
+  }
+
   if (!s_estopped && ((HAL_GetTick() - s_last_heartbeat_tick) > PROTO_HEARTBEAT_TIMEOUT_MS))
   {
     s_estopped = 1u;
     Wheel_Stop();
   }
-
-  if (!s_frame_ready)
-  {
-    return;
-  }
-
-  handle_frame(s_frame_cmd, s_frame_payload, s_frame_payload_len);
-  s_frame_ready = 0u;
 }
