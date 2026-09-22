@@ -192,10 +192,26 @@ void Vesc_PollValues(Vesc_t *esc, VescTelemetry_t *out)
     return;
   }
 
-  out->current_ca = (int16_t)(((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR] << 24)
-                             | ((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 1] << 16)
-                             | ((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 2] << 8)
-                             | (uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 3]) / 100;
+  /* The VESC already sends current_motor in centi-amps (A x 100), which is
+   * exactly the unit current_ca holds, so it is stored as-is. Firmware 1.0.0
+   * divided by 100 here as well, handing the Jetson whole amps in a centi-amp
+   * field: every reading came out 100x low and truncated to 1 A steps, which
+   * read a 5 A stall as "0.05 A". Clamped rather than wrapped into int16. */
+  {
+    int32_t current_ca = (int32_t)(((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR] << 24)
+                                 | ((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 1] << 16)
+                                 | ((uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 2] << 8)
+                                 | (uint32_t)payload[VESC_VAL_OFF_CURRENT_MOTOR + 3]);
+    if (current_ca > INT16_MAX)
+    {
+      current_ca = INT16_MAX;
+    }
+    else if (current_ca < INT16_MIN)
+    {
+      current_ca = INT16_MIN;
+    }
+    out->current_ca = (int16_t)current_ca;
+  }
   (void)VESC_VAL_OFF_DUTY_NOW; /* duty_now not currently surfaced; offset kept for reference */
   out->erpm = (int32_t)(((uint32_t)payload[VESC_VAL_OFF_RPM] << 24)
                        | ((uint32_t)payload[VESC_VAL_OFF_RPM + 1] << 16)

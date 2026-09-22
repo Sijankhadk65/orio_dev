@@ -40,7 +40,9 @@ extern "C" {
  * parse, never for a firmware change that merely adds behaviour. */
 #define FW_VERSION_MAJOR 1u
 #define FW_VERSION_MINOR 0u
-#define FW_VERSION_PATCH 0u
+/* 1.0.1: CMD_STATUS current_ca is really centi-amps (1.0.0 sent whole amps
+ * in that field). The Jetson reads this version to scale it. */
+#define FW_VERSION_PATCH 1u
 #define PROTO_VERSION    1u
 
 /* Which subsystem a board is, as carried in a CMD_IDENTITY payload. Shares
