@@ -25,6 +25,7 @@ import time
 from dataclasses import dataclass
 
 from . import config
+from .sectors import fuse
 from .stereo import ObstacleDetector
 
 # Orio measures 0.70 m across the drive wheels, so its body half-width is
@@ -49,6 +50,11 @@ class Reading:
     describe: str
     timestamp: float
     error: str | None = None
+    # Which sensor produced each sector, left to right — "stereo-band",
+    # "stereo-ground", a ToF name, or "" where nothing knew. The policy does not
+    # read it; it exists for the debug views and for the inevitable argument
+    # about which sensor is lying.
+    sources: tuple[str, ...] = ()
 
     @staticmethod
     def failed(exc: Exception) -> "Reading":
@@ -63,7 +69,15 @@ class Reading:
 
 class Sensor:
     """Runs the stereo pipeline on its own thread and publishes the latest
-    reading.
+    reading, fused with the ToF fan when there is one.
+
+    Fusion happens HERE, at the `ObstacleMap`, and not at the pixels. The two
+    sensors have different frames, rates (30 Hz vs 15 Hz), latencies and failure
+    modes; a shared point cloud is the better long-term answer and the wrong
+    thing to build first, because a bug anywhere in that stack presents as bad
+    steering with no way to tell which sensor lied. Sector-level fusion keeps
+    provenance — every sector says which sensor produced it — and `Avoider`
+    below is not touched at all.
 
     Threaded rather than inline because a reading costs ~33 ms (measured, and
     frame-rate bound), which would be felt as keyboard lag on a 30 ms tick — and
@@ -73,9 +87,31 @@ class Sensor:
     pointing the safe way.
     """
 
-    def __init__(self, guard_sectors: int = 3) -> None:
+    def __init__(self, guard_sectors: int = 3, use_tof: bool | None = None,
+                 tof=None, bumps=None, use_bump: bool | None = None) -> None:
         self._guard_sectors = guard_sectors
         self._detector = ObstacleDetector()
+        # The bump memory, when there is one. Unlike the ToF fan this opens no
+        # hardware and cannot fail — it is a shared dataclass that the control
+        # loop writes (`body._drive_tick`) and this thread reads. It is here
+        # rather than inside the loop because fusion happens at ObstacleMap
+        # level, and by the time a `Reading` exists the sectors have already
+        # been flattened to tuples.
+        if bumps is None and (config.BUMP_ENABLED if use_bump is None else use_bump):
+            from .bump import BumpMemory
+
+            bumps = BumpMemory()
+        self._bumps = bumps
+        # The ToF fan, when there is one. Constructed here rather than passed in
+        # so that `Sensor()` keeps meaning "the robot's obstacle sensing,
+        # however much of it exists"; `tof=` is for tests and bench tools that
+        # want to supply their own.
+        if tof is None and (config.TOF_ENABLED if use_tof is None else use_tof):
+            from .tof import ToFDetector
+
+            tof = ToFDetector()
+        self._tof = tof
+        self.tof_error: str | None = None
         self._reading: Reading | None = None
         # The rectified left eye from the most recent reading. Published here
         # because these two cameras are the only ones there are: with avoidance
@@ -89,6 +125,21 @@ class Sensor:
         self.calibrated = False
 
     def start(self) -> None:
+        # The ToF fan first, because its firmware upload is seconds of I2C per
+        # sensor and it can run while Argus is still waking up. Failing to open
+        # it is NOT fatal: it is an addition to a guard that already works, and
+        # a new sensor that can stop the robot is a new way for the robot to be
+        # stopped. The cameras keep the halting power they have always had.
+        if self._tof is not None:
+            try:
+                self._tof.start()
+            except Exception as exc:
+                self.tof_error = f"{type(exc).__name__}: {exc}"
+                try:
+                    self._tof.close()
+                finally:
+                    self._tof = None
+
         # The first reading opens both Argus pipelines and takes ~2 s. Do it
         # here, before the terminal goes into cbreak mode, so any camera error
         # is readable and lands before the operator can press a key.
@@ -99,6 +150,34 @@ class Sensor:
         self._thread.start()
 
     def _publish(self, omap, frame) -> None:
+        # Fuse the ToF fan in, if it has said anything recently. `fresh_map()`
+        # returns None once the fan goes quiet, which drops it out of the
+        # fusion and leaves stereo deciding alone — degrading, not halting.
+        #
+        # Staleness deliberately stays measured against the STEREO frame: the
+        # reading is stamped now, and the ToF contribution is at most
+        # TOF_STALE_S old by construction. 8x8 runs at 15 Hz, so there is 67 ms
+        # between ToF frames against an AVOID_STALE_S of 0.5 s — it will not
+        # trip it, and nobody needs to "fix" that threshold on its account.
+        if self._tof is not None:
+            try:
+                tof_map = self._tof.fresh_map()
+                self.tof_error = self._tof.error
+            except Exception as exc:  # noqa: BLE001 - never let the fan halt stereo
+                tof_map, self.tof_error = None, f"{type(exc).__name__}: {exc}"
+            if tof_map is not None:
+                omap = fuse(omap, tof_map)
+
+        # The bump memory last, because contact outranks everything: `fuse()`
+        # takes the nearest, and nothing a ranged sensor reports is nearer than
+        # a wheel that is already against the obstacle. `fresh_map()` returns
+        # None whenever the robot is not stalled, which is nearly always, so
+        # for the whole of a normal run this contributes nothing at all.
+        if self._bumps is not None:
+            bump_map = self._bumps.fresh_map()
+            if bump_map is not None:
+                omap = fuse(omap, bump_map)
+
         with self._lock:
             self._frame = frame
             self._reading = Reading(
@@ -106,6 +185,7 @@ class Sensor:
                 clearance_m=omap.clearance_ahead(self._guard_sectors),
                 describe=omap.describe(),
                 timestamp=time.monotonic(),
+                sources=omap.sources,
             )
 
     def _loop(self) -> None:
@@ -144,11 +224,29 @@ class Sensor:
         with self._lock:
             return self._frame
 
+    @property
+    def bumps(self):
+        """The shared bump memory, or None when bump sensing is off.
+
+        `body._drive_tick` writes it and this thread reads it; handing it out
+        here keeps one memory per `Sensor` rather than leaving the two halves
+        to find each other.
+        """
+        return self._bumps
+
+    @property
+    def tof_names(self) -> tuple[str, ...]:
+        """Which ToF sensors actually opened. Empty when the fan is off or
+        failed — which is what `tof_error` explains."""
+        return () if self._tof is None else self._tof.names
+
     def close(self) -> None:
         self._stop.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self._detector.close()
+        if self._tof is not None:
+            self._tof.close()
 
 
 @dataclass(frozen=True)
@@ -198,9 +296,11 @@ class Avoider:
         backoff_s: float,
         blind_hold_s: float,
         scan: bool = False,
+        escape_duty: int = config.AVOID_ESCAPE_DUTY,
     ) -> None:
         self.stop_m = stop_m
         self.clear_m = clear_m
+        self.escape_duty = escape_duty
         self.min_scale = min_scale
         self.stale_s = stale_s
         self.turn_penalty = turn_penalty
@@ -345,6 +445,15 @@ class Avoider:
             if score > best_score:
                 best_score, best = score, (angle, distance)
         return best
+
+    def _escape(self, duty: int) -> int:
+        """Duty for the escape manoeuvres, never less than the cruise duty.
+
+        The `max` matters: `escape_duty` is a floor for a robot that cruises
+        slowly, not a cap on one that does not. Raising the cruise duty above
+        it must not quietly make the escape the slowest thing the robot does.
+        """
+        return max(duty, self.escape_duty)
 
     def _mix(self, linear: int, turn: float, duty: int) -> tuple[int, int]:
         """Differential mix. `turn` > 0 steers LEFT, matching the sign of the
@@ -503,7 +612,12 @@ class Avoider:
                 self._stuck_s = 0.0
                 self._committed_side = 0
                 self._must_clear = True
-            speed = round(duty * self.min_scale)
+            # Escape duty, not cruise duty. See config.AVOID_ESCAPE_DUTY: at
+            # the 5% this robot cruises at, AVOID_MIN_SCALE of it is about 17
+            # per-mille, which was commanded repeatedly on the robot without
+            # moving it. Still scaled by min_scale, because this reverses BLIND
+            # and wants to stay slow and brief.
+            speed = round(self._escape(duty) * self.min_scale)
             self._turn = 0.0
             return Decision(-speed, -speed, "backoff", "stuck — backing off to turn")
 
@@ -560,8 +674,11 @@ class Avoider:
         side = self._committed_side or self._roomier_side(reading)
         if side is not None:
             self._committed_side = side
-            self._turn = -side * self.turn_gain * duty
-            left, right = self._mix(0, self._turn, duty)
+            # Scrubbing the robot round in place is a heavier load than rolling
+            # it forward, and 5% does not do it — see config.AVOID_ESCAPE_DUTY.
+            escape = self._escape(duty)
+            self._turn = -side * self.turn_gain * escape
+            left, right = self._mix(0, self._turn, escape)
             where = "left" if side < 0 else "right"
             why = "turning to clear" if self._must_clear else "boxed in"
             return Decision(left, right, "pivot", f"{why}, pivoting {where}")
@@ -731,4 +848,5 @@ def avoider_from_config() -> Avoider:
         backoff_s=config.AVOID_BACKOFF_S,
         blind_hold_s=config.AVOID_BLIND_HOLD_S,
         scan=config.AVOID_SCAN,
+        escape_duty=config.AVOID_ESCAPE_DUTY,
     )

@@ -62,6 +62,7 @@ from dataclasses import dataclass
 
 from . import config
 from .avoid import Sensor, avoider_from_config, look_around
+from .bump import StallDetector
 from .drivetrain import Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
 
@@ -148,6 +149,10 @@ class Body:
         self._neck: Motion | None = None
         self._sensor: Sensor | None = None
         self._avoider = avoider_from_config()
+        # Reads a jammed wheel as an obstacle — see orio/bump.py. It lives here
+        # rather than on `Sensor` because it needs the duty that was commanded,
+        # and `_drive_tick` is the only place a duty pair reaches the board.
+        self._stall = StallDetector()
         # The cruise currently running, if any — at most one, since there is one
         # set of wheels. See cruise().
         self._cruise: "Cruise | None" = None
@@ -276,6 +281,24 @@ class Body:
             )
             return
         self._sensor = sensor
+        # The ToF fan is reported but never fatal — Body must come up without
+        # it, exactly as it did before there was one. `Sensor.start()` has
+        # already dropped it on failure and kept the cameras.
+        if config.TOF_ENABLED:
+            if sensor.tof_names:
+                self.notes.append(
+                    f"ToF fan reading on {', '.join(sensor.tof_names)} — low "
+                    "obstacles and the sub-"
+                    f"{config.STEREO_MIN_RANGE_M:.2f} m gap are covered"
+                )
+            if sensor.tof_error:
+                self.notes.append(
+                    f"⚠ ToF fan degraded: {sensor.tof_error}\n"
+                    f"    Avoidance is running on stereo alone, which is blind "
+                    f"below the camera band and inside {config.STEREO_MIN_RANGE_M:.2f} m. "
+                    f"Check `i2cdetect -y -r {config.TOF_BUSES[0]}` for 0x29, or set "
+                    "ORIO_TOF=0 to stop trying."
+                )
         if sensor.calibrated:
             self.notes.append("obstacle avoidance armed (stereo calibrated)")
         else:
@@ -508,6 +531,8 @@ class Body:
             return None, "the head isn't on the driving pose", None, last_sent
         self._avoider.scan = config.AVOID_SCAN and self._neck is not None
 
+        self._sense_bump(link, sensor, last_sent)
+
         reading = sensor.reading
         halted = self._blind(reading)
         if halted is not None:
@@ -553,6 +578,32 @@ class Body:
             "nothing usable" if heading is None else f"heading {heading:+.0f} deg",
         )
         return "scan", None, link.take_rejection(), last_sent
+
+    def _sense_bump(self, link, sensor, standing) -> None:
+        """Turn wheel telemetry into a bump in the obstacle map.
+
+        Called at the top of every tick, BEFORE the reading is taken, so a
+        stall confirmed now is in the map the policy decides on this tick
+        rather than the next one.
+
+        `standing` is the duty pair the board is currently holding — what was
+        actually commanded, not what is about to be. That is the pair the
+        telemetry in hand describes: `request_status()` only asks, and the
+        reply lands in `last_status` a tick or so later, so pairing this
+        reply with the command about to be sent would judge a stall against
+        duty the wheel has not seen yet.
+
+        Nothing here can halt the robot on its own. A board that never answers
+        leaves `last_status` None, the detector resets, and the map is
+        exactly what stereo and the ToF fan made it.
+        """
+        bumps = getattr(sensor, "bumps", None)
+        if bumps is None:
+            return
+        bump = self._stall.update(time.monotonic(), standing or (0, 0), link.last_status)
+        bumps.record(bump)
+        # Ask for the next one. Asynchronous by design — see `request_status`.
+        link.request_status()
 
     def cruise(self) -> "Cruise":
         """Start a guarded drive that outlives the call which started it.

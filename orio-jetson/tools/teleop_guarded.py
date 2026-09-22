@@ -107,6 +107,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import config
 from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor, look_around
+from orio.bump import StallDetector
 from orio.drivetrain import Drivetrain
 from orio.motion import JOINT_NECK, Motion, travel_time_s
 
@@ -128,7 +129,13 @@ DEFAULT_MOTION_PORT = config.MOTION_PORT
 NECK_PAN_DEG = config.NECK_PAN_DEG
 NECK_TILT_DEG = config.NECK_TILT_DEG
 
-DEFAULT_DUTY_PERCENT = 30.0
+# The robot's own speed window, not this tool's preference. The bench is free
+# to sweep the avoidance tunables — that is why they are CLI flags rather than
+# config reads — but duty is a limit on the hardware, and a bench tool that can
+# exceed the ceiling the app enforces is how the robot ends up driven at six
+# times the speed every AVOID_* threshold was measured at.
+DEFAULT_DUTY_PERCENT = config.DRIVE_SPEED_PERCENT
+MAX_DUTY_PERCENT = config.DRIVE_SPEED_MAX_PERCENT
 DUTY_STEP_PERCENT = 5.0
 LOOP_TICK_S = 0.03
 
@@ -173,7 +180,9 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--port", default=DEFAULT_PORT, help="STM32 drivetrain serial port")
-    parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT, help="cruise duty %%")
+    parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT,
+                        help=f"cruise duty %% (ceiling {MAX_DUTY_PERCENT:g}, from "
+                             f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
     parser.add_argument("--stop-m", type=float, default=0.50, help="never drive forward inside this")
     parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
@@ -244,7 +253,45 @@ def parse_args() -> argparse.Namespace:
              "stays wherever it already is (slack, if nothing else is holding it)",
     )
     parser.add_argument("--no-avoid", action="store_true", help="start with avoidance off")
+    parser.add_argument(
+        "--no-tof", action="store_true",
+        help="drive on the cameras alone, leaving the ToF fan closed. The A/B "
+             "for whether a low obstacle was caught by the fan or by the "
+             "ground-plane classification — run the same approach twice",
+    )
+    parser.add_argument(
+        "--escape-duty", type=int, default=config.AVOID_ESCAPE_DUTY,
+        help="per-mille duty for pivoting and backing off. Deliberately above "
+             "the cruise ceiling: 5%% rolls the robot forward fine but will not "
+             "scrub it round in place",
+    )
+    parser.add_argument(
+        "--no-bump", action="store_true",
+        help="ignore wheel stalls, rather than reading a jammed wheel as an "
+             "obstacle in the sector map (see orio/bump.py)",
+    )
     return parser.parse_args()
+
+
+def sector_sources(reading) -> str:
+    """The sector map's provenance as one letter each, left to right."""
+    if reading is None or not reading.sources:
+        return "?" * config.STEREO_SECTORS
+    out = []
+    for source in reading.sources:
+        if not source:
+            out.append(".")
+        elif source.endswith("-clear"):
+            out.append("c")
+        elif source.startswith("tof"):
+            out.append("T")
+        elif source == "bump":
+            out.append("X")
+        elif source.endswith("ground"):
+            out.append("G")
+        else:
+            out.append("B")
+    return "".join(out)
 
 
 def aim_neck(args) -> Motion:
@@ -316,8 +363,10 @@ def aim_neck(args) -> Motion:
 
 def main() -> int:
     args = parse_args()
-    if not 0.0 <= args.duty <= 100.0:
-        print("--duty must be between 0 and 100")
+    if not 0.0 <= args.duty <= MAX_DUTY_PERCENT:
+        print(f"--duty must be between 0 and {MAX_DUTY_PERCENT:g} — the robot's "
+              f"ceiling, not this tool's. Raise ORIO_DRIVE_SPEED_MAX_PERCENT if "
+              f"you mean it, and re-check the braking distances when you do.")
         return 1
     if args.stop_m >= args.clear_m:
         print("--stop-m must be less than --clear-m")
@@ -347,6 +396,7 @@ def main() -> int:
         pivot_timeout_s=args.pivot_timeout_s,
         backoff_s=args.backoff_s,
         blind_hold_s=args.blind_hold_s,
+        escape_duty=args.escape_duty,
     )
     avoider.enabled = not args.no_avoid
 
@@ -379,8 +429,14 @@ def main() -> int:
         return None
 
     try:
-        print("--- opening stereo (both sensors, ~2 s) ---")
-        sensor = Sensor(3)
+        fan = config.TOF_ENABLED and not args.no_tof
+        print("--- opening stereo (both sensors, ~2 s)"
+              + (" and the ToF fan (firmware upload, seconds)" if fan else "")
+              + " ---")
+        bumps_on = config.BUMP_ENABLED and not args.no_bump
+        sensor = Sensor(3, use_tof=fan, use_bump=bumps_on)
+        stall = StallDetector()
+        last_bump = None
         try:
             sensor.start()
         except Exception as exc:
@@ -389,6 +445,16 @@ def main() -> int:
             print(f"\nstereo failed to start: {exc}")
             sensor.close()
             return 1
+        if fan:
+            if sensor.tof_names:
+                print(f"    ToF fan: {', '.join(sensor.tof_names)}")
+            if sensor.tof_error:
+                # Not fatal, and deliberately so: the fan is an addition to a
+                # guard that already works, and a sensor that can stop the robot
+                # is a new way for the robot to be stopped.
+                print(f"    ToF fan DEGRADED — {sensor.tof_error}\n"
+                      f"    driving on stereo alone, which is blind below the "
+                      f"camera band and inside {config.STEREO_MIN_RANGE_M:.2f} m")
         if not sensor.calibrated:
             print(
                 "\n*** UNCALIBRATED STEREO — distances are approximate ***\n"
@@ -437,7 +503,8 @@ def main() -> int:
                             duty_percent = max(0.0, duty_percent - DUTY_STEP_PERCENT)
                             print(f"\nduty={duty_percent:g}%")
                         elif key == b"]":
-                            duty_percent = min(100.0, duty_percent + DUTY_STEP_PERCENT)
+                            duty_percent = min(MAX_DUTY_PERCENT,
+                                               duty_percent + DUTY_STEP_PERCENT)
                             print(f"\nduty={duty_percent:g}%")
                         elif key == b" ":
                             latch = None
@@ -455,6 +522,25 @@ def main() -> int:
                             latch = DIRECTION_KEYS[key]
                             avoider.reset()
                             print(f"\n{DIRECTION_NAMES.get(latch, latch)}")
+
+                    # A jammed wheel, read as contact. Fed BEFORE the reading
+                    # is taken so a stall confirmed now is in the map this tick
+                    # decides on. `last_sent` is what the board is holding —
+                    # the duty the telemetry in hand actually describes.
+                    if sensor.bumps is not None:
+                        bump = stall.update(
+                            time.monotonic(), last_sent or (0, 0), dt.last_status
+                        )
+                        sensor.bumps.record(bump)
+                        # Print the EDGE, with the telemetry that justified it.
+                        # A bump is a claim about the world made from two
+                        # numbers, and reading them off a scrolling status line
+                        # after the fact is not possible.
+                        if stall.active != last_bump:
+                            if bump is not None:
+                                print(f"\nBUMP: {bump.describe()}")
+                            last_bump = stall.active
+                        dt.request_status()
 
                     reading = sensor.reading
                     decision = avoider.decide(latch, round(duty_percent * 10), reading)
@@ -510,8 +596,15 @@ def main() -> int:
                         last_hud = now
                         ahead = None if reading is None else reading.clearance_m
                         clear = "----" if ahead is None else f"{ahead:.2f}"
+                        # One letter per sector, left to right, for which sensor
+                        # produced it: B row band, G ground plane, T a ToF array,
+                        # X a wheel stall (contact), c the clear-ground
+                        # fallback, . nothing knew. A column
+                        # that reads T while the robot slows is the fan earning
+                        # its place; one that reads . is a blind sector.
                         print(
-                            f"\r ahead {clear:>5} m │ {decision.state:<7} │ "
+                            f"\r ahead {clear:>5} m │ {sector_sources(reading)} │ "
+                            f"{decision.state:<7} │ "
                             f"head {decision.heading_deg:+3.0f}° │ "
                             f"L{command[0]:+5d} R{command[1]:+5d} │ duty {duty_percent:3.0f}% │ "
                             f"avoid {'ON ' if avoider.enabled else 'OFF'} ",

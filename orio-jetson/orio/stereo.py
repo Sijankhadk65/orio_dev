@@ -10,9 +10,28 @@ The pipeline, per frame pair:
     both sensors (Argus) -> rectify -> SGBM disparity -> depth -> sector map
 
 `StereoCamera` owns the two capture pipelines, `DepthEstimator` turns a pair
-into metric depth, and `obstacles()` reduces a depth map to the handful of
-numbers a planner actually wants: the nearest obstacle in each of a few
-vertical sectors across the field of view.
+into metric depth and then into the handful of numbers a planner actually
+wants: the nearest obstacle in each of a few vertical sectors across the field
+of view.
+
+## Two reductions, not one
+
+`obstacles()` is the original and still the default: keep a fixed BAND of image
+rows and take a robust low percentile of the depths in each sector's columns.
+The band is a crop, and it earns its keep by excluding the floor — which is
+always "close" and would otherwise have the robot believe it is permanently
+blocked — but it excludes the floor by throwing away the bottom of the frame,
+and with it everything short enough to sit down there. A box, a shoe, a cable
+spool: tall enough to stop the wheels, too low to be looked at.
+
+`DepthEstimator.obstacles()` is the answer to that (`STEREO_GROUND_PLANE`, off
+until the rig is measured — see config). It reprojects each pixel into the
+robot frame and keeps it if it stands between the floor tolerance and the
+robot's own height, so the floor eliminates itself by GEOMETRY rather than by
+cropping and the whole lower frame becomes usable. It is authoritative only as
+far as the disparity noise allows (`STEREO_HEIGHT_TRUST_M`); past that the band
+answers, and the two fuse by `min()`. The shared arithmetic — and the ToF fan's
+half of it — lives in `orio/sectors.py`.
 
 Two hardware quirks are baked in, both measured on the bench rather than
 assumed, and both silent failures if you get them wrong:
@@ -48,67 +67,27 @@ import logging
 import math
 import threading
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 from . import config
+from .sectors import ObstacleMap, Sector, SectorGeometry, fill_clear, fuse
 
 log = logging.getLogger(__name__)
 
 
-@dataclass(frozen=True)
-class Sector:
-    """One angular slice of the view ahead.
-
-    `distance_m` is the *near* edge of what occupies this sector — a robust low
-    percentile of the sector's depths, not the mean, because the closest thing
-    is what you hit. `None` means unknown, which is not the same as clear.
-    """
-
-    index: int
-    angle_deg: float  # sector centre, negative = left of straight ahead
-    distance_m: float | None
-    valid_frac: float
-
-    @property
-    def known(self) -> bool:
-        return self.distance_m is not None
-
-
-@dataclass(frozen=True)
-class ObstacleMap:
-    """Nearest obstacle per sector, plus the summary a planner would ask for.
-
-    Deliberately free of any notion of speed or steering — see the module
-    docstring. This is a description of the world, not a decision about it.
-    """
-
-    sectors: tuple[Sector, ...]
-    timestamp: float
-    calibrated: bool
-
-    @property
-    def nearest(self) -> Sector | None:
-        """The closest known obstacle anywhere in view."""
-        known = [s for s in self.sectors if s.known]
-        return min(known, key=lambda s: s.distance_m) if known else None
-
-    def clearance_ahead(self, sectors: int = 3) -> float | None:
-        """Nearest known obstacle in the middle `sectors` — the path straight on."""
-        mid = len(self.sectors) // 2
-        half = sectors // 2
-        window = self.sectors[max(0, mid - half) : mid + half + 1]
-        known = [s.distance_m for s in window if s.known]
-        return min(known) if known else None
-
-    def describe(self) -> str:
-        """One-line human summary, for logs and the debug overlay."""
-        n = self.nearest
-        if n is None:
-            return "no depth (unknown everywhere)"
-        side = "ahead" if abs(n.angle_deg) < 10 else ("left" if n.angle_deg < 0 else "right")
-        cal = "" if self.calibrated else " (uncalibrated, approximate)"
-        return f"nearest {n.distance_m:.2f} m {side}{cal}"
+# `Sector` and `ObstacleMap` are DEFINED in orio/sectors.py and re-exported
+# here, unchanged. They moved when the ToF fan arrived: a second sensor has to
+# emit the same shape, and importing this module to get the dataclass would drag
+# OpenCV and Argus in behind it. Every `from .stereo import ObstacleMap` still
+# works, which is the point.
+__all__ = [
+    "ObstacleDetector",
+    "ObstacleMap",
+    "Sector",
+    "StereoCamera",
+    "DepthEstimator",
+    "obstacles",
+]
 
 
 def _argus_pipeline(sensor_id: int, width: int, height: int, fps: int) -> str:
@@ -266,6 +245,13 @@ class DepthEstimator:
         self.calibrated = False
         self._focal_px = config.STEREO_FALLBACK_FOCAL_PX_AT_640 * (width / 640.0)
         self._vshift = int(round(config.STEREO_FALLBACK_VSHIFT_FRAC * height))
+        # Principal point. Uncalibrated it is the frame centre by assumption;
+        # rectification moves it a long way (85 px off centre on this rig), and
+        # the ground-plane classification below is a per-pixel RAY DIRECTION, so
+        # this is not the harmless-looking default it appears to be.
+        self._cx = width / 2.0
+        self._cy = height / 2.0
+        self._ground: tuple | None = None  # cached ray geometry, see _ground_geometry
         # Uncalibrated the frame is uncropped, so the datasheet FOV is right;
         # `_load_calibration` replaces this with the rectified value.
         self.hfov_deg = config.STEREO_HFOV_DEG
@@ -331,7 +317,9 @@ class DepthEstimator:
             cv2.remap(ones, *self._maps[1], cv2.INTER_LINEAR) > 0
         )
         self._focal_px = float(P1[0, 0])
+        self._cx, self._cy = float(P1[0, 2]), float(P1[1, 2])
         self._baseline_m = abs(float(P2[0, 3] / P2[0, 0]))
+        self._ground = None
         # Sector angles must come from the rectified focal, not the datasheet
         # FOV: rectification rescales the frame (see the alpha note above), so
         # the two agree only by accident. Reading 73 deg off a 48.7 deg frame
@@ -375,6 +363,100 @@ class DepthEstimator:
                 mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY,
             )
         return self._matcher
+
+    def _ground_geometry(self, shape):
+        """Cached ray directions for the ground-plane reduction, per frame size.
+
+        Every pixel's azimuth and elevation are fixed by the intrinsics: only
+        the ranges change between frames. Building the `SectorGeometry` once and
+        keeping it is what makes classifying by height affordable at 30 Hz —
+        rebuilt per frame it is several milliseconds of trigonometry over 10^5
+        pixels, and the whole reduction has to fit inside a 33 ms budget shared
+        with SGBM.
+
+        Returns `(geometry, range_multiplier, stride)`. The multiplier turns
+        DEPTH (the z component, which is what the disparity gives) into RANGE
+        along the ray, which is what the geometry expects. Confusing the two
+        understates everything off-axis — by 24% at the corner of this frame.
+        """
+        import numpy as np
+
+        h, w = shape
+        stride = max(1, config.STEREO_GROUND_STRIDE)
+        if self._ground is not None and self._ground[3] == (h, w, stride):
+            return self._ground[:3]
+
+        us = np.arange(0, w, stride, dtype=np.float64)
+        vs = np.arange(0, h, stride, dtype=np.float64)
+        uu, vv = np.meshgrid(us, vs)
+        # Pinhole ray, z normalised to 1. Image v grows DOWNWARD and the sensor
+        # frame's y is UP, hence the sign.
+        dx = (uu - self._cx) / self._focal_px
+        dy = -(vv - self._cy) / self._focal_px
+        norm = np.sqrt(dx * dx + dy * dy + 1.0)
+        geom = SectorGeometry(
+            np.degrees(np.arctan2(dx, 1.0)),
+            np.degrees(np.arcsin(dy / norm)),
+            height_m=config.STEREO_CAM_HEIGHT_M,
+            pitch_deg=config.STEREO_CAM_PITCH_DEG,
+            sectors=config.STEREO_SECTORS,
+            hfov_deg=self.hfov_deg,
+        )
+        self._ground = (geom, norm.astype(np.float32), stride, (h, w, stride))
+        return self._ground[:3]
+
+    def obstacles(self, depth) -> ObstacleMap:
+        """Depth map -> sector map, by whichever reductions are switched on.
+
+        With `STEREO_GROUND_PLANE` off this is exactly the row band and nothing
+        else — the behaviour every `AVOID_*` threshold was tuned against.
+
+        With it on, TWO reductions run and fuse by `min()`:
+
+        * the ground plane, over the whole frame, out to `STEREO_HEIGHT_TRUST_M`
+          — which is where the low obstacles live, and where the height estimate
+          is worth more than the disparity noise;
+        * the row band, unchanged, which keeps answering past that range.
+
+        They are not alternatives and the fusion is not a fallback: each is
+        authoritative over a different volume, and `min()` is the conservative
+        combination for the same reason it is between stereo and ToF. Sectors
+        that are still unknown afterwards take `clear_m` as an answer of last
+        resort (see `sectors.fill_clear`).
+        """
+        band = obstacles(depth, calibrated=self.calibrated, hfov_deg=self.hfov_deg,
+                         source="stereo-band")
+        if not config.STEREO_GROUND_PLANE:
+            return band
+
+        geom, mult, stride = self._ground_geometry(depth.shape)
+        ranges = depth[::stride, ::stride] * mult
+        ground = ObstacleMap(
+            sectors=geom.reduce(
+                ranges,
+                floor_tol_m=config.STEREO_FLOOR_TOL_M,
+                ceiling_m=config.ROBOT_HEIGHT_M,
+                min_valid_frac=config.STEREO_MIN_VALID_FRAC,
+                trust_m=config.STEREO_HEIGHT_TRUST_M,
+                source="stereo-ground",
+            ),
+            timestamp=band.timestamp,
+            calibrated=self.calibrated,
+        )
+        return fill_clear(fuse(band, ground))
+
+    def classify(self, depth):
+        """Per-pixel class for the debug view, at the reduction's own stride.
+
+        `(classes, stride)` — 0 unknown, 1 floor, 2 obstacle, 3 above the robot.
+        """
+        geom, mult, stride = self._ground_geometry(depth.shape)
+        classes = geom.classify(
+            depth[::stride, ::stride] * mult,
+            floor_tol_m=config.STEREO_FLOOR_TOL_M,
+            ceiling_m=config.ROBOT_HEIGHT_M,
+        )
+        return classes.reshape(depth[::stride, ::stride].shape), stride
 
     def rectify(self, left, right):
         """(left, right) BGR pair -> the same pair as SGBM will see it.
@@ -436,12 +518,21 @@ def obstacles(
     calibrated: bool,
     sectors: int = config.STEREO_SECTORS,
     hfov_deg: float = config.STEREO_HFOV_DEG,
+    source: str = "stereo-band",
 ) -> ObstacleMap:
     """Reduce a depth map to the nearest obstacle in each vertical sector.
 
-    Only the band of the frame that could hold something the robot would
-    collide with is considered (see STEREO_BAND_*): the ceiling and the floor
-    underfoot are always "close" and would otherwise dominate every reading.
+    The ROW BAND reduction, in its original form: everything the sector map was
+    built on and every AVOID_* threshold was tuned against. Only the band of the
+    frame that could hold something the robot would collide with is considered
+    (see STEREO_BAND_*): the ceiling and the floor underfoot are always "close"
+    and would otherwise dominate every reading.
+
+    Its blind spot is structural and is why `DepthEstimator.obstacles()` exists:
+    an obstacle below the band's bottom edge is not merely far, it is discarded
+    before the sector map is built. Prefer that method — this stays a free
+    function because it needs nothing but a depth map, which is what makes it
+    testable and what makes the regression path one env var wide.
 
     Distance per sector is the 10th percentile of valid depths, not the
     minimum — a single mismatched pixel at 0.3 m would otherwise stop the robot
@@ -466,7 +557,8 @@ def obstacles(
         )
         centre = (edges[i] + edges[i + 1]) / 2.0
         angle = (centre / w - 0.5) * hfov_deg
-        out.append(Sector(index=i, angle_deg=angle, distance_m=distance, valid_frac=frac))
+        out.append(Sector(index=i, angle_deg=angle, distance_m=distance,
+                          valid_frac=frac, source=source))
 
     return ObstacleMap(sectors=tuple(out), timestamp=time.time(), calibrated=calibrated)
 
@@ -488,11 +580,7 @@ class ObstacleDetector:
         with self._lock:
             left, right = self._camera.read()
             depth = self._estimator.depth(left, right)
-        return obstacles(
-            depth,
-            calibrated=self._estimator.calibrated,
-            hfov_deg=self._estimator.hfov_deg,
-        )
+        return self._estimator.obstacles(depth)
 
     def sense_with_frames(self):
         """`(ObstacleMap, left, depth)` — for the debug view's overlay.
@@ -504,12 +592,7 @@ class ObstacleDetector:
             left, right = self._camera.read()
             left, right = self._estimator.rectify(left, right)
             depth = self._estimator.depth(left, right, rectified=True)
-        omap = obstacles(
-            depth,
-            calibrated=self._estimator.calibrated,
-            hfov_deg=self._estimator.hfov_deg,
-        )
-        return omap, left, depth
+        return self._estimator.obstacles(depth), left, depth
 
     def close(self) -> None:
         self._camera.close()
