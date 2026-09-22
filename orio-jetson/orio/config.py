@@ -628,9 +628,11 @@ STEREO_CALIBRATION = Path(
 # 240 tall, stored as a fraction so it scales with STEREO_HEIGHT. It was 31 px
 # at 360 on the 1080p crop; the ratio between the two is exactly the 1.71x crop
 # factor, which is a satisfying independent confirmation of both numbers.
+# 2026-09-22: the module has since shifted; check_stereo_eyes.py now reads
+# -4.8 px at 360 tall (1066 inliers, 5 trials agreeing), so 4.8/360.
 STEREO_BASELINE_M = float(_env("ORIO_STEREO_BASELINE_M", "0.06"))
 STEREO_FALLBACK_FOCAL_PX_AT_640 = float(_env("ORIO_STEREO_FOCAL_PX_AT_640", "432"))
-STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(9.0 / 240.0)))
+STEREO_FALLBACK_VSHIFT_FRAC = float(_env("ORIO_STEREO_VSHIFT_FRAC", str(4.8 / 360.0)))
 
 # Horizontal field of view of the uncropped binned frame, from the datasheet
 # (83/73/50 deg diagonal/horizontal/vertical). Only the *uncalibrated* path uses
