@@ -1025,25 +1025,29 @@ BUMP_STALL_ERPM = int(_env("ORIO_BUMP_STALL_ERPM", "50"))
 #     duty 22 (steer)  -> max(50,  59) =  59   against ~197 expected. Clear.
 BUMP_STALL_ERPM_PER_MILLE = float(_env("ORIO_BUMP_STALL_ERPM_PER_MILLE", "2.7"))
 
-# Amps, and MEASURED 2026-09-18 to be useless at this duty — hence 0.0, which
-# disables the check entirely. Keep it as a knob, not as a condition.
+# Amps, and the condition that stops a start from reading as a bump.
 #
-# The measurement, at 5% duty on a smooth floor (logs from tools/
-# wheel_telemetry.py):
+# It was 0.0 (disabled) after 2026-09-18 read driving as 0.04 A and a jam as
+# 0.06 A. Those numbers were 100x low: drivetrain firmware 1.0.0 divided the
+# VESC's centi-amps by 100 and sent whole amps in a centi-amp field (see
+# drivetrain._current_scale). Real values, from ~/spinup.csv on 2026-09-22 at
+# 5% duty — 10 runs, left wheel only, in 1 A steps:
 #
-#     driving on the ground   current max 0.04 A    eRPM median 447
-#     jammed against a wall   current max 0.06 A    eRPM median   0
+#     cruising                  ~1 A
+#     spin-up from rest          3-4 A for at most 0.17 s, eRPM climbing
+#     jammed / pushing           4-6 A, eRPM at or near 0
+#     ESC not driving            0 A, eRPM 0
 #
-# 0.04 vs 0.06 A is not a threshold, it is two adjacent readings at the bottom
-# of the ESC's measurement range. The physics says so too: 5% of 39.5 V is
-# ~2 V across the winding, so a stall is limited to whatever 2 V pushes through
-# it, and driving the robot on a smooth floor costs about 1.6 W. Current only
-# becomes a discriminator at a duty this robot is not allowed to use.
+# eRPM alone could not tell spin-up from a jam: the wheel takes ~0.3 s to pass
+# the 135 eRPM limit and BUMP_CONFIRM_S is 0.25, so it confirmed a bump on 8 of
+# those 10 starts — on the robot it bumped every time W was pressed. Replaying
+# the runs through StallDetector: at 3.5 A no start confirms, and every jam and
+# slow push still does. 4.5 A missed a real jam that sat at 4.x A.
 #
-# eRPM, by contrast, separates 447 from 0. That is the whole signal at 5%, and
-# a threshold set anywhere in between cannot be wrong. Set this ABOVE zero only
-# if the two populations have been measured apart on the robot in front of you.
-BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "0.0"))
+# Not scaled by duty. A stall at the ~2% duty steering throttles to draws less
+# and can be missed — the cheap direction, the same as having no bump sensor.
+# Re-measure once 1.0.1 is flashed: it reports centi-amps, not 1 A steps.
+BUMP_STALL_CURRENT_A = float(_env("ORIO_BUMP_STALL_CURRENT_A", "3.5"))
 
 # How long all three must hold. NOT noise filtering: a hub motor coming up from
 # rest looks exactly like a stall for real milliseconds — duty high, eRPM ~0,

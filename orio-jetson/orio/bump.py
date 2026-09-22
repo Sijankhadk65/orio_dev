@@ -109,16 +109,16 @@ class StallDetector:
     each pair — so the map was marked on one side, `_roomier_side` kept picking
     a side that was not open, and the robot drove back into the obstacle.
 
-    There was a third condition — current being drawn — and measuring it on
-    2026-09-18 retired it. At the 5% duty this robot is limited to, driving
-    draws 0.04 A and a jam draws 0.06, two adjacent readings at the bottom of
-    the ESC's range, while eRPM separates 447 from 0. `min_current_a` is
-    therefore 0.0 by default, which skips the check; it stays configurable
-    because at a duty this robot is not allowed to use it would work.
+    And the wheel must be drawing real current (`min_current_a`, 3.5 A). A
+    slow wheel alone is also every start: from rest the wheel takes ~0.3 s to
+    pass the eRPM limit, longer than `confirm_s`, and without current this
+    confirmed a bump on nearly every press of W. Spin-up draws 3-4 A for under
+    0.2 s while a jam holds 4-6 A (config.BUMP_STALL_CURRENT_A has the data).
+    Current was briefly retired on readings that turned out to be 100x low —
+    see drivetrain._current_scale.
 
-    That puts all the weight on eRPM, and makes `Status.estopped` load-bearing:
-    a board that is refusing to drive looks exactly like a board driving into a
-    wall, and only the e-stop flag tells them apart.
+    It also separates contact from an ESC that is not driving at all (0 A),
+    alongside `Status.estopped`, which remains the explicit check.
 
     `confirm_s` is not noise filtering. A hub motor takes real milliseconds to
     come up from rest, and the whole of that looks exactly like a stall: duty

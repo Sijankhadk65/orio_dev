@@ -96,6 +96,9 @@ def main() -> int:
     spinning = {"left": 0.0, "right": 0.0}  # peak current while actually turning
     erpm_moving = {"left": [], "right": []}  # eRPM whenever the wheel was turning
     erpm_still = {"left": 0, "right": 0}     # samples with the wheel stopped
+    amps_moving = {"left": [], "right": []}  # current while turning
+    amps_still = {"left": [], "right": []}   # current while stopped
+    identity = None
     samples = 0
     no_status = 0      # the board sent no STATUS frame at all
     invalid_wheels = 0  # a STATUS frame arrived, but a wheel in it was not valid
@@ -134,7 +137,8 @@ def main() -> int:
 
     try:
         with link:
-            print(f"board: {link.identity}\n")
+            identity = link.identity
+            print(f"board: {identity}\n")
             started = time.monotonic()
             last_sent = None
             while (time.monotonic() - started) < args.seconds:
@@ -186,8 +190,10 @@ def main() -> int:
                     if abs(tel.erpm) > config.BUMP_STALL_ERPM:
                         spinning[side] = max(spinning[side], tel.current_a)
                         erpm_moving[side].append(abs(tel.erpm))
+                        amps_moving[side].append(tel.current_a)
                     else:
                         erpm_still[side] += 1
+                        amps_still[side].append(tel.current_a)
                     cells.append(
                         f"{side[0].upper()} {tel.erpm:+6d} erpm {tel.current_a:6.2f} A "
                         f"{tel.v_in:5.1f} V f{tel.fault_code}"
@@ -231,24 +237,32 @@ def main() -> int:
         print(f"  {side:5s} eRPM median-while-moving {med:5d}   "
               f"stopped in {erpm_still[side]}/{samples} samples")
 
-    # What this run says about each threshold. Current earns its place only if
-    # the two populations are far enough apart to put a line between them; on
-    # this robot at 5% duty they are not, and saying "set it to the midpoint of
-    # 0.01 and 0.06" is worse than saying nothing.
-    turning = max(spinning.values())
-    stalled = max(peaks.values())
+    # What this run says about the current threshold. MEDIANS, not peaks: the
+    # peaks both land on the same few samples — spin-up and the moment a jam
+    # starts — so "peak while turning" and "peak overall" read alike even when
+    # cruising and jammed are 1 A against 5 A. That comparison once told us
+    # current was useless, on readings that were also 100x low (firmware 1.0.0).
+    def median(xs):
+        xs = sorted(xs)
+        return xs[len(xs) // 2] if xs else None
+
     print()
-    if stalled > 2.0 * turning and stalled - turning >= 0.5:
-        print(f"CURRENT looks usable: {turning:.2f} A while turning against "
-              f"{stalled:.2f} A overall.\n"
-              f"  If that peak was a genuine jam, ORIO_BUMP_STALL_CURRENT_A belongs\n"
-              f"  between them — around {(turning + stalled) / 2:.1f}.")
+    if identity is not None and (identity.fw_major, identity.fw_minor, identity.fw_patch) <= (1, 0, 0):
+        print("board firmware 1.0.0 reports current in whole amps; flash 1.0.1 for 0.01 A\n")
+    cruising = median([a for side in amps_moving for a in amps_moving[side]])
+    jammed = median([a for side in amps_still for a in amps_still[side]])
+    if cruising is None or jammed is None or duty <= 0:
+        print("CURRENT: needs a run with duty applied that both turned and stalled\n"
+              "  to compare the two.")
+    elif jammed >= 2.0 * cruising and jammed - cruising >= 1.0:
+        print(f"CURRENT separates: median {cruising:.2f} A turning against "
+              f"{jammed:.2f} A stopped under duty.\n"
+              f"  ORIO_BUMP_STALL_CURRENT_A belongs between them "
+              f"(now {config.BUMP_STALL_CURRENT_A:g}). Keep it above the spin-up\n"
+              f"  current too — the first ~0.2 s of a start.")
     else:
-        print(f"CURRENT is NOT a usable threshold here: {turning:.2f} A while turning\n"
-              f"  against {stalled:.2f} A overall. Those are too close to put a line\n"
-              f"  between, and at low duty they will stay that way — the applied\n"
-              f"  volts cap the stall current. Leave ORIO_BUMP_STALL_CURRENT_A at 0\n"
-              f"  (disabled) and let eRPM carry it.")
+        print(f"CURRENT does not separate in this run: median {cruising:.2f} A turning\n"
+              f"  against {jammed:.2f} A stopped under duty.")
 
     still = sum(erpm_still.values())
     moving_any = sum(len(v) for v in erpm_moving.values())

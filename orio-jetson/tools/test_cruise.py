@@ -779,35 +779,35 @@ def test_stall_detection() -> None:
     check("current with the wheel turning is load, not contact",
           confirm(det, t0, lambda now: status(
               left=wheel(erpm=3000, current_a=20.0), at=now)) is None)
-    # MEASURED 2026-09-18, and it retired the current condition: at 5% duty
-    # driving draws 0.04 A and a jam draws 0.06, while eRPM separates 447 from
-    # 0. A stall must confirm on the real jam figure, which is BELOW anything a
-    # current threshold could have been set to.
+    # MEASURED 2026-09-22 at 5% duty (true amps; the 2026-09-18 "0.04 / 0.06 A"
+    # were the same currents read 100x low): a jam holds 4-6 A at ~0 eRPM,
+    # cruising is ~1 A at ~447.
     det = StallDetector()
-    check("a jam at the MEASURED current (0.06 A) confirms",
+    check("a jam at the measured current (5 A) confirms",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=0, current_a=0.06), at=now)) is not None)
+              left=wheel(erpm=0, current_a=5.0), at=now)) is not None)
     det = StallDetector()
-    check("and the measured DRIVING case (447 erpm at duty 50) does not",
+    check("and the measured DRIVING case (447 erpm, 1 A, duty 50) does not",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=447, current_a=0.04),
-              right=wheel(erpm=447, current_a=0.04), at=now),
+              left=wheel(erpm=447, current_a=1.0),
+              right=wheel(erpm=447, current_a=1.0), at=now),
                   duty=(50, 50)) is None)
     # The threshold scales, so the SAME eRPM at a duty that should be turning
     # the wheel six times faster is a stall. That is the point of scaling it.
     det = StallDetector()
     check("447 erpm at duty 300 would be a stall, because it should be ~2670",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=447, current_a=0.04),
-              right=wheel(erpm=447, current_a=0.04), at=now),
+              left=wheel(erpm=447, current_a=5.0),
+              right=wheel(erpm=447, current_a=5.0), at=now),
                   duty=(300, 300)) is not None)
     det = StallDetector()
-    check("a free-running wheel's negative current noise cannot veto a stall",
+    check("a still wheel drawing nothing is an ESC not driving, not contact",
+          confirm(det, t0, lambda now: status(
+              left=wheel(erpm=0, current_a=0.0), at=now)) is None)
+    det = StallDetector(min_current_a=0.0)
+    check("0 A disables the current condition rather than failing it",
           confirm(det, t0, lambda now: status(
               left=wheel(erpm=0, current_a=-0.01), at=now)) is not None)
-
-    # The knob still works when a robot is driven hard enough for current to
-    # separate; it is disabled by measurement, not removed.
     det = StallDetector(min_current_a=5.0)
     check("an explicit current threshold still vetoes below it",
           confirm(det, t0, lambda now: status(
@@ -817,8 +817,7 @@ def test_stall_detection() -> None:
           confirm(det, t0, lambda now: status(
               left=wheel(erpm=0, current_a=20.0), at=now)) is not None)
 
-    # With current no longer vetoing, the e-stop flag is the only thing
-    # separating "driving into a wall" from "refusing to drive at all".
+    # The e-stop flag is the explicit check for "refusing to drive at all".
     det = StallDetector()
     check("an e-stopped board is not a stall, however jammed it looks",
           confirm(det, t0, jammed(estopped=True)) is None)
@@ -895,8 +894,8 @@ def test_stall_detection() -> None:
                                          ("L101 R0", 101, 0)):
         det = StallDetector()
         got = confirm(det, t0, lambda now, l=left_erpm, r=right_erpm: status(
-            left=wheel(erpm=l, current_a=0.05),
-            right=wheel(erpm=r, current_a=0.05), at=now), duty=(50, 50))
+            left=wheel(erpm=l, current_a=5.0),
+            right=wheel(erpm=r, current_a=5.0), at=now), duty=(50, 50))
         check(f"the logged bump {label} is read as BOTH wheels stalled",
               got is not None and got.side == "both",
               "not detected" if got is None else got.side)
@@ -906,13 +905,16 @@ def test_stall_detection() -> None:
     det = StallDetector()
     check("slow steering at duty 22 is not a stall",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=197, current_a=0.04),
-              right=wheel(erpm=197, current_a=0.04), at=now), duty=(22, 22)) is None)
+              left=wheel(erpm=197, current_a=1.0),
+              right=wheel(erpm=197, current_a=1.0), at=now), duty=(22, 22)) is None)
     det = StallDetector()
+    # (At duty 22 a real stall draws only ~2 A and falls under the fixed
+    # BUMP_STALL_CURRENT_A — a known miss, in the cheap direction. This checks
+    # the eRPM scaling, at a current that clears the floor.)
     check("but a wheel that stops AT that same low duty is",
           confirm(det, t0, lambda now: status(
-              left=wheel(erpm=10, current_a=0.04),
-              right=wheel(erpm=10, current_a=0.04), at=now), duty=(22, 22)) is not None)
+              left=wheel(erpm=10, current_a=4.0),
+              right=wheel(erpm=10, current_a=4.0), at=now), duty=(22, 22)) is not None)
 
     # A change of command starts a new episode, so the tail of one manoeuvre
     # cannot confirm a stall that belongs to the next.
@@ -940,6 +942,60 @@ def test_stall_detection() -> None:
     check("and at the slowest the avoider can scale it down to",
           confirm(det, t0, jammed(), duty=(crawling, crawling)) is not None,
           f"duty {crawling} vs floor {config.BUMP_MIN_DUTY}")
+
+
+# Left wheel, 5% duty, from ~/spinup.csv on 2026-09-22, as (t, erpm, amps).
+# Board firmware 1.0.0, so amps in whole steps. A start from rest, and a jam.
+_SPIN_UP = [(0.00, 0, 0), (0.06, 0, 2), (0.08, 125, 3), (0.10, 107, 3),
+            (0.15, 107, 3), (0.19, 93, 4), (0.21, 65, 4), (0.25, 128, 4),
+            (0.29, 128, 3), (0.34, 201, 3), (0.40, 226, 3), (0.50, 270, 2),
+            (0.60, 289, 2), (0.80, 342, 2), (1.00, 352, 1)]
+_JAM = [(t / 50.0, 0 if t % 7 else 83, 4 if t % 3 else 5) for t in range(60)]
+
+
+def test_stall_on_recorded_telemetry() -> None:
+    """The default thresholds against what the wheel really did.
+
+    eRPM alone confirmed a bump on 8 of 10 recorded starts — the wheel takes
+    ~0.3 s to pass the limit and BUMP_CONFIRM_S is 0.25 — which on the robot
+    was a bump every time W was pressed. Current is what separates the two.
+    """
+    print("\nrecorded telemetry: a start is not a stall, a jam is")
+
+    def replay(det, trace):
+        base = time.monotonic()
+        out = None
+        for t, erpm, amps in trace:
+            now = base + t
+            out = det.update(now, (50, 50), status(
+                left=wheel(erpm=erpm, current_a=float(amps)), at=now)) or out
+        return out
+
+    check("starting from rest is not a bump", replay(StallDetector(), _SPIN_UP) is None)
+    check("which eRPM alone would have called one",
+          replay(StallDetector(min_current_a=0.0), _SPIN_UP) is not None)
+    check("a recorded jam at 4-5 A still confirms", replay(StallDetector(), _JAM) is not None)
+
+
+def test_current_scale_follows_firmware() -> None:
+    """Drivetrain 1.0.0 sent whole amps in the centi-amp field; 1.0.1 fixes it."""
+    print("\nSTATUS current is read in the firmware's own units")
+    from orio.drivetrain import Identity, _current_scale, _parse_status
+
+    # estopped, then per side: erpm 4B, current 2B, v_in 2B, fault, valid.
+    def frame(raw_current):
+        side = ((0).to_bytes(4, "little", signed=True)
+                + raw_current.to_bytes(2, "little", signed=True)
+                + (388).to_bytes(2, "little", signed=True) + bytes([0, 1]))
+        return bytes([0]) + side + side
+
+    old = Identity(role=1, fw_major=1, fw_minor=0, fw_patch=0, proto_version=1)
+    new = Identity(role=1, fw_major=1, fw_minor=0, fw_patch=1, proto_version=1)
+    check("1.0.0: a raw 5 is 5 A, not 0.05",
+          _parse_status(frame(5), _current_scale(old)).wheels["left"].current_a == 5.0)
+    check("1.0.1: a raw 512 is 5.12 A",
+          abs(_parse_status(frame(512), _current_scale(new)).wheels["left"].current_a - 5.12) < 1e-9)
+    check("no identity yet reads as the fixed firmware", _current_scale(None) == 0.01)
 
 
 def test_escape_duty() -> None:
@@ -1188,6 +1244,8 @@ def main() -> int:
         test_tof_axial_distance,
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
+        test_stall_on_recorded_telemetry,
+        test_current_scale_follows_firmware,
         test_escape_duty,
         test_contact_skips_the_look_around,
         test_bump_pivots_away_with_real_angles,
