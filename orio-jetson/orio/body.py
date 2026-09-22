@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from . import config
 from .avoid import Sensor, avoider_from_config, look_around
 from .bump import StallDetector
-from .imu import RvcReader, reader_from_config
+from .imu import RvcReader, TurnTracker, reader_from_config
 from .tilt import TiltGuard
 from .drivetrain import DRIVE_REFRESH_S, Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
@@ -373,6 +373,15 @@ class Body:
             return None
         alarm = self._tilt.update(self._imu.fresh(max_age_s=config.IMU_STALE_S))
         return None if alarm is None else alarm.reason
+
+    def turn_tracker(self) -> TurnTracker | None:
+        """A fresh tracker for one turn, or None when there is no IMU.
+
+        None is not a failure: it means this turn is timed, the way every turn
+        was before the IMU existed. Callers keep their timed path for exactly
+        that reason — see `config.SEEK_TURN_BURST_S`.
+        """
+        return None if self._imu is None else TurnTracker(self._imu)
 
     @property
     def sensor(self) -> Sensor | None:

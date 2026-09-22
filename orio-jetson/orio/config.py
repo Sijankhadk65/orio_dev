@@ -513,11 +513,26 @@ SEEK_TIMEOUT_S = float(_env("ORIO_SEEK_TIMEOUT_S", "60"))
 SEEK_ARRIVE_M = float(_env("ORIO_SEEK_ARRIVE_M", str(AVOID_CLEAR_M)))
 
 # A target within this many degrees of straight ahead counts as lined up; wider
-# than that and Orio pivots before driving. One burst is short deliberately —
-# there is no odometry, so heading is corrected by looking again, not by
-# calculating how long to turn.
+# than that and Orio pivots before driving.
 SEEK_CENTRE_DEG = float(_env("ORIO_SEEK_CENTRE_DEG", "9"))
+
+# How far one pivot toward the target turns the robot, WITH the IMU: the turn
+# ends when the body has actually turned this far. 20 deg is about what the old
+# timed burst delivered (the calibration run pivoted ~71 deg in 1.0 s at
+# AVOID_ESCAPE_DUTY), and it stays deliberately short — a pivot held down
+# through a look oscillates, and the correction comes from looking again.
+SEEK_TURN_DEG = float(_env("ORIO_SEEK_TURN_DEG", "20"))
+
+# WITHOUT the IMU, or if it stops answering mid-turn, the pivot is this long
+# and unmeasured — which is what every turn was before the sensor was fitted.
 SEEK_TURN_BURST_S = float(_env("ORIO_SEEK_TURN_BURST_S", "0.3"))
+
+# The measured turn's own stop, for the case where the robot is commanded to
+# pivot and does not: a wheel against a skirting board, a caster wedged, a
+# carpet edge. Without it a turn that never reaches SEEK_TURN_DEG would hold
+# the wheels down until the seek timeout. Generous against the ~0.3 s the turn
+# should take, because it is a backstop and not a target.
+SEEK_TURN_MAX_S = float(_env("ORIO_SEEK_TURN_MAX_S", "2.0"))
 
 # How often the approach re-detects while it is driving. This used to be
 # SEEK_HOP_S, the length of one drive-and-stop step, and its value was a

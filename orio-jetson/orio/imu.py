@@ -256,6 +256,56 @@ class RvcReader:
                 log.exception("IMU on_reading callback failed")
 
 
+class TurnTracker:
+    """How far the body has turned since this was made, in degrees.
+
+    Accumulates each tick's change rather than subtracting two absolute
+    headings, because yaw wraps at +/-180: a robot that turns 200 degrees left
+    reports -160, and an absolute difference would call that a right turn. Sum
+    the small wrapped steps and a turn of any size comes out right.
+
+    Positive is a LEFT turn, once `config.IMU_YAW_SIGN` is applied by the
+    reader — so `turned` reads the way the policy talks, not the way the part
+    happens to be wired.
+
+    Returns None for `turned` when there is nothing fresh to go on, which is
+    the caller's signal to fall back to a timed turn rather than to wait.
+    """
+
+    def __init__(self, reader: RvcReader, max_age_s: float | None = None) -> None:
+        self._reader = reader
+        if max_age_s is None:
+            from . import config
+
+            max_age_s = config.IMU_STALE_S
+        self._max_age_s = max_age_s
+        self._last: float | None = None
+        self._total = 0.0
+        self.gaps = 0  # ticks with no fresh reading, for the caller to report
+
+    def reset(self) -> None:
+        self._last = None
+        self._total = 0.0
+        self.gaps = 0
+
+    @property
+    def turned(self) -> float | None:
+        """Degrees turned so far (+ left), or None if the IMU is not answering.
+
+        None only before the first good reading. Once a turn is under way a
+        gap does not erase what was already measured — the robot did turn that
+        far — so the total stands and the next reading carries on from there.
+        """
+        reading = self._reader.fresh(max_age_s=self._max_age_s)
+        if reading is None:
+            self.gaps += 1
+            return None if self._last is None else self._total
+        if self._last is not None:
+            self._total += _wrap180(reading.heading_deg - self._last)
+        self._last = reading.heading_deg
+        return self._total
+
+
 def reader_from_config(on_reading=None) -> RvcReader:
     """An `RvcReader` carrying the measured mount calibration.
 
