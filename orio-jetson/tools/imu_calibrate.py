@@ -12,7 +12,7 @@ and prints the settings to save.
 
 **Nothing here ever commands a motor.** Use `tools/imu_calibrate_drive.py`
 instead when there is floor space: it drives the forward and turn steps itself
-and only asks for the two tilts, which is less to get wrong by hand. This tool
+and only asks for the three tilts, which is less to get wrong by hand. This tool
 is the fallback for a bench, a tight room, or a robot with its drive battery
 off.
 
@@ -23,7 +23,7 @@ mm), never by picking an end up, and the castor end goes first because it is
 the light one. Chock the wheels before shimming: a robot this heavy that starts
 rolling does not get caught by hand.
 
-## The five poses
+## The six poses
 
   1. **Rest, castor trailing** — the calibration zero. Every threshold in
      `avoid.py` was measured with the body in this pose, so "level" for this
@@ -32,15 +32,18 @@ rolling does not get caught by hand.
      body pitch by ~0.6 deg, which is real tilt and not noise.
   2. **Shim under the castor** — nose down. Which angle is body pitch, and
      which way is negative.
-  3. **Shim under the left drive wheel** — left side up. Which angle is body
-     roll, and its sign.
-  4. **A quarter turn to the left, pushed by hand** — the sign of yaw, so that
+  3. **Shim under the left drive wheel**, then 4. **under the right** — the
+     two together give body roll. One wheel alone is not enough: this chassis
+     stands on three points, so a shim under one wheel tilts it diagonally
+     (measured: +4.1 deg of nose against +1.7 deg of lean). Left minus right
+     cancels the nose component and leaves the lean.
+  5. **A quarter turn to the left, pushed by hand** — the sign of yaw, so that
      "+30 deg" means a left turn to the policy.
-  5. **Rest again** — repeatability. A disagreement with step 1 of more than a
+  6. **Rest again** — repeatability. A disagreement with step 1 of more than a
      few tenths of a degree means something moved: the bracket, the castor, or
      a shim still under a wheel.
 
-Steps 2-4 only need the SIGN, so 20-40 mm of shim is plenty. The magnitudes are
+Steps 2-5 only need the SIGN, so 20-40 mm of shim is plenty. The magnitudes are
 a cross-check, not a target.
 """
 
@@ -56,7 +59,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import imu_cal  # noqa: E402  (tools/ is on the path: these run as scripts)
 from imu_cal import (  # noqa: E402
-    Collector, hand_step, print_settings, tilt_result, yaw_result,
+    Collector, hand_step, print_settings, roll_result, tilt_result, yaw_result,
 )
 from orio.imu import RvcReader  # noqa: E402
 
@@ -113,7 +116,7 @@ def main() -> int:
 This works out how the IMU board sits inside the robot, so the code can tell
 the BODY's tilt from the sensor's own tilt.
 
-There are 5 steps. Each one: put the robot in a position, press Enter, keep
+There are 6 steps. Each one: put the robot in a position, press Enter, keep
 your hands off while it measures. Then it prints the settings to save.
 
 THE ROBOT IS NEVER LIFTED AND NEVER DRIVEN. Tilts are made by rolling it onto
@@ -135,6 +138,7 @@ You need: a shim (20-40 mm), wheel chocks, flat floor. Ctrl-C to stop.""")
             ("rest", REST_STEP),
             ("nose_down", imu_cal.NOSE_DOWN_STEP),
             ("left_up", imu_cal.LEFT_UP_STEP),
+            ("right_up", imu_cal.RIGHT_UP_STEP),
             ("turn_left", TURN_STEP),
             ("rest2", REST2_STEP),
         ]
@@ -166,13 +170,12 @@ You need: a shim (20-40 mm), wheel chocks, flat floor. Ctrl-C to stop.""")
         print("\n2. WHICH NUMBER MEANS WHAT")
         pitch_axis, pitch_sign, pitch_ok = tilt_result(
             rest, windows["nose_down"], "Front tilted down:", nose=True)
-        roll_axis, roll_sign, roll_ok = tilt_result(
-            rest, windows["left_up"], "Left side tilted up:", nose=False)
+        roll_axis, roll_sign, roll_ok = roll_result(windows["left_up"], windows["right_up"])
         if pitch_ok and roll_ok and pitch_axis == roll_axis:
             pitch_ok = roll_ok = False
             print("\n   PROBLEM: both tilts moved the same number, so the two shim positions")
             print("            cannot be told apart. Re-run, shimming the CASTOR in step 2")
-            print("            and the LEFT WHEEL in step 3.")
+            print("            and the WHEELS in steps 3 and 4.")
 
         turned = windows["turn_left"].yaw_span
         yaw_sign, yaw_ok = yaw_result(turned)

@@ -2,7 +2,7 @@
 """Calibrate the IMU: the robot drives the parts it can, you tilt the rest.
 
 Four short manoeuvres under its own power settle the forward axis and the yaw
-sign. Then it asks for two shim poses, because a robot on a flat floor cannot
+sign. Then it asks for three shim poses, because a robot on a flat floor cannot
 tilt itself far enough to measure body tilt at all.
 
     uv run python tools/imu_calibrate_drive.py
@@ -38,6 +38,11 @@ does any exception — that is `Drivetrain.__exit__`'s guarantee.
     tilt. The weaker measurement is not worth having when the stronger one
     costs thirty seconds.
 
+    The lean takes BOTH wheels, one after the other. On a three-point chassis
+    a shim under one wheel tilts the body diagonally — measured here as +4.1
+    deg of nose against +1.7 deg of lean — so left and right are subtracted to
+    cancel the nose component.
+
 The rest-pose offsets come from standing still, before anything moves.
 """
 
@@ -54,7 +59,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 import imu_cal  # noqa: E402  (tools/ is on the path: these run as scripts)
 from imu_cal import (  # noqa: E402
-    Collector, Window, hand_step, measure, print_settings, tilt_result, yaw_result,
+    Collector, Window, hand_step, measure, print_settings, roll_result, tilt_result,
+    yaw_result,
 )
 from orio import config  # noqa: E402
 from orio.drivetrain import DRIVE_REFRESH_S, Drivetrain  # noqa: E402
@@ -161,8 +167,11 @@ Total travel is well under a metre.
   Clear 2 m ahead, 1 m behind, 1 m either side. Stand over it, hand near the
   power switch. Ctrl-C stops the wheels and e-stops the board.
 
-Part 2 — you tilt it twice, on a shim, because a robot on a flat floor cannot
-tilt itself. Have ready: a shim 20-40 mm thick (a book), and wheel chocks.""")
+Part 2 — you tilt it three times on a shim, because a robot on a flat floor
+cannot tilt itself: castor up, then left wheel up, then right wheel up. Both
+wheels are needed because this chassis stands on three points, so one wheel on
+a shim tilts it diagonally; the two sides subtract to leave pure lean.
+Have ready: a shim 20-40 mm thick (a book), and wheel chocks.""")
     print(imu_cal.DIAGRAM)
 
     if not args.yes:
@@ -207,11 +216,12 @@ tilt itself. Have ready: a shim 20-40 mm thick (a book), and wheel chocks.""")
             return 1
 
         print("\n" + "=" * 78)
-        print("PART 2 of 2: two tilts, by hand — the wheels are stopped now")
+        print("PART 2 of 2: three tilts, by hand — the wheels are stopped now")
         print("=" * 78)
         try:
             nose_down = hand_step(imu, collector, seconds=imu_cal.SAMPLE_S, **imu_cal.NOSE_DOWN_STEP)
             left_up = hand_step(imu, collector, seconds=imu_cal.SAMPLE_S, **imu_cal.LEFT_UP_STEP)
+            right_up = hand_step(imu, collector, seconds=imu_cal.SAMPLE_S, **imu_cal.RIGHT_UP_STEP)
             rest2 = hand_step(
                 imu, collector, seconds=imu_cal.SAMPLE_S,
                 title="Last one: flat on the floor again",
@@ -224,10 +234,12 @@ tilt itself. Have ready: a shim 20-40 mm thick (a book), and wheel chocks.""")
             print("\nstopped — the driven part is done, but the tilts are not")
             return 1
 
-    return report(args, rest, fwd, rev, piv_l, piv_r, nose_down, left_up, rest2, collector)
+    return report(args, rest, fwd, rev, piv_l, piv_r, nose_down, left_up, right_up,
+                  rest2, collector)
 
 
-def report(args, rest, fwd, rev, piv_l, piv_r, nose_down, left_up, rest2, collector) -> int:
+def report(args, rest, fwd, rev, piv_l, piv_r, nose_down, left_up, right_up,
+           rest2, collector) -> int:
     print("\n" + "=" * 78)
     print("RESULTS")
     print("=" * 78)
@@ -267,12 +279,12 @@ def report(args, rest, fwd, rev, piv_l, piv_r, nose_down, left_up, rest2, collec
 
     print("\n4. WHICH NUMBER MEANS WHAT (tilted by hand)")
     pitch_axis, pitch_sign, pitch_ok = tilt_result(rest, nose_down, "Front tilted down:", nose=True)
-    roll_axis, roll_sign, roll_ok = tilt_result(rest, left_up, "Left side tilted up:", nose=False)
+    roll_axis, roll_sign, roll_ok = roll_result(left_up, right_up)
     if pitch_ok and roll_ok and pitch_axis == roll_axis:
         pitch_ok = roll_ok = False
         print("\n   PROBLEM: both tilts moved the same number, so the two shim positions")
         print("            cannot be told apart. Re-run, shimming the CASTOR for the")
-        print("            first tilt and the LEFT WHEEL for the second.")
+        print("            first tilt and the WHEELS for the other two.")
 
     dp = rest2.mean("pitch_deg") - pitch0
     dr = rest2.mean("roll_deg") - roll0

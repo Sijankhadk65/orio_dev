@@ -183,6 +183,17 @@ NOSE_DOWN_STEP = dict(
     expect="one number should move by a few degrees, the other should barely move",
 )
 
+# Raising ONE front wheel does not roll this robot, it tilts it diagonally.
+# The chassis stands on three points — two drive wheels at the front, the castor
+# at the back — so a shim under one wheel tilts the body about the line from the
+# castor to the OTHER wheel. Measured 2026-09-22: a 30 mm shim under the left
+# wheel moved the front-back number +4.1 deg and the side-lean only +1.7 deg,
+# and the tool rightly refused to call that a roll measurement.
+#
+# The fix is to do it on both sides. Raising the left and raising the right
+# produce the SAME front-back component and OPPOSITE side-lean components, so
+# the difference of the two cancels the pitch and leaves pure roll. The castor
+# sits on the centreline, so the nose-down step needs no such treatment.
 LEFT_UP_STEP = dict(
     title="Tilt the LEFT side up",
     instructions=[
@@ -192,8 +203,19 @@ LEFT_UP_STEP = dict(
         "Roll that wheel onto it so the LEFT side sits higher than the right.",
         "Hands off.",
     ],
-    finds="which number is the side-to-side lean, and which way is which",
-    expect="the OTHER number should now move by a few degrees",
+    finds="the side-to-side lean, half of it (the other half is the next step)",
+    expect="both numbers will move — that is expected, the next step cancels the tilt",
+)
+
+RIGHT_UP_STEP = dict(
+    title="Now the same on the RIGHT side",
+    instructions=[
+        "Move the shim to the RIGHT drive wheel, same thickness, same position.",
+        "Roll that wheel onto it so the RIGHT side sits higher than the left.",
+        "Hands off.",
+    ],
+    finds="the other half: left minus right is pure side-lean, with the nose tilt cancelled",
+    expect="the side-lean should swing the OTHER way from the last step",
 )
 
 
@@ -234,6 +256,41 @@ def tilt_result(rest: Window, tilted: Window, label: str, nose: bool):
 
     sign = -1 if (delta > 0) == nose else 1
     return angle, sign, ok
+
+
+def roll_result(left_up: Window, right_up: Window):
+    """Which angle is side-lean, its sign, and whether to believe it.
+
+    Takes the DIFFERENCE of the two wheel-shim poses. Each one tilts the robot
+    diagonally (see the note above `LEFT_UP_STEP`); halving the difference
+    cancels the shared nose-up component and leaves the roll.
+
+    Left side up means leaning right, which must report positive.
+    """
+    d_pitch = (left_up.mean("pitch_deg") - right_up.mean("pitch_deg")) / 2
+    d_roll = (left_up.mean("roll_deg") - right_up.mean("roll_deg")) / 2
+    angle, delta, other = (
+        ("pitch", d_pitch, d_roll) if abs(d_pitch) >= abs(d_roll) else ("roll", d_roll, d_pitch)
+    )
+    moved = "front-back" if angle == "pitch" else "side-lean"
+
+    print("  Left side up vs right side up (the difference is pure lean):")
+    print(f"    front-back {d_pitch:+7.2f} deg      side-lean {d_roll:+7.2f} deg")
+
+    ok = True
+    if abs(delta) < MIN_TILT_DEG:
+        ok = False
+        print(f"    COULD NOT TELL: only {abs(delta):.2f} deg of lean either side.")
+        print("                    Use a thicker shim (30-40 mm) and do both wheels again.")
+    elif abs(other) > abs(delta) * 0.5:
+        ok = False
+        print(f"    COULD NOT TELL: the other number still moved {other:+.2f} deg after the")
+        print("                    two sides cancelled, so the shims were not in matching")
+        print("                    positions. Same thickness, same spot on each wheel.")
+    else:
+        print(f"    -> the lean is the {moved.upper()} number ({abs(delta):.1f} deg each way)")
+
+    return angle, (1 if delta > 0 else -1), ok
 
 
 def yaw_result(left_turn_deg: float, right_turn_deg: float | None = None):
