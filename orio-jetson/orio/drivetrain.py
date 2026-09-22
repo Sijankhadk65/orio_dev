@@ -123,6 +123,18 @@ MAX_PERMILLE = 1000
 # dropped frames before it trips.
 HEARTBEAT_INTERVAL_S = 0.2
 
+# How often a caller should re-send a drive command it is still holding, even
+# though nothing changed. Firmware 1.0.1 and earlier DROPPED any frame that
+# arrived while another was waiting to be handled, and a caller that only sends
+# on change never finds out: the HUD shows the duty sent, the wheels never turn.
+# Re-sending bounds any such loss to this long. 1.0.2 queues frames instead.
+DRIVE_REFRESH_S = 0.25
+
+# The firmware refreshes each wheel's telemetry every 100 ms (one side per
+# 50 ms poll), so asking more often than this only adds traffic — and on
+# firmware 1.0.1 and earlier, traffic is what got drive commands dropped.
+STATUS_MIN_INTERVAL_S = 0.05
+
 
 def crc16_ccitt(data: bytes) -> int:
     """CRC-16/CCITT-FALSE. Must match `crc16_ccitt()` in Core/Src/protocol.c."""
@@ -227,6 +239,7 @@ class Drivetrain:
         self._identity: Identity | None = None
         self._identity_seen = threading.Event()
         self._acks = 0
+        self._status_requested_at = 0.0
 
     # ── lifecycle ────────────────────────────────────────────────────────────
 
@@ -379,7 +392,16 @@ class Drivetrain:
 
     def request_status(self) -> None:
         """Ask for telemetry. The answer arrives asynchronously in
-        `last_status` — this does not block waiting for it."""
+        `last_status` — this does not block waiting for it.
+
+        At most once per STATUS_MIN_INTERVAL_S; calls in between do nothing.
+        Send drive commands BEFORE this in a tick, not after: on firmware 1.0.1
+        and earlier the second of two back-to-back frames is dropped, and a
+        GET_STATUS immediately ahead of SET_DRIVE lost 100 of 100 of them."""
+        now = time.monotonic()
+        if now - self._status_requested_at < STATUS_MIN_INTERVAL_S:
+            return
+        self._status_requested_at = now
         self._write(build_frame(CMD_GET_STATUS))
 
     @property

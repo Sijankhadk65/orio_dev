@@ -108,7 +108,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from orio import config
 from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor, look_around
 from orio.bump import StallDetector
-from orio.drivetrain import Drivetrain
+from orio.drivetrain import DRIVE_REFRESH_S, Drivetrain
 from orio.motion import JOINT_NECK, Motion, travel_time_s
 
 # The drivetrain board, by its stable udev name — never a raw /dev/ttyACM*,
@@ -468,6 +468,7 @@ def main() -> int:
         duty_percent = args.duty
         latch: tuple[int, int] | None = None
         last_sent: tuple[int, int] | None = None
+        sent_at = 0.0  # when last_sent last went out, for DRIVE_REFRESH_S
         last_state: str | None = None
         last_hud = 0.0
 
@@ -540,7 +541,6 @@ def main() -> int:
                             if bump is not None:
                                 print(f"\nBUMP: {bump.describe()}")
                             last_bump = stall.active
-                        dt.request_status()
 
                     reading = sensor.reading
                     decision = avoider.decide(latch, round(duty_percent * 10), reading)
@@ -581,10 +581,18 @@ def main() -> int:
                         print(f"\n{decision.state.upper()}: {decision.reason}")
                     last_state = decision.state
 
+                    # Re-sent while held, not only on change: a dropped
+                    # SET_DRIVE otherwise leaves the HUD showing a duty the
+                    # board never got (DRIVE_REFRESH_S).
                     command = (decision.left, decision.right)
-                    if command != last_sent:
+                    if command != last_sent or time.monotonic() - sent_at >= DRIVE_REFRESH_S:
                         dt.set_drive(*command)
                         last_sent = command
+                        sent_at = time.monotonic()
+                    # Telemetry for the next tick's bump check, asked for
+                    # AFTER the drive command — the other order lost every one.
+                    if sensor.bumps is not None:
+                        dt.request_status()
 
                     rejection = dt.take_rejection()
                     if rejection is not None:

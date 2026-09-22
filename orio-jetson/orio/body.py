@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from . import config
 from .avoid import Sensor, avoider_from_config, look_around
 from .bump import StallDetector
-from .drivetrain import Drivetrain
+from .drivetrain import DRIVE_REFRESH_S, Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
 
 log = logging.getLogger(__name__)
@@ -153,6 +153,7 @@ class Body:
         # rather than on `Sensor` because it needs the duty that was commanded,
         # and `_drive_tick` is the only place a duty pair reaches the board.
         self._stall = StallDetector()
+        self._drive_sent_at = 0.0  # when the standing duty pair last went out
         # The cruise currently running, if any — at most one, since there is one
         # set of wheels. See cruise().
         self._cruise: "Cruise | None" = None
@@ -546,10 +547,17 @@ class Body:
         if decision.state == "scan":
             return self._scan(link, sensor, last_sent)
 
+        # Re-sent while held, not only on change — see DRIVE_REFRESH_S.
         command = (decision.left, decision.right)
-        if command != last_sent:
+        now = time.monotonic()
+        if command != last_sent or now - self._drive_sent_at >= DRIVE_REFRESH_S:
             link.set_drive(*command)
             last_sent = command
+            self._drive_sent_at = now
+        # Telemetry for the NEXT tick's bump check, asked for after the drive
+        # command so the two never go out in the order that loses the command.
+        if getattr(sensor, "bumps", None) is not None:
+            link.request_status()
         return decision.state, None, link.take_rejection(), last_sent
 
     def _scan(self, link, sensor, last_sent):
@@ -602,8 +610,8 @@ class Body:
             return
         bump = self._stall.update(time.monotonic(), standing or (0, 0), link.last_status)
         bumps.record(bump)
-        # Ask for the next one. Asynchronous by design — see `request_status`.
-        link.request_status()
+        # The next one is asked for at the END of the tick, after the drive
+        # command — see `Drivetrain.request_status`.
 
     def cruise(self) -> "Cruise":
         """Start a guarded drive that outlives the call which started it.
