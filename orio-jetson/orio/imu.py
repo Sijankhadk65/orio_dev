@@ -116,7 +116,14 @@ class RvcReader:
         pitch_sign: int = 1,
         roll_sign: int = 1,
         yaw_sign: int = 1,
+        on_reading=None,
     ) -> None:
+        # `on_reading` sees EVERY packet, in the reader thread. Polling `reading`
+        # misses most of them: a serial read returns several packets at once, so
+        # a poller only ever sees the last of each burst (~30 of every 100). Live
+        # driving wants the latest and nothing else; anything measuring — the
+        # calibration tool, a drift log — needs them all.
+        self._on_reading = on_reading
         self._port_name = port
         self._baud = baud
         self._pitch_offset = pitch_offset_deg
@@ -241,6 +248,12 @@ class RvcReader:
         )
         with self._lock:
             self._reading = reading
+        if self._on_reading is not None:
+            try:
+                self._on_reading(reading)
+            except Exception:
+                # A broken consumer must not take the reader down with it.
+                log.exception("IMU on_reading callback failed")
 
 
 def _wrap180(deg: float) -> float:
