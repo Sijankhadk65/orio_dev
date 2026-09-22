@@ -4,7 +4,7 @@
     uv run python tools/teleop_guarded.py                      # /dev/orio_drive
     uv run python tools/teleop_guarded.py --port /dev/ttyACM1
     uv run python tools/teleop_guarded.py --duty 40 --clear-m 1.5
-    uv run python tools/teleop_guarded.py --neck-tilt 40        # look further out
+    uv run python tools/teleop_guarded.py --neck-tilt 35        # look closer in
     uv run python tools/teleop_guarded.py --no-neck             # leave the head alone
 
 Tap W and the robot cruises forward on its own, steering around what it sees
@@ -20,7 +20,7 @@ what `Avoider` does, because it is the same object.
 
 ## The head is aimed first, and held
 
-Before the cameras open, the neck is driven to pan 175 deg / tilt 25 deg and
+Before the cameras open, the neck is driven to config's pan/tilt (175/25) and
 *kept* there. Both are needed. Aiming matters because every threshold below is
 a distance measured through this head: --stop-m and --clear-m describe the
 ground the robot is about to cross, and a head pointing somewhere else measures
@@ -119,12 +119,12 @@ DEFAULT_PORT = config.DRIVETRAIN_PORT
 DEFAULT_MOTION_PORT = config.MOTION_PORT
 
 # Where the head is put before the run starts, on the vendor's scale (pan
-# 0..270, tilt 0..180, each from that servo's own zero end). Tilt 25 points the
-# cameras down at the floor immediately ahead, which is the ground the avoider
-# is about to steer over; pan 175 is a few degrees off the neck's 180 home, so
-# "straight ahead" for the stereo pair is straight ahead for the chassis.
-NECK_PAN_DEG = 175.0
-NECK_TILT_DEG = 30.0
+# 0..270, tilt 0..180, each from that servo's own zero end). Taken from config,
+# the app's own aim, because every avoider threshold is a distance measured
+# through it: a bench run on a different tilt tunes the policy for ground the
+# robot never looks at. See config.NECK_TILT_DEG for how the aim was chosen.
+NECK_PAN_DEG = config.NECK_PAN_DEG
+NECK_TILT_DEG = config.NECK_TILT_DEG
 
 DEFAULT_DUTY_PERCENT = 30.0
 DUTY_STEP_PERCENT = 5.0

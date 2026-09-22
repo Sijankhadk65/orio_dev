@@ -214,10 +214,21 @@ NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
 #                                         reads as an obstacle, and 50 is the
 #                                         head's mechanical stop
 #
-# 25..45 all pass (floor above AVOID_CLEAR_M, 1 m target seen). 40 is the most
-# downward of those that keeps real margin over AVOID_CLEAR_M, so it sees the
-# most ground close in. If floor tests show false stops on empty floor, drop to
-# 35 before touching the thresholds.
+# 25..45 all pass (floor above AVOID_CLEAR_M, 1 m target seen). 40 was chosen
+# first, as the most downward with real margin, but on the floor (2026-09-22)
+# 35-40 had the robot driving while looking at the floor instead of at what
+# was in front of it; 25 was the sweet spot on the floor. 25 is also where a
+# person at following distance is in frame (26 found one at 0.77 m in the
+# 09-09 sweep), which is the job this robot is being built for.
+#
+# THE COST: at 25 the empty floor ranges at 2.70 m, so the floor never trips
+# AVOID_CLEAR_M — but ground close in is mostly out of the depth band, and a
+# LOW obstacle (a box, a shoe) can pass under the view before AVOID_STOP_M. The
+# 1 m cloth still read 0.96 m. Check a low box on the floor before trusting
+# it; the ToF fan (feature/extend-avoidance-sensors) is meant to cover that ground.
+#
+# 25 is also the window's floor: nothing above the driving tilt can be
+# commanded, so every LOOK/SEEK list below starts at 25 and only steps down.
 #
 # The 2026-09-09 sweep (inclined body) put 40 at 2.27 m and 45 at 1.06 m, and
 # the 2026-09-10 default of 30 was set against that incline; neither applies to
@@ -228,7 +239,7 @@ NECK_ENABLED = _env("ORIO_NECK", "1").strip().lower() not in (
 # tilt 25..50; see Core/Src/servo_joint.c) and NACKs anything outside, moving
 # nothing.
 NECK_PAN_DEG = float(_env("ORIO_NECK_PAN_DEG", "175"))
-NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "40"))
+NECK_TILT_DEG = float(_env("ORIO_NECK_TILT_DEG", "25"))
 
 # Open the drivetrain and give the LLM the tools to move. Off means Orio says it
 # cannot drive rather than pretending it can (see DRIVE_PROMPT / NO_DRIVE_PROMPT).
@@ -378,37 +389,37 @@ SEEK_SCAN_OFFSETS_DEG = tuple(
 # across every pan and found immediately at 26, and one standing closer was
 # found only at 13. Hence both lists reach well above the driving pose.
 #
-# THAT REACH IS STILL MOSTLY GONE. Relative to the driving pose the old lists
-# went 27 degrees up (40 -> 13); this one goes 10 (40 -> 30), and the window
-# floor is 25. The 26 that found a person at 0.77 m is back in reach of a
-# plain look (LOOK_TILT_SWEEP_DEG starts at 25), but 13 is not, so expect a
-# person closer than that to be missed. Those angles were measured on the
+# Since 2026-09-22 the driving tilt IS the top of the window (25), so the
+# person-finding angle is the one the robot drives on and there is no reach
+# above it: 26 found a person at 0.77 m, 13 is not commandable, so expect a
+# person much closer than that to be missed. Those angles were measured on the
 # inclined body and have not been re-measured on the levelled one.
 #
-# The scan tries the driving tilt across every pan first, because that is where
-# something on the floor is, and stops the moment it finds the target.
+# The scan tries the driving tilt across every pan first — where a person at
+# following distance is — then steps down toward the floor, and stops the
+# moment it finds the target.
 SEEK_SCAN_TILTS_DEG = tuple(
-    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "40,35,30").split(",") if x
+    float(x) for x in _env("ORIO_SEEK_SCAN_TILTS_DEG", "25,32,40").split(",") if x
 )
 
 # Tilts sampled by a plain look ("what do you see", "look left"). Four stops
 # span the tilt window end to end without making a look take all day — each
 # costs SEEK_SETTLE_S plus one detector pass.
 #
-# All three lists were re-centred 2026-09-22 on the 40 degree aim inside the
-# 25..50 window (were "20,27,33,40" / "30,25,20" / "30,35,40" for the 20..40
-# window). Down stops at 48, short of the mechanical stop at 50. The up
-# and down lists now START at the driving tilt and step outward from it, which
-# is both less head travel and the only way to spend their stops inside a
-# window this narrow; the sweep list walks the whole window top to bottom.
+# Re-centred twice on 2026-09-22: first on a 40 degree aim, then on 25 when
+# the floor tests moved the driving tilt there. The up and down lists START at
+# the driving tilt and step outward from it; with 25 at the window's top, "up"
+# has nowhere to go and is just the driving tilt, and "down" walks toward the
+# floor, stopping short of the mechanical stop at 50. The sweep list walks the
+# whole window top to bottom.
 LOOK_TILT_SWEEP_DEG = tuple(
     float(x) for x in _env("ORIO_LOOK_TILT_SWEEP_DEG", "25,32,40,47").split(",") if x
 )
 LOOK_TILT_UP_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "40,35,30").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_UP_DEG", "25").split(",") if x
 )
 LOOK_TILT_DOWN_DEG = tuple(
-    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "40,44,48").split(",") if x
+    float(x) for x in _env("ORIO_LOOK_TILT_DOWN_DEG", "25,35,45").split(",") if x
 )
 
 # How far the head turns for a plain "look left" / "look right". Was 35, which
