@@ -24,17 +24,20 @@ dependencies = [
     # vendor SDK. Imported lazily, so a machine that cannot build it still runs
     # everything else; ORIO_TOF defaults to 0 regardless.
     "vl53l5cx-ctypes>=0.0.3",
+    # Orbbec SDK for the Gemini 336L depth camera (orio/gemini.py). Pinned:
+    # 2.1.x requires numpy>=2 on Python 3.12, which the system cv2 cannot load,
+    # and pulls in opencv-python, pygame, av and pynput. 2.0.18 has no deps.
+    "pyorbbecsdk2==2.0.18",
 ]
 
 [tool.uv]
 # Keep two packages out of the environment entirely:
 #
 #   opencv-python — pulled in transitively by ultralytics. We deliberately use
-#     JetPack's system OpenCV instead (symlinked into site-packages), because
-#     it is the only build with GStreamer, and GStreamer is the only way to
-#     reach the Jetson ISP via nvarguscamerasrc. The IMX219 exposes just RG10
-#     Bayer over plain V4L2, which the PyPI wheels cannot debayer — they return
-#     a solid green frame while reporting success.
+#     JetPack's system OpenCV instead (symlinked into site-packages). It was
+#     the only build with GStreamer, which the old IMX219 CSI cameras needed;
+#     the Gemini does not, but the venv, numpy<2 and Python 3.12 pins are all
+#     built around the system cv2, so it stays until that is untangled.
 #
 #   tflite-runtime — required by openwakeword's metadata, but has no cp312
 #     wheels and is never imported: ORIO_WAKE_OWW_FRAMEWORK defaults to "onnx".

@@ -263,14 +263,8 @@ def _start_vision_debug():
     """
     if not config.VISION_DEBUG:
         return None
-    live = body.get()
-    if live is not None and live.sensor is not None:
-        # The preview opens its own handle on a CSI sensor, which the avoidance
-        # thread already holds. Argus lets the second open succeed and then
-        # starves one of them at read time, so this has to be a refusal rather
-        # than a race to find out which.
-        print("⚠ vision debug preview disabled: obstacle avoidance is using both cameras")
-        return None
+    # No need to refuse while avoidance runs: the Gemini is shared (see
+    # gemini.shared), so the preview and the depth thread read the same device.
     try:
         from .tools import get_detector
         from .vision import VisionDebugWindow

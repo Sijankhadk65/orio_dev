@@ -11,7 +11,7 @@ and quits. Q or Esc closes the window.
 
 ## What the rows are
 
-One column per sector, left to right, lined up under the rectified left eye so
+One column per sector, left to right, lined up under the colour frame so
 a column can be checked against what is in the picture above it.
 
 * **stereo** — `ObstacleDetector`'s map, exactly as `avoid.Sensor` receives it.
@@ -102,14 +102,14 @@ def build_rows(stereo_map, per_sensor, fan_map, fused):
     return rows
 
 
-def draw_window(left, rows, fused, header: str):
+def draw_window(colour, rows, fused, header: str):
     import cv2
     import numpy as np
 
     n = len(fused.sectors)
     img_w = VIEW_W - GUTTER
-    scale = img_w / left.shape[1]
-    img = cv2.resize(left, (img_w, int(left.shape[0] * scale)), interpolation=cv2.INTER_LINEAR)
+    scale = img_w / colour.shape[1]
+    img = cv2.resize(colour, (img_w, int(colour.shape[0] * scale)), interpolation=cv2.INTER_LINEAR)
     if img.ndim == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGR)
     col = [int(i * img_w / n) for i in range(n + 1)]
@@ -192,10 +192,8 @@ def main() -> int:
         tof.close()
         tof = None
 
-    print("--- opening the cameras ---")
+    print("--- opening the Gemini ---")
     det = ObstacleDetector()
-    if not det._estimator.calibrated:
-        print("⚠ stereo uncalibrated — distances are approximate. See tools/calibrate_stereo.py")
 
     window = "Orio fusion debug — stereo | ToF | fused"
     if not args.no_window:
@@ -207,7 +205,7 @@ def main() -> int:
     fps = 0.0
     try:
         while True:
-            stereo_map, left, _depth = det.sense_with_frames()
+            stereo_map, colour, _depth = det.sense_with_frames()
             fan_map = tof.fresh_map() if tof is not None else None
             per_sensor = tof.latest if tof is not None else {}
             # The same call avoid.Sensor._publish makes; `None` is skipped.
@@ -234,7 +232,7 @@ def main() -> int:
                     print_rows(rows, fused, header)
             else:
                 import cv2
-                cv2.imshow(window, draw_window(left, rows, fused, header))
+                cv2.imshow(window, draw_window(colour, rows, fused, header))
                 if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
                     return 0
     except KeyboardInterrupt:

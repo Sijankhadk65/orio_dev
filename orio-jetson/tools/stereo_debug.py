@@ -3,7 +3,7 @@
 
     uv run python tools/stereo_debug.py
 
-Left pane is the RECTIFIED left camera with sector distances drawn over it;
+Left pane is the Gemini's colour frame with sector distances drawn over it;
 right pane is the colourised depth map (warm = near, cool = far, black =
 unknown), or — press G — the HEIGHT CLASSIFICATION that ORIO_STEREO_GROUND_PLANE
 steers on: grey floor, red obstacle, blue driven-under, black unknown.
@@ -13,18 +13,19 @@ STEREO_CAM_PITCH_DEG against, and doing it by eye is not a shortcut: a degree
 or two of pitch error tilts the fitted plane enough that distant floor turns
 red, and the robot then refuses to leave `steer` for `cruise` in an empty room.
 Red creeping up the floor toward the horizon means the pitch is too shallow;
-a box that stays grey means it is too steep. Rectified, because that is the frame the depth map is computed in —
-the raw capture is displaced from it by enough to make the comparison useless.
-Black borders in the left pane are therefore real: they are the part of the
-output frame that rectification leaves undefined, and no depth can exist there. The bar
+a box that stays grey means it is too steep. The two panes are pixel-aligned —
+the camera maps depth onto the colour grid in hardware — so what sits under a
+bar on the left is what produced it on the right. Black at the left and right
+edges of the depth pane is real: the colour camera sees slightly wider than the
+depth pair, and no depth exists there. The bar
 under each sector shows its distance, and a sector with too few valid pixels
 reads UNKNOWN rather than a number — the distinction that matters, since
 "unknown" must never be acted on as "clear". The tag above each bar names the
-sensor that produced it, which is how a disagreement between the cameras and
+sensor that produced it, which is how a disagreement between the camera and
 the ToF fan becomes visible rather than arguable.
 
-A dev aid only: it reads the cameras and prints, and drives nothing. Q or Esc
-quits. Note it holds both sensors, so nothing else can capture while it runs.
+A dev aid only: it reads the camera and prints, and drives nothing. Q or Esc
+quits.
 """
 
 from __future__ import annotations
@@ -77,7 +78,7 @@ def colourise_classes(classes, stride, shape):
 
 
 def draw_sectors(frame, omap):
-    """Overlay sector boundaries, distances and validity onto the left view."""
+    """Overlay sector boundaries, distances and validity onto the colour view."""
     h, w = frame.shape[:2]
     n = len(omap.sectors)
     top, bottom = int(config.STEREO_BAND_TOP * h), int(config.STEREO_BAND_BOTTOM * h)
@@ -124,10 +125,8 @@ def draw_sectors(frame, omap):
 
 def main() -> int:
     det = ObstacleDetector()
-    if not det._estimator.calibrated:
-        print("⚠ uncalibrated — distances are approximate. See tools/calibrate_stereo.py")
 
-    window = "Orio stereo debug — left + sectors | depth"
+    window = "Orio depth debug — colour + sectors | depth"
     cv2.namedWindow(window, cv2.WINDOW_NORMAL)
     last = time.monotonic()
     fps = 0.0
@@ -140,20 +139,18 @@ def main() -> int:
 
     try:
         while True:
-            omap, left, depth = det.sense_with_frames()
+            omap, colour, depth = det.sense_with_frames()
             now = time.monotonic()
             fps = 0.9 * fps + 0.1 * (1.0 / max(now - last, 1e-6))
             last = now
 
             if show_classes:
-                classes, stride = det._estimator.classify(depth)
+                classes, stride = det.reducer.classify(depth)
                 right_pane = colourise_classes(classes, stride, depth.shape)
             else:
                 right_pane = colourise(depth)
-            view = np.hstack([draw_sectors(left.copy(), omap), right_pane])
-            # Upscale for viewing: matching runs at 320x180 by design, which is
-            # unreadably small on screen but is the resolution that actually
-            # gives both speed and the most valid pixels.
+            view = np.hstack([draw_sectors(colour.copy(), omap), right_pane])
+            # Upscale for viewing if the configured resolution is small.
             if view.shape[1] < 960:
                 view = cv2.resize(view, None, fx=960 / view.shape[1], fy=960 / view.shape[1],
                                   interpolation=cv2.INTER_NEAREST)

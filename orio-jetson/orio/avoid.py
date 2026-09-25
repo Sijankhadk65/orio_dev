@@ -128,11 +128,10 @@ class Sensor:
         self._tof = tof
         self.tof_error: str | None = None
         self._reading: Reading | None = None
-        # The rectified left eye from the most recent reading. Published here
-        # because these two cameras are the only ones there are: with avoidance
-        # always on, this thread holds both sensors for the whole session, and
-        # anything else wanting a picture (the vision tool) has to be handed
-        # this frame rather than opening a handle Argus will not give it.
+        # The colour frame from the most recent reading, pixel-aligned with the
+        # depth it was reduced from. Published so the vision tool detects in the
+        # SAME picture the sectors came from: a box and its depth must not come
+        # from two different instants (see `snapshot`).
         self._frame = None
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -141,7 +140,7 @@ class Sensor:
 
     def start(self) -> None:
         # The ToF fan first, because its firmware upload is seconds of I2C per
-        # sensor and it can run while Argus is still waking up. Failing to open
+        # sensor and it can run while the camera is still waking up. Failing to open
         # it is NOT fatal: it is an addition to a guard that already works, and
         # a new sensor that can stop the robot is a new way for the robot to be
         # stopped. The cameras keep the halting power they have always had.
@@ -155,7 +154,7 @@ class Sensor:
                 finally:
                     self._tof = None
 
-        # The first reading opens both Argus pipelines and takes ~2 s. Do it
+        # The first reading opens the Gemini and takes a second or two. Do it
         # here, before the terminal goes into cbreak mode, so any camera error
         # is readable and lands before the operator can press a key.
         omap, frame, _depth = self._detector.sense_with_frames()
@@ -230,7 +229,7 @@ class Sensor:
 
     @property
     def frame(self):
-        """The rectified left eye from the latest reading, or None.
+        """The colour frame from the latest reading, or None.
 
         Shared, not copied: treat it as read-only. The sensor thread replaces
         the reference rather than writing into the array, so a reader gets
@@ -443,8 +442,10 @@ class Avoider:
         afresh every tick flip-flops between two equal gaps and passes neither.
 
         Only KNOWN sectors are candidates. Unknown ones are skipped rather than
-        scored as obstacles: sector 0 is permanently unknown (the rectification
-        border), and treating that as a wall would bias every turn rightward.
+        scored as obstacles: the outermost sectors run past what the depth pair
+        covers and read thin or unknown for reasons unrelated to the room (on
+        the IMX219, sector 0 was permanently unknown — the rectification
+        border), and treating that as a wall would bias every turn away from it.
         If no heading clears the corridor, falls back to the farthest-sector
         score below, which at least points away from what is closest.
         """
@@ -670,10 +671,10 @@ class Avoider:
         #
         #    Close in, the angle an obstacle must reach to leave the corridor
         #    exceeds what the cameras can resolve. A sector's depth is charged
-        #    to its CENTRE angle, and the outermost centre is 31.8 deg (74.1
-        #    deg rectified hfov over 7 sectors) — an obstacle further out than
-        #    that is simply not seen. So turning can only clear the corridor
-        #    beyond half_width / sin(31.8 deg), and nearer than that the
+        #    to its CENTRE angle, and the outermost centre is 40.3 deg (94 deg
+        #    Gemini hfov over 7 sectors; 31.8 on the IMX219) — an obstacle
+        #    further out than that is simply not seen. So turning can only clear
+        #    the corridor beyond half_width / sin(40.3 deg), and nearer than that the
         #    obstacle stays in it however far the robot turns: it pivots on the
         #    spot indefinitely, which it did in simulation for 927 of 1200
         #    ticks. Reversing is the only move that changes the geometry, since
@@ -681,7 +682,8 @@ class Avoider:
         #
         #    That radius scales with the corridor, so it is not a number to
         #    carry over from memory: 0.48 m when the corridor was sized for a
-        #    0.25 m half-width, but 0.76 m at the 0.40 m this robot needs. Keep
+        #    0.25 m half-width, 0.76 m at the 0.40 m this robot needs on the
+        #    IMX219's field of view, and 0.62 m on the Gemini's. Keep
         #    --stop-m at or above it, or every close encounter ends up here
         #    instead of being turned away from.
         #

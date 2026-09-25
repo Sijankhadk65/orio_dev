@@ -24,3 +24,6 @@ kb/
 
 # Local machine settings — copy settings.example.json to settings.json and edit.
 settings.json
+
+# Orbbec SDK log (orio/gemini.py routes it here)
+Log/
