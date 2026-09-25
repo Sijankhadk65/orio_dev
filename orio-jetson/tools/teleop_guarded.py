@@ -184,7 +184,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT,
                         help=f"cruise duty %% (ceiling {MAX_DUTY_PERCENT:g}, from "
                              f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
-    parser.add_argument("--stop-m", type=float, default=0.50, help="never drive forward inside this")
+    parser.add_argument("--stop-m", type=float, default=config.AVOID_STOP_M,
+                        help="never drive forward inside this")
     parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
     parser.add_argument("--stale-s", type=float, default=0.50, help="reading older than this halts")
@@ -229,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--blind-hold-s", type=float, default=3.0,
         help="waiting this long with nothing known ahead stops the robot",
+    )
+    parser.add_argument(
+        "--unknown-clear", action="store_true", default=config.AVOID_UNKNOWN_IS_CLEAR,
+        help="TEST SPACE ONLY: drive on when nothing ahead can be seen instead of "
+        "waiting (config.AVOID_UNKNOWN_IS_CLEAR)",
     )
     parser.add_argument(
         "--no-scan", action="store_true",
@@ -399,8 +405,11 @@ def main() -> int:
         backoff_s=args.backoff_s,
         blind_hold_s=args.blind_hold_s,
         escape_duty=args.escape_duty,
+        unknown_is_clear=args.unknown_clear,
     )
     avoider.enabled = not args.no_avoid
+    if args.unknown_clear:
+        print("WARNING: unknown ahead is being treated as CLEAR — test space only\n")
 
     print(__doc__)
 

@@ -299,7 +299,13 @@ CRUISE_DEADMAN_S = float(_env("ORIO_CRUISE_DEADMAN_S", "1.0"))
 # half_width / sin(31.8 deg) — the radius inside which turning cannot clear the
 # corridor at all, because the outermost sector centre is only 31.8 deg off-axis
 # — or every close encounter ends in a blind back-off instead of a turn.
-AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.50"))
+# 0.20 since 2026-09-24 (was 0.50), at the user's request once the low ToF fan
+# was fused in: it ranges from ~2 cm, so the last half metre is no longer blind.
+# It is INSIDE both limits above — STEREO_MIN_RANGE_M (0.25), so a thing only the
+# cameras see reads unknown before it reads 0.20, and the 0.76 m turn radius, so
+# close encounters end in a back-off more often than a turn. The braking distance
+# at the 5% duty ceiling has not been re-measured against it.
+AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.20"))
 AVOID_CLEAR_M = float(_env("ORIO_AVOID_CLEAR_M", "1.20"))
 
 # Duty scale at STOP_M, ramping to full at CLEAR_M — the robot slows as it
@@ -377,6 +383,17 @@ AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 # from AVOID_BLIND_PIVOT_S on 2026-09-22 when that changed). Stopping is the
 # bound; driving on unknown is not. First guess — tune on the floor.
 AVOID_BLIND_HOLD_S = float(_env("ORIO_AVOID_BLIND_HOLD_S", "3.0"))
+
+# TEST-SPACE ONLY — 2026-09-23. Treat a corridor with nothing KNOWN in it as
+# clear road instead of blocked, so an open, featureless floor (or a run past
+# the 4 m range gate) is driven through rather than stopped, waited on and
+# looked around at. Off by default and it must stay that way: it removes the
+# one rule that stops the robot driving into something stereo simply failed to
+# range. Only for a cleared, supervised space. A missing, stale or failed
+# reading still halts — that is a dead camera, not an empty room.
+AVOID_UNKNOWN_IS_CLEAR = _env("ORIO_AVOID_UNKNOWN_IS_CLEAR", "0").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
 
 # Stop and look around before committing to a way past something. When the
 # policy has no clear way on in the view it has — an obstacle ahead and no

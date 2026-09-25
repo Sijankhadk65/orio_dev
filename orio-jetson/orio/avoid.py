@@ -318,8 +318,11 @@ class Avoider:
         heading_gain: float = 0.0,
         heading_max_trim: float = 0.0,
         heading_deadband_deg: float = 0.0,
+        unknown_is_clear: bool = False,
     ) -> None:
         self.stop_m = stop_m
+        # Test-space override, see config.AVOID_UNKNOWN_IS_CLEAR.
+        self.unknown_is_clear = unknown_is_clear
         self.clear_m = clear_m
         self.escape_duty = escape_duty
         self.min_scale = min_scale
@@ -551,6 +554,10 @@ class Avoider:
             return Decision(0, 0, "halted", reading.error)
 
         ahead = self._ahead(reading)
+        # Test-space override: nothing known in the corridor reads as open road
+        # rather than blind, so every timer and branch below sees clear.
+        if ahead is None and self.unknown_is_clear:
+            ahead = math.inf
 
         # Whether forward motion is allowed is a Schmitt trigger, not a bare
         # comparison: `ahead` sits within a few centimetres of --stop-m for as
@@ -620,7 +627,10 @@ class Avoider:
                 # comes back to it once it is through.
                 trim, error = self._heading_trim(heading_deg, duty)
                 left, right = self._mix(duty, self._turn + trim, duty)
-                reason = f"{ahead:.2f} m clear ahead"
+                reason = (
+                    "nothing known ahead, taken as clear" if math.isinf(ahead)
+                    else f"{ahead:.2f} m clear ahead"
+                )
                 if trim:
                     reason += f", {abs(error):.0f} deg off heading"
                 return Decision(left, right, "cruise", reason)
@@ -929,4 +939,5 @@ def avoider_from_config() -> Avoider:
         blind_hold_s=config.AVOID_BLIND_HOLD_S,
         scan=config.AVOID_SCAN,
         escape_duty=config.AVOID_ESCAPE_DUTY,
+        unknown_is_clear=config.AVOID_UNKNOWN_IS_CLEAR,
     )
