@@ -4,10 +4,11 @@
     uv run python tools/tof_debug.py              # both sensors, per config
     uv run python tools/tof_debug.py --bus 7      # just one, for bench bring-up
     uv run python tools/tof_debug.py --no-window  # terminal only, over ssh
+    uv run python tools/tof_debug.py --classes    # open on the class view
 
 The counterpart to `tools/stereo_debug.py`, and the tool the plan's Phase 2 is
-run through. It drives nothing: it opens the sensors, prints, and quits. Q or
-Esc closes the window.
+run through. It drives nothing: it opens the sensors, prints, and quits. G
+toggles the grid between depth and height classes; Q or Esc closes the window.
 
 ## Bring-up order, when nothing works yet
 
@@ -26,12 +27,20 @@ Esc closes the window.
 
 ## What to look at
 
-The grid pane shows each zone's range, coloured by what the height
-classification made of it — grey floor, red obstacle, blue above the robot,
-black unknown. A LEVEL mount is supposed to see floor in its lower rows: that
-is the design, and the height test is what removes it. If the lower rows come
-back red instead, the mount pose in config does not match the bracket, and
-every number downstream is describing somewhere else.
+The depth view (the default) colours each zone by range alone, on the same
+scale as `stereo_debug.py`: warm is near, cool is far, black is a zone the
+sensor would not vouch for. It needs no mount pose, so it is the one to trust
+on the bench and while the bracket is still moving.
+
+The class view (G) shows what reaches the avoider. In rows mode (the default,
+TOF_ROWS in config) the top rows are red wherever they return anything — every
+return there is an obstacle — and the lower rows are grey: ranged, and
+deliberately ignored, because on a level mount they are looking at the floor.
+Black is unknown. If the RED rows are the bottom ones, TOF_FLIP_V is wrong.
+
+In height mode (ORIO_TOF_MODE=height) it is the floor classification instead:
+grey floor, red obstacle, blue above the robot. There a level mount's lower
+rows should come back grey, and red ones mean the pose in config is off.
 
 Untrusted zones are black, never a distance. `target_status` 5 is a trusted
 range, 6 and 9 are usable with caveats, and everything else — 255 "no target"
@@ -52,11 +61,51 @@ from orio import config
 from orio.sectors import fill_clear, fuse
 from orio.tof import ToFArray, ToFSensor, arrays_from_config
 
-CLASS_NAMES = {0: "unknown", 1: "floor", 2: "OBSTACLE", 3: "above"}
+# 1 is "floor" in height mode and "a row not used" in rows mode (TOF_ROWS).
+CLASS_NAMES = {0: "unknown", 1: "ignored", 2: "OBSTACLE", 3: "above"}
 # Matches tools/stereo_debug.py, so the two views read the same way.
 CLASS_COLOURS = {0: (0, 0, 0), 1: (70, 70, 70), 2: (40, 40, 235), 3: (150, 90, 0)}
 # ANSI, for the terminal view: dim, grey, red, blue.
 CLASS_ANSI = {0: "\033[90m", 1: "\033[37m", 2: "\033[91m", 3: "\033[94m"}
+
+NEAR_M, FAR_M = config.TOF_MIN_RANGE_M, config.TOF_MAX_RANGE_M
+
+
+def colourise(depth):
+    """Depth in metres -> BGR. Near is warm, far is cool, unknown is black.
+
+    The same mapping as `stereo_debug.colourise`, over the ToF's range gate
+    instead of the cameras', so a colour means roughly the same thing in both.
+    """
+    import cv2
+    import numpy as np
+
+    depth = np.asarray(depth, dtype=float)
+    valid = np.isfinite(depth)
+    norm = np.zeros(depth.shape, np.uint8)
+    if valid.any():
+        clipped = np.clip(depth[valid], NEAR_M, FAR_M)
+        norm[valid] = (255 * (1 - (clipped - NEAR_M) / (FAR_M - NEAR_M))).astype(np.uint8)
+    out = cv2.applyColorMap(norm.reshape(-1, 1), cv2.COLORMAP_TURBO).reshape(*depth.shape, 3)
+    out[~valid] = 0
+    return out
+
+
+def depth_legend(height: int, width: int = 56):
+    """A vertical colour bar, near at the top, labelled in metres."""
+    import cv2
+    import numpy as np
+
+    top, bottom = 30, height - 12
+    ramp = np.linspace(NEAR_M, FAR_M, max(bottom - top, 2))
+    bar = colourise(ramp)
+    legend = np.zeros((height, width, 3), np.uint8)
+    legend[top:top + len(ramp), 4:18] = bar[:, None, :]
+    for frac in (0.0, 0.5, 1.0):
+        y = top + int(frac * (len(ramp) - 1))
+        cv2.putText(legend, f"{NEAR_M + frac * (FAR_M - NEAR_M):.1f}m", (20, y + 4),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.36, (220, 220, 220), 1, cv2.LINE_AA)
+    return legend
 
 
 def build_arrays(args) -> list[ToFArray]:
@@ -80,9 +129,7 @@ def print_grid(array: ToFArray, ranges, status) -> None:
     """One sensor's 8x8, as metres, coloured by class."""
     import numpy as np
 
-    classes = array.geometry.classify(
-        ranges, floor_tol_m=config.STEREO_FLOOR_TOL_M, ceiling_m=config.ROBOT_HEIGHT_M
-    )
+    classes = array.classify(ranges)
     rows, cols = array.sensor.rows, array.sensor.cols
     r = np.asarray(ranges).reshape(rows, cols)
     c = np.asarray(classes).reshape(rows, cols)
@@ -113,8 +160,12 @@ def print_sectors(omap) -> None:
                   f"{s.valid_frac:4.0%}")
 
 
-def draw_window(arrays, grids, omap):
-    """Grids on the left, the derived sector map on the right."""
+def draw_window(arrays, grids, omap, show_classes: bool = False):
+    """Grids on the left, the derived sector map on the right.
+
+    The grids are coloured by range, or with `show_classes` by what the height
+    classification made of each zone.
+    """
     import cv2
     import numpy as np
 
@@ -126,20 +177,24 @@ def draw_window(arrays, grids, omap):
         pane = np.zeros((rows * cell, cols * cell, 3), np.uint8)
         if frame is not None:
             ranges, _status = frame
-            classes = np.asarray(
-                array.geometry.classify(ranges, floor_tol_m=config.STEREO_FLOOR_TOL_M,
-                                        ceiling_m=config.ROBOT_HEIGHT_M)
-            ).reshape(rows, cols)
-            r = np.asarray(ranges).reshape(rows, cols)
+            r = np.asarray(ranges, dtype=float).reshape(rows, cols)
+            if show_classes:
+                classes = np.asarray(array.classify(ranges)).reshape(rows, cols)
+                colours = np.array([CLASS_COLOURS[int(k)] for k in classes.ravel()],
+                                   np.uint8).reshape(rows, cols, 3)
+            else:
+                colours = colourise(r)
             for i in range(rows):
                 for j in range(cols):
                     y, x = i * cell, j * cell
-                    pane[y:y + cell, x:x + cell] = CLASS_COLOURS[int(classes[i, j])]
+                    pane[y:y + cell, x:x + cell] = colours[i, j]
                     cv2.rectangle(pane, (x, y), (x + cell - 1, y + cell - 1), (30, 30, 30), 1)
                     if np.isfinite(r[i, j]):
+                        # Turbo's middle is light, where white text vanishes.
+                        ink = (0, 0, 0) if sum(int(v) for v in colours[i, j]) > 380 \
+                            else (255, 255, 255)
                         cv2.putText(pane, f"{r[i, j]:.2f}", (x + 3, y + cell // 2 + 5),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, (255, 255, 255), 1,
-                                    cv2.LINE_AA)
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.38, ink, 1, cv2.LINE_AA)
         label = np.zeros((22, pane.shape[1], 3), np.uint8)
         cv2.putText(label, array.name, (4, 16), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
                     (220, 220, 220), 1, cv2.LINE_AA)
@@ -148,6 +203,8 @@ def draw_window(arrays, grids, omap):
     grid_view = np.hstack([
         np.hstack([p, np.zeros((p.shape[0], pad, 3), np.uint8)]) for p in panes
     ])
+    if not show_classes:
+        grid_view = np.hstack([grid_view, depth_legend(grid_view.shape[0])])
 
     n = len(omap.sectors)
     sectors_view = np.zeros((grid_view.shape[0], max(240, n * 52), 3), np.uint8)
@@ -179,6 +236,8 @@ def main() -> int:
     ap.add_argument("--yaw", type=float, default=0.0, help="bench mode: yaw, + is right")
     ap.add_argument("--no-window", action="store_true", help="terminal only")
     ap.add_argument("--hz", type=float, default=4.0, help="terminal refresh rate")
+    ap.add_argument("--classes", action="store_true",
+                    help="open the window on the height-class view instead of depth")
     args = ap.parse_args()
 
     print(__doc__)
@@ -204,6 +263,7 @@ def main() -> int:
 
     grids: dict = {}
     maps: dict = {}
+    show_classes = args.classes
     last_print = 0.0
     try:
         while True:
@@ -234,8 +294,11 @@ def main() -> int:
 
             if not args.no_window:
                 import cv2
-                cv2.imshow(window, draw_window(opened, grids, omap))
-                if cv2.waitKey(1) & 0xFF in (ord("q"), ord("Q"), 27):
+                cv2.imshow(window, draw_window(opened, grids, omap, show_classes))
+                key = cv2.waitKey(1) & 0xFF
+                if key in (ord("g"), ord("G")):
+                    show_classes = not show_classes
+                elif key in (ord("q"), ord("Q"), 27):
                     return 0
             else:
                 time.sleep(0.01)

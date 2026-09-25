@@ -283,7 +283,8 @@ class ToFArray:
 
     def __init__(self, sensor: ToFSensor, *, height_m: float, pitch_deg: float,
                  yaw_deg: float, sectors: int = config.STEREO_SECTORS,
-                 hfov_deg: float = config.STEREO_HFOV_DEG) -> None:
+                 hfov_deg: float = config.STEREO_HFOV_DEG,
+                 mode: str = config.TOF_MODE, rows: int = config.TOF_ROWS) -> None:
         self.sensor = sensor
         self.height_m = height_m
         self.pitch_deg = pitch_deg
@@ -322,9 +323,24 @@ class ToFArray:
 
         # Fixed at construction: the zones do not move and neither does the
         # bracket, so all of the trigonometry is done exactly once, here.
+        ray_az = np.degrees(np.arctan2(tx, 1.0))
+        ray_el = np.degrees(np.arcsin(ty / norm))
         self.geometry = SectorGeometry(
-            np.degrees(np.arctan2(tx, 1.0)),
-            np.degrees(np.arcsin(ty / norm)),
+            ray_az, ray_el,
+            height_m=height_m, pitch_deg=pitch_deg, yaw_deg=yaw_deg,
+            sectors=sectors, hfov_deg=hfov_deg,
+        )
+
+        # Rows mode (see TOF_ROWS in config): only the top `rows` rows count,
+        # and every return in them is an obstacle. "Top" is by elevation in the
+        # sensor's own frame, AFTER TOF_FLIP_V — so a board mounted upside down
+        # still uses the rows that physically look up, once the flip is set.
+        self.mode = mode
+        self.rows = max(1, min(rows, sensor.rows))
+        levels = np.unique(el)[::-1]           # distinct row elevations, top first
+        self.used = el >= levels[self.rows - 1] - 1e-9
+        self.row_geometry = SectorGeometry(
+            ray_az[self.used], ray_el[self.used],
             height_m=height_m, pitch_deg=pitch_deg, yaw_deg=yaw_deg,
             sectors=sectors, hfov_deg=hfov_deg,
         )
@@ -348,21 +364,59 @@ class ToFArray:
 
         `ranges` are the ULD's axial distances; `range_scale` turns them into
         the line-of-sight ranges `SectorGeometry` is defined on.
+
+        In rows mode only the used rows are reduced, and the height bounds are
+        opened to +/-inf so that every return in them is an obstacle — there is
+        no floor to find in rows that look level or up. There is also no
+        `clear_m`: nothing here claims ground is free, and "no target" in a
+        used row stays unknown rather than clear.
         """
-        return ObstacleMap(
-            sectors=self.geometry.reduce(
-                ranges * self.range_scale,
+        import numpy as np
+
+        los = np.asarray(ranges, dtype=np.float32).ravel() * self.range_scale
+        if self.mode == "rows":
+            sectors = self.row_geometry.reduce(
+                los[self.used],
+                floor_tol_m=float("-inf"),
+                ceiling_m=float("inf"),
+                min_valid_frac=config.STEREO_MIN_VALID_FRAC,
+                source=self.name,
+            )
+        else:
+            sectors = self.geometry.reduce(
+                los,
                 floor_tol_m=config.STEREO_FLOOR_TOL_M,
                 ceiling_m=config.ROBOT_HEIGHT_M,
                 min_valid_frac=config.STEREO_MIN_VALID_FRAC,
                 source=self.name,
-            ),
+            )
+        return ObstacleMap(
+            sectors=sectors,
             timestamp=time.time(),
             # A ToF reports metres natively. There is no calibration to be
             # missing, which is a real advantage over the cameras and the reason
             # this does not propagate stereo's uncertainty flag.
             calibrated=True,
         )
+
+
+    def classify(self, ranges):
+        """Per-zone class for the debug views, matching what `reduce` does.
+
+        0 unknown (no trusted return), 1 ignored (a floor row in rows mode, or
+        floor in height mode), 2 obstacle, 3 above the robot (height mode only).
+        """
+        import numpy as np
+
+        los = np.asarray(ranges, dtype=np.float32).ravel() * self.range_scale
+        if self.mode != "rows":
+            return self.geometry.classify(los, floor_tol_m=config.STEREO_FLOOR_TOL_M,
+                                          ceiling_m=config.ROBOT_HEIGHT_M)
+        out = np.zeros(los.shape, np.uint8)
+        finite = np.isfinite(los)
+        out[finite & ~self.used] = 1
+        out[finite & self.used] = 2
+        return out
 
 
 def arrays_from_config(sectors: int = config.STEREO_SECTORS,
@@ -569,6 +623,17 @@ class ToFDetector:
         """The latest fused map, or `None` before the first frame."""
         with self._lock:
             return self._map
+
+    @property
+    def latest(self) -> dict[str, ObstacleMap]:
+        """Each sensor's own most recent map, by name, before fusion or ageing.
+
+        For the debug views, which need to say WHICH sensor put a number into
+        the fan. Nothing that decides anything should read this — `fresh_map()`
+        is the one with the staleness rule in it.
+        """
+        with self._lock:
+            return dict(self._latest)
 
     def fresh_map(self, max_age_s: float = config.TOF_STALE_S) -> ObstacleMap | None:
         """The latest map if it is recent enough to fuse, else `None`.

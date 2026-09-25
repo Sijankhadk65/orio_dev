@@ -63,6 +63,8 @@ from dataclasses import dataclass
 from . import config
 from .avoid import Sensor, avoider_from_config, look_around
 from .bump import StallDetector
+from .imu import TurnTracker
+from .tilt import Attitude
 from .drivetrain import DRIVE_REFRESH_S, Drivetrain
 from .motion import JOINT_NECK, Motion, travel_time_s
 
@@ -153,6 +155,10 @@ class Body:
         # rather than on `Sensor` because it needs the duty that was commanded,
         # and `_drive_tick` is the only place a duty pair reaches the board.
         self._stall = StallDetector()
+        # Body attitude: the tip/lift guard, the heading the policy holds, and
+        # the tracker a measured turn uses. Unlike the cameras this is not a
+        # condition of driving at all — see _open_imu().
+        self._attitude = Attitude()
         self._drive_sent_at = 0.0  # when the standing duty pair last went out
         # The cruise currently running, if any — at most one, since there is one
         # set of wheels. See cruise().
@@ -210,6 +216,7 @@ class Body:
             return self
 
         self._open_drivetrain()
+        self._open_imu()
         return self
 
     @property
@@ -329,6 +336,48 @@ class Body:
             f"drivetrain ready at {self.speed_percent:g}% speed ({link.identity})"
         )
 
+    def _open_imu(self) -> None:
+        """Open the IMU, and carry on without it if it will not open.
+
+        The only optional board on the robot. No IMU means no tip/lift guard
+        and, later, turns that are timed rather than measured — which is where
+        this robot was before the part was fitted, so it is not a reason to
+        refuse to drive. Contrast `_open_sensor`, where failing costs the
+        session its wheels.
+        """
+        if self._drive is None:
+            return
+        self._attitude = Attitude.open()
+        if self._attitude.note:
+            self.notes.append(self._attitude.note)
+
+    def _guard_tilt(self) -> str | None:
+        """Why the body must not be driving right now, or None.
+
+        Silent when there is no IMU or no guard: absent evidence is not
+        evidence of a tipped robot, and this must not be the thing that stops
+        a robot with an unplugged sensor from moving.
+        """
+        return self._attitude.blocked()
+
+    def _heading(self) -> float | None:
+        """The body's heading for the policy, or None when there is no IMU.
+
+        None is the whole fallback: `Avoider` holds nothing when it is handed
+        nothing, so a robot with an unplugged IMU drives exactly as it did
+        before the sensor was fitted.
+        """
+        return self._attitude.heading()
+
+    def turn_tracker(self) -> TurnTracker | None:
+        """A fresh tracker for one turn, or None when there is no IMU.
+
+        None is not a failure: it means this turn is timed, the way every turn
+        was before the IMU existed. Callers keep their timed path for exactly
+        that reason — see `config.SEEK_TURN_BURST_S`.
+        """
+        return self._attitude.tracker()
+
     @property
     def sensor(self) -> Sensor | None:
         """The running stereo thread, for anything that needs a camera frame.
@@ -346,6 +395,7 @@ class Body:
             if self._drive is not None:
                 self._drive.close()  # zeroes the wheels and latches the e-stop
                 self._drive = None
+            self._attitude.close()
             if self._sensor is not None:
                 self._sensor.close()
                 self._sensor = None
@@ -530,6 +580,11 @@ class Body:
             # Every threshold is a distance through the driving pose; a head
             # left turned by a failed look-around measures somewhere else.
             return None, "the head isn't on the driving pose", None, last_sent
+        tipped = self._guard_tilt()
+        if tipped is not None:
+            # Attitude beats everything: a robot going over does not get to
+            # consult the obstacle policy about where to drive next.
+            return None, tipped, None, last_sent
         self._avoider.scan = config.AVOID_SCAN and self._neck is not None
 
         self._sense_bump(link, sensor, last_sent)
@@ -541,7 +596,7 @@ class Body:
             # to report — just the reason nothing may move.
             return None, halted, None, last_sent
 
-        decision = self._avoider.decide(signs, duty, reading)
+        decision = self._avoider.decide(signs, duty, reading, self._heading())
         if decision.state == "halted":
             return decision.state, decision.reason, None, last_sent
         if decision.state == "scan":

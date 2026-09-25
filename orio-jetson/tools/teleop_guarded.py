@@ -109,6 +109,7 @@ from orio import config
 from orio.avoid import DEFAULT_HALF_WIDTH_M, Avoider, Sensor, look_around
 from orio.bump import StallDetector
 from orio.drivetrain import DRIVE_REFRESH_S, Drivetrain
+from orio.tilt import Attitude
 from orio.motion import JOINT_NECK, Motion, travel_time_s
 
 # The drivetrain board, by its stable udev name — never a raw /dev/ttyACM*,
@@ -183,7 +184,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duty", type=float, default=DEFAULT_DUTY_PERCENT,
                         help=f"cruise duty %% (ceiling {MAX_DUTY_PERCENT:g}, from "
                              f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
-    parser.add_argument("--stop-m", type=float, default=0.50, help="never drive forward inside this")
+    parser.add_argument("--stop-m", type=float, default=config.AVOID_STOP_M,
+                        help="never drive forward inside this")
     parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
     parser.add_argument("--stale-s", type=float, default=0.50, help="reading older than this halts")
@@ -228,6 +230,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--blind-hold-s", type=float, default=3.0,
         help="waiting this long with nothing known ahead stops the robot",
+    )
+    parser.add_argument(
+        "--unknown-clear", action="store_true", default=config.AVOID_UNKNOWN_IS_CLEAR,
+        help="TEST SPACE ONLY: drive on when nothing ahead can be seen instead of "
+        "waiting (config.AVOID_UNKNOWN_IS_CLEAR)",
     )
     parser.add_argument(
         "--no-scan", action="store_true",
@@ -381,6 +388,7 @@ def main() -> int:
             "is never steered toward anyway."
         )
 
+    attitude = Attitude.open()
     avoider = Avoider(
         stop_m=args.stop_m,
         clear_m=args.clear_m,
@@ -397,8 +405,11 @@ def main() -> int:
         backoff_s=args.backoff_s,
         blind_hold_s=args.blind_hold_s,
         escape_duty=args.escape_duty,
+        unknown_is_clear=args.unknown_clear,
     )
     avoider.enabled = not args.no_avoid
+    if args.unknown_clear:
+        print("WARNING: unknown ahead is being treated as CLEAR — test space only\n")
 
     print(__doc__)
 
@@ -494,7 +505,9 @@ def main() -> int:
 
             with link as dt, KeyReader() as keys:
                 print(f"duty={duty_percent:g}%  avoidance={'ON' if avoider.enabled else 'OFF'} "
-                      f"(pivot<{args.stop_m:g}m, cruise>{args.clear_m:g}m)\n")
+                      f"(pivot<{args.stop_m:g}m, cruise>{args.clear_m:g}m)")
+                print(f"{attitude.note}\n")
+                tipped_shown = False
                 while True:
                     while keys.kbhit():
                         key = keys.getch().lower()
@@ -542,8 +555,26 @@ def main() -> int:
                                 print(f"\nBUMP: {bump.describe()}")
                             last_bump = stall.active
 
+                    # Attitude first: a robot going over does not get to
+                    # consult the corridor about where to drive next. Same
+                    # order as Body._drive_tick, and the same guard object.
+                    tipped = attitude.blocked()
+                    if tipped is not None:
+                        if latch is not None or not tipped_shown:
+                            print(f"\nTIPPED/LIFTED: {tipped}")
+                            tipped_shown = True
+                        latch = None
+                        avoider.reset()
+                        dt.set_drive(0, 0)
+                        last_sent = (0, 0)
+                        time.sleep(LOOP_TICK_S)
+                        continue
+                    tipped_shown = False
+
                     reading = sensor.reading
-                    decision = avoider.decide(latch, round(duty_percent * 10), reading)
+                    decision = avoider.decide(
+                        latch, round(duty_percent * 10), reading, attitude.heading()
+                    )
 
                     # Stop, look left and right, and let the policy choose from
                     # the wider view. Keys are not read for the ~2 s this takes,
@@ -610,10 +641,16 @@ def main() -> int:
                         # fallback, . nothing knew. A column
                         # that reads T while the robot slows is the fan earning
                         # its place; one that reads . is a blind sector.
+                        # `head` is the policy's chosen steer angle; `imu` is
+                        # the body's own heading, which is what the hold trims
+                        # against. `--` when there is no IMU, and then nothing
+                        # is held.
+                        imu_heading = attitude.heading()
+                        imu_col = "  --" if imu_heading is None else f"{imu_heading:+4.0f}"
                         print(
                             f"\r ahead {clear:>5} m │ {sector_sources(reading)} │ "
                             f"{decision.state:<7} │ "
-                            f"head {decision.heading_deg:+3.0f}° │ "
+                            f"head {decision.heading_deg:+3.0f}° │ imu {imu_col}° │ "
                             f"L{command[0]:+5d} R{command[1]:+5d} │ duty {duty_percent:3.0f}% │ "
                             f"avoid {'ON ' if avoider.enabled else 'OFF'} ",
                             end="",
@@ -625,6 +662,7 @@ def main() -> int:
             pass
         finally:
             print("\n--- stopping ---")
+            attitude.close()
             sensor.close()
     finally:
         if neck is not None:

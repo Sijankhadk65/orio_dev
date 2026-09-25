@@ -299,7 +299,13 @@ CRUISE_DEADMAN_S = float(_env("ORIO_CRUISE_DEADMAN_S", "1.0"))
 # half_width / sin(31.8 deg) — the radius inside which turning cannot clear the
 # corridor at all, because the outermost sector centre is only 31.8 deg off-axis
 # — or every close encounter ends in a blind back-off instead of a turn.
-AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.50"))
+# 0.20 since 2026-09-24 (was 0.50), at the user's request once the low ToF fan
+# was fused in: it ranges from ~2 cm, so the last half metre is no longer blind.
+# It is INSIDE both limits above — STEREO_MIN_RANGE_M (0.25), so a thing only the
+# cameras see reads unknown before it reads 0.20, and the 0.76 m turn radius, so
+# close encounters end in a back-off more often than a turn. The braking distance
+# at the 5% duty ceiling has not been re-measured against it.
+AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.20"))
 AVOID_CLEAR_M = float(_env("ORIO_AVOID_CLEAR_M", "1.20"))
 
 # Duty scale at STOP_M, ramping to full at CLEAR_M — the robot slows as it
@@ -339,6 +345,35 @@ AVOID_RELEASE_M = float(_env("ORIO_AVOID_RELEASE_M", "0.12"))
 # sensor — which is why it is slow, brief, and entered only once truly stuck.
 AVOID_COMMIT_CLEAR_S = float(_env("ORIO_AVOID_COMMIT_CLEAR_S", "0.8"))
 AVOID_PIVOT_TIMEOUT_S = float(_env("ORIO_AVOID_PIVOT_TIMEOUT_S", "2.0"))
+
+# ── Heading hold (orio/avoid.py, needs the IMU) ───────────────────────────────
+# The fix for the Avoider's own admission that it "wanders rather than
+# travels": it remembers the heading of the first clear tick and trims the
+# wheels back to it while the corridor stays clear. With no IMU nothing is
+# passed in and nothing is held, which is last week's behaviour exactly.
+AVOID_HEADING_HOLD = _env("ORIO_AVOID_HEADING_HOLD", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# Per-mille of differential per degree of error. Deliberately gentler than
+# AVOID_TURN_GAIN, which exists to get around an obstacle: at 5% duty (50
+# per-mille) a 10 deg drift asks for 5 per-mille of differential, where
+# steering would ask for 10. This is a trim, not a manoeuvre.
+AVOID_HEADING_GAIN = float(_env("ORIO_AVOID_HEADING_GAIN", "0.5"))
+
+# The cap, as a fraction of the commanded duty, so it scales with speed rather
+# than becoming a pivot at low duty. 0.3 of 50 per-mille is 15 — enough to
+# come back over a few metres, not enough to swerve.
+AVOID_HEADING_MAX_TRIM = float(_env("ORIO_AVOID_HEADING_MAX_TRIM", "0.3"))
+
+# Below this the robot is on heading. Yaw itself is far steadier than this
+# (0.03 deg over 55 s standing still); the band is for the chassis, not the
+# sensor — a castor that re-points, a floor that is not flat — and it stops
+# the wheels being trimmed every tick over nothing.
+AVOID_HEADING_DEADBAND_DEG = float(_env("ORIO_AVOID_HEADING_DEADBAND_DEG", "2.0"))
 AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 
 # How long the robot may wait with NOTHING known in its corridor before it
@@ -348,6 +383,17 @@ AVOID_BACKOFF_S = float(_env("ORIO_AVOID_BACKOFF_S", "1.0"))
 # from AVOID_BLIND_PIVOT_S on 2026-09-22 when that changed). Stopping is the
 # bound; driving on unknown is not. First guess — tune on the floor.
 AVOID_BLIND_HOLD_S = float(_env("ORIO_AVOID_BLIND_HOLD_S", "3.0"))
+
+# TEST-SPACE ONLY — 2026-09-23. Treat a corridor with nothing KNOWN in it as
+# clear road instead of blocked, so an open, featureless floor (or a run past
+# the 4 m range gate) is driven through rather than stopped, waited on and
+# looked around at. Off by default and it must stay that way: it removes the
+# one rule that stops the robot driving into something stereo simply failed to
+# range. Only for a cleared, supervised space. A missing, stale or failed
+# reading still halts — that is a dead camera, not an empty room.
+AVOID_UNKNOWN_IS_CLEAR = _env("ORIO_AVOID_UNKNOWN_IS_CLEAR", "0").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
 
 # Stop and look around before committing to a way past something. When the
 # policy has no clear way on in the view it has — an obstacle ahead and no
@@ -513,11 +559,26 @@ SEEK_TIMEOUT_S = float(_env("ORIO_SEEK_TIMEOUT_S", "60"))
 SEEK_ARRIVE_M = float(_env("ORIO_SEEK_ARRIVE_M", str(AVOID_CLEAR_M)))
 
 # A target within this many degrees of straight ahead counts as lined up; wider
-# than that and Orio pivots before driving. One burst is short deliberately —
-# there is no odometry, so heading is corrected by looking again, not by
-# calculating how long to turn.
+# than that and Orio pivots before driving.
 SEEK_CENTRE_DEG = float(_env("ORIO_SEEK_CENTRE_DEG", "9"))
+
+# How far one pivot toward the target turns the robot, WITH the IMU: the turn
+# ends when the body has actually turned this far. 20 deg is about what the old
+# timed burst delivered (the calibration run pivoted ~71 deg in 1.0 s at
+# AVOID_ESCAPE_DUTY), and it stays deliberately short — a pivot held down
+# through a look oscillates, and the correction comes from looking again.
+SEEK_TURN_DEG = float(_env("ORIO_SEEK_TURN_DEG", "20"))
+
+# WITHOUT the IMU, or if it stops answering mid-turn, the pivot is this long
+# and unmeasured — which is what every turn was before the sensor was fitted.
 SEEK_TURN_BURST_S = float(_env("ORIO_SEEK_TURN_BURST_S", "0.3"))
+
+# The measured turn's own stop, for the case where the robot is commanded to
+# pivot and does not: a wheel against a skirting board, a caster wedged, a
+# carpet edge. Without it a turn that never reaches SEEK_TURN_DEG would hold
+# the wheels down until the seek timeout. Generous against the ~0.3 s the turn
+# should take, because it is a backstop and not a target.
+SEEK_TURN_MAX_S = float(_env("ORIO_SEEK_TURN_MAX_S", "2.0"))
 
 # How often the approach re-detects while it is driving. This used to be
 # SEEK_HOP_S, the length of one drive-and-stop step, and its value was a
@@ -810,17 +871,14 @@ STEREO_GROUND_STRIDE = int(_env("ORIO_STEREO_GROUND_STRIDE", "2"))
 # that carries the e-stop heartbeat — to move 384 bytes of grid per reading.
 #
 # WIRED AND RANGING as of 2026-09-17: both parts answer at 0x29, one per bus,
-# and the pair opens, ranges and fuses through orio/tof.py. What is NOT done is
-# the bracket — the mount poses below are still the plan's intent rather than a
-# measurement.
+# and the pair opens, ranges and fuses through orio/tof.py.
 #
-# STILL OFF BY DEFAULT — but no longer for want of a measurement. The pose
-# below IS measured now. It is off because of what the measurement says: the
-# bracket sits at 0.64 m looking 8 deg down, so the fan clears the floor only
-# past 1.22 m and flies over exactly the low obstacles it was added to catch,
-# reporting the floor behind them as clear road. Read the block at
-# TOF_HEIGHTS_M before switching this on; `ORIO_TOF=1` runs it today and the
-# geometry is right, so it is a fair experiment — just not one to leave armed.
+# REMOUNTED LOW AND LEVEL 2026-09-24, and measured — see TOF_HEIGHTS_M. The
+# 0.64 m bracket that kept this off is gone. It STAYS OFF BY DEFAULT until the
+# pair has passed the floor tests (empty floor reads no obstacle, a 5 cm box
+# stops the robot): a pose that is wrong by a few degrees turns floor into
+# phantom obstacles, and a teleop run on the old pose did exactly that —
+# PIVOT/BACKOFF loops in an open room. `ORIO_TOF=1` to run it.
 # A ToF that fails to open degrades to stereo-only either way.
 TOF_ENABLED = _env("ORIO_TOF", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
@@ -853,49 +911,38 @@ TOF_ADDRESSES = tuple(
 )
 TOF_NAMES = tuple(n.strip() for n in _env("ORIO_TOF_NAMES", "tof-left,tof-right").split(","))
 
-# MEASURED 2026-09-17 on the as-built bracket. Height above the floor (tape
-# measure), pitch positive DOWN and yaw positive RIGHT, both solved from a flat
-# wall by tools/tof_pose.py over five repeats per sensor:
+# MEASURED 2026-09-24 on the temporary low bracket: chipboard under the front
+# bottom frame rail, SparkFun boards pins-down, splayed outward. Pitch positive
+# DOWN, yaw positive RIGHT.
 #
-#     tof-left  (bus 7)   pitch +8.13 +/- 0.08 deg   yaw -5.03 +/- 0.21 deg
-#     tof-right (bus 1)   pitch +7.80 +/- 0.05 deg   yaw +2.07 +/- 0.03 deg
-#     both                height 0.64 m
+#     tof-left  (bus 7)   height 0.075 m   pitch -4.6 +/- 0.4   yaw -23.2 deg
+#     tof-right (bus 1)   height 0.075 m   pitch -2.2 +/- 0.4   yaw +19.6 deg
 #
-# The yaws carry however square the robot was to that wall; the DIFFERENCE
-# between them does not, and it is 7.1 deg.
+# Height is the TAPE MEASURE, window centre to floor. Pitch and yaw are
+# `tools/tof_pose.py --wall` against a wall at ~1.0-1.1 m (19-20 zones each).
+# Splay 42.8 deg against the 45 intended; the -1.8 deg mean is how square the
+# robot was to the wall. Roll from the same run: -1.1 / +1.8 deg.
 #
-# THE BRACKET IS NOT WHAT THIS PLAN ASSUMED, AND THE NUMBERS ABOVE ARE HOW YOU
-# CAN TELL. The intent was LOW and LEVEL — 3-6 cm off the floor, splayed 22.5
-# deg each way so two 45 deg squares abut into ~90 deg of cover. What is built
-# sits at 0.64 m, looks 8 deg DOWN, and splays 7.1 deg, so the two fields
-# overlap almost entirely and span about 52 deg of the 73.1 deg sector grid.
+# THE FLOOR FIT WAS NOT USED, deliberately. Over the glossy tile it returned
+# 10.6-11.6 cm and 2-3 deg DOWN — against a tape reading of 7.5 cm and a wall
+# pitch 4.6-7.8 deg the other way, on only 23-30 of 64 zones. At grazing
+# incidence that tile returns weakly or as a mirror (an obstacle's reflection
+# reads at roughly the obstacle's own range), which biases a plane fit, while
+# the wall is a strong head-on return. The tape settles which to believe: it
+# agrees with neither the floor's height nor, therefore, its pitch.
 #
-# What that costs, and it is the whole reason the fan was specified: at 0.64 m
-# and 8 deg down, the LOWEST zone centre passes the floor only at 1.22 m. Nearer
-# than that the fan flies over everything short:
-#
-#     at 0.25 m   nothing below 0.51 m is in the beam
-#     at 0.50 m   nothing below 0.38 m
-#     at 1.00 m   nothing below 0.12 m
-#     at 1.22 m   the beam finally reaches the floor
-#
-# So the 5 cm box this plan was written around enters the fan at about 1 m and
-# LEAVES IT AGAIN as the robot closes — invisible exactly when it matters. Worse
-# than invisible: the beam passes over the box and lands on the floor behind it,
-# so the sector is reported as ground verified free out to 1.2 m, fill_clear
-# turns that into a DISTANCE, and a sector stereo cannot see into either (which
-# is the premise — the box is below the camera band) fuses to "clear road".
-#
-# That is why ORIO_TOF stays 0. The pose here is correct and worth having; the
-# mount is a decision. Low and level covers the volume the cameras cannot, and
-# this one does not.
+# Both sensors still look slightly UP. Harmless for obstacles, but it thins
+# the floor coverage the height classification relies on: tip them 2-4 deg
+# forward when the printed mount replaces this one, then re-measure. The
+# previous bracket (0.64 m, 8 deg down, 7.1 deg splay, 2026-09-17) flew over
+# every low obstacle — the history is in docs/avoidance-plan.md.
 #
 # Unlike the cameras, this mount is fixed to the CHASSIS, not the neck. That is
 # a feature: the ToF fan does not move when the head looks around, so it is
 # immune to the whole neck-aim problem the stereo thresholds live with.
-TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.64,0.64").split(","))
-TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "8.1,7.8").split(","))
-TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-5.0,2.1").split(","))
+TOF_HEIGHTS_M = tuple(float(v) for v in _env("ORIO_TOF_HEIGHTS_M", "0.075,0.075").split(","))
+TOF_PITCHES_DEG = tuple(float(v) for v in _env("ORIO_TOF_PITCHES_DEG", "-4.6,-2.2").split(","))
+TOF_YAWS_DEG = tuple(float(v) for v in _env("ORIO_TOF_YAWS_DEG", "-23.2,19.6").split(","))
 
 # Angular span of the 8x8 grid, per ST: 45 x 45 deg (the 65 deg figure in the
 # marketing is the diagonal of the full optical field, not the zone array). Each
@@ -949,6 +996,30 @@ TOF_FLIP_V = _env("ORIO_TOF_FLIP_V", "0").strip().lower() not in ("0", "false", 
 # Raise this only with that in mind: it is the window in which a sensor may say
 # nothing before its sectors go unknown, and unknown is not clear.
 TOF_STALE_S = float(_env("ORIO_TOF_STALE_S", str(AVOID_STALE_S)))
+
+# WHICH ROWS OF EACH 8x8 GRID COUNT, from the top. Decided 2026-09-24: the fan
+# is there to say "something is in front of me", not to map the floor, so only
+# the rows at and above the horizon are used and EVERY return in them is an
+# obstacle at its ground distance. No height classification, no floor.
+#
+# Why not all eight: a level sensor's 45 deg grid looks up to 22.5 deg down, so
+# its lower rows always hit the floor (row 5 at ~1.5 m, row 8 at ~0.2 m from
+# 7.5 cm). Telling those floor hits from obstacles needs the pitch right to a
+# fraction of a degree — row 5's floor hit moves from 1.1 m to 7 m across +/-1
+# deg — and the castor alone swings the body 0.7-1.4 deg. With the full grid, a
+# 2 deg pitch error put a steady phantom obstacle at 1.46 m on an empty floor.
+#
+# The price, stated plainly: the used rows start at the sensor's own height, so
+# something SHORTER than roughly the mount height (7.5 cm) is not seen. With 4
+# rows the lowest used ray is row 4's centre, +2.8 deg above level — a 10 cm box
+# is in it from ~0.5 m, a 5 cm box never is. 5 adds row 5 (-2.8 deg), which
+# catches lower things but brings the floor back in at ~1.5 m on a level mount.
+#
+# ORIO_TOF_MODE=height restores the full-grid floor classification (TOF_HEIGHTS_M
+# and the pitch then matter again); rows mode uses pitch and yaw only to place
+# each zone in the right sector.
+TOF_MODE = _env("ORIO_TOF_MODE", "rows").strip().lower()
+TOF_ROWS = int(_env("ORIO_TOF_ROWS", "4"))
 
 # ── Bump: a stalled wheel, read as an obstacle ────────────────────────────────
 # See orio/bump.py. A wheel that will not turn under duty is contact, which is a
@@ -1094,6 +1165,110 @@ BUMP_MEMORY_S = float(_env("ORIO_BUMP_MEMORY_S", "5.0"))
 # zero-range reading is inside the corridor at every angle, which is exactly
 # right for something already touching the robot.
 BUMP_DISTANCE_M = float(_env("ORIO_BUMP_DISTANCE_M", "0.0"))
+
+# ── IMU: how the body is sitting and which way it is pointing ─────────────────
+# A BNO085 on the Jetson's 40-pin UART in UART-RVC mode: it streams yaw, pitch,
+# roll and acceleration at 100 Hz and takes no commands at all. See orio/imu.py
+# for why the datasheet's axis names do not survive this mount.
+IMU_PORT = _env("ORIO_IMU_PORT", "/dev/ttyTHS1")
+
+# ENABLED BY DEFAULT, AND NOT SAFETY-CRITICAL. A missing or stale IMU drops the
+# turns back to being timed, the way they were before the part existed — it does
+# not stop the robot. That is the opposite of sight (no reading, no driving),
+# and the difference is that the cameras are what make driving safe while this
+# only makes it accurate. `ORIO_IMU=0` opts out.
+IMU_ENABLED = _env("ORIO_IMU", "1").strip().lower() not in ("0", "false", "no", "off")
+
+# How old a reading may be before a caller falls back to timed behaviour. The
+# sensor sends every 10 ms, so 0.2 s is twenty missed packets: a link that is
+# down, not one that hiccuped.
+IMU_STALE_S = float(_env("ORIO_IMU_STALE_S", "0.20"))
+
+# THE MOUNT, MEASURED — do not hand-edit these; re-run the tool.
+#   uv run python tools/imu_calibrate_drive.py   (drives, then three shim poses)
+#   uv run python tools/imu_calibrate.py         (no driving at all)
+#
+# Measured 2026-09-22 with a 20 mm shim (/tmp/imucal.csv), board ~35 cm above
+# the drive axle with +Y forward:
+#
+#   rest pose        pitch -3.41, roll +5.15   <- the offsets below
+#   castor shimmed   pitch -7.20 vs flat, roll +0.16   -> nose down reads NEGATIVE
+#   left wheel up    pitch +3.06, roll +1.70   } one wheel tilts this three-point
+#   right wheel up   pitch +3.73, roll -1.83   } chassis DIAGONALLY, so the lean
+#   (left-right)/2   pitch -0.76, roll +1.76   <- is the difference: leaning
+#                                                 right reads POSITIVE
+#   pivot left -70.8 deg, pivot right +72.4 deg -> a left turn reads NEGATIVE
+#
+# The offsets are what the body reads sitting still, and subtracting them is
+# what makes "level" mean this robot's own resting pose — the pose every
+# AVOID_* distance and the NECK_TILT_DEG sweep were measured in. It is NOT a
+# spirit level's idea of level: the body really does sit ~5 deg leaning and
+# ~3 deg nose-down.
+#
+# THE CASTOR MOVES THE PITCH OFFSET. Rest windows across that one run read
+# -3.41, -3.17, -3.03, -2.18 and -1.67 deg, all with nothing touching the
+# robot: the castor swivels and the body pitches with it (see the chassis note
+# in the KB). So treat pitch as +/-1.7 deg uncertain at rest, and set any
+# tip-guard threshold well outside that band — 1 deg of pitch means nothing on
+# this chassis. Roll held to 0.1 deg across the same windows and is the
+# trustworthy one.
+IMU_PITCH_OFFSET_DEG = float(_env("ORIO_IMU_PITCH_OFFSET_DEG", "-3.41"))
+IMU_ROLL_OFFSET_DEG = float(_env("ORIO_IMU_ROLL_OFFSET_DEG", "5.15"))
+
+# Signs that turn the sensor's convention into the body's: pitch + is nose UP,
+# roll + is leaning RIGHT, yaw + is a LEFT turn.
+IMU_PITCH_SIGN = int(_env("ORIO_IMU_PITCH_SIGN", "1"))
+IMU_ROLL_SIGN = int(_env("ORIO_IMU_ROLL_SIGN", "1"))
+IMU_YAW_SIGN = int(_env("ORIO_IMU_YAW_SIGN", "-1"))
+
+# ── Tip / lift guard (orio/tilt.py) ───────────────────────────────────────────
+# The wheels stop when the body is not sitting on them properly. UNVERIFIED ON
+# THE ROBOT: the limits below are argued from the chassis, not measured by
+# tipping it, and that experiment is worth doing deliberately rather than by
+# accident. `ORIO_IMU_TILT_GUARD=0` turns it off.
+TILT_GUARD_ENABLED = _env("ORIO_IMU_TILT_GUARD", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+
+# ROLL IS THE TIGHTER LIMIT, because roll is the angle worth trusting (0.1 deg
+# of drift across a run) and because sideways is the direction this chassis
+# actually goes over: the track is 0.70 m, so the wheels are +/-0.35 m from
+# centre, while the mass sits high — the IMU alone is 0.45 m up. Static tipping
+# is somewhere past 35-40 deg; 12 stops things long before that and still
+# clears any floor this robot is meant to drive on.
+IMU_TILT_ROLL_DEG = float(_env("ORIO_IMU_TILT_ROLL_DEG", "12"))
+
+# PITCH IS NECESSARILY COARSER. The castor swivel moves rest pitch by ~1.7 deg
+# on its own (see the IMU block above), a 20 mm shim under the castor showed
+# 7.2 deg, and a ramp or a threshold is a real pitch that must not stop the
+# robot. 15 sits clear of all of that. Anything finer belongs to the pitch
+# gating in phase 5, which drops depth frames rather than stopping wheels.
+IMU_TILT_PITCH_DEG = float(_env("ORIO_IMU_TILT_PITCH_DEG", "15"))
+
+# Total specific force, in mg, outside which the robot is not simply sitting on
+# the floor. At rest it reads 986-990 mg. A LIFT IS A TRANSIENT, NOT A STATE:
+# held still in the air it reads 1 g again, indistinguishable from the floor
+# (see orio/tilt.py). These bounds catch the moment of being picked up, put
+# down hard, or dropped — 600 mg is a firm lift, 1400 a firm set-down, and a
+# free fall heads for 0.
+IMU_LIFT_LOW_MG = float(_env("ORIO_IMU_LIFT_LOW_MG", "600"))
+IMU_LIFT_HIGH_MG = float(_env("ORIO_IMU_LIFT_HIGH_MG", "1400"))
+
+# How long a fault must hold before the wheels stop. Tilt is debounced against
+# the body rocking on braking; lift is deliberately shorter, because the
+# evidence only exists during the transient and 0.2 s of it would be gone
+# before it confirmed.
+IMU_TILT_CONFIRM_S = float(_env("ORIO_IMU_TILT_CONFIRM_S", "0.20"))
+IMU_LIFT_CONFIRM_S = float(_env("ORIO_IMU_LIFT_CONFIRM_S", "0.05"))
+
+# How long it must look fine before driving is allowed again. Long compared to
+# the confirm times on purpose: getting going again is the dangerous
+# direction, and this is what stops the wheels stuttering while the robot is
+# balanced on the edge of the limit.
+IMU_TILT_CLEAR_S = float(_env("ORIO_IMU_TILT_CLEAR_S", "1.0"))
 
 # ── Knowledge base (RAG) ───────────────────────────────────────────────────────
 # Local, per-profile knowledge Orio can search — see orio/knowledge.py. Each

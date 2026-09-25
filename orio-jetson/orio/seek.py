@@ -253,16 +253,40 @@ class Seeker:
         return f"gave up going to the {label} after {config.SEEK_TIMEOUT_S:g} seconds — {where}"
 
     def _turn(self, cruise, side: str) -> None:
-        """One short pivot toward `side`. Timed, not measured — hence "short":
-        the correction comes from looking again, not from turning accurately.
+        """One short pivot toward `side`, by ANGLE when the IMU is answering.
+
+        With an IMU the turn ends when the body has turned `SEEK_TURN_DEG`,
+        so the same command means the same heading change on carpet as on
+        lino, at a flat battery as at a full one. Without one it falls back to
+        the timed burst this used to be — unmeasured, but exactly the
+        behaviour that existed before the sensor was fitted.
+
+        Two stops besides the angle: `SEEK_TURN_MAX_S`, for a robot that is
+        commanded to pivot and does not move (a wheel against a skirting
+        board), and the policy itself, which can halt the cruise mid-turn.
 
         Through the cruise rather than a hop of its own, so the control loop
         this behaviour is driving stays the one loop throughout — but still a
         burst that ends in `hold()`, because a pivot held down through a look
         oscillates (see the module docstring).
         """
+        tracker = self._body.turn_tracker()
         cruise.go(side)
-        time.sleep(config.SEEK_TURN_BURST_S)
+        if tracker is None:
+            time.sleep(config.SEEK_TURN_BURST_S)
+        else:
+            deadline = time.monotonic() + config.SEEK_TURN_MAX_S
+            while time.monotonic() < deadline:
+                turned = tracker.turned
+                if turned is not None and abs(turned) >= config.SEEK_TURN_DEG:
+                    break
+                time.sleep(0.01)
+            else:
+                log.info(
+                    "pivot %s gave up after %.1fs having turned %.0f deg of %.0f",
+                    side, config.SEEK_TURN_MAX_S, abs(tracker.turned or 0.0),
+                    config.SEEK_TURN_DEG,
+                )
         cruise.hold()
         # A pivot's states are not the approach's. Dropping them keeps the next
         # window purely forward, so `blocked` still answers the question it
