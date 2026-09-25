@@ -45,10 +45,13 @@ Turns are also where the guard is thinnest, since nothing senses the sides.
 `stereo.obstacles()` splits the frame into equal-width columns and charges each
 one a distance, so the sector a detection's bounding-box centre falls into is
 just `int(cx / width * n)`. That is an exact correspondence rather than an
-approximation, and it means the target's range comes from the same depth map
-the avoidance policy is steering on, with no field-of-view arithmetic in
-between to get wrong. It also means the two are only consistent if the box and
-the depth came from the same frame — hence `Sensor.snapshot()`.
+approximation, and it means the target's RANGE comes from the same depth map
+the avoidance policy is steering on. It also means the two are only consistent
+if the box and the depth came from the same frame — hence `Sensor.snapshot()`.
+
+The BEARING does not come from the sector. A sector is 13 deg wide, far too
+coarse to aim with (see `_bearing`), so the angle is taken from the box centre
+and each pivot turns no further than the target is off.
 
 ## Approaching and avoiding are the same manoeuvre
 
@@ -64,6 +67,7 @@ front of someone anyway.
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import dataclass
 
@@ -79,13 +83,28 @@ class Sighting:
 
     label: str
     confidence: float
-    bearing_deg: float        # sector centre; negative is left of straight ahead
+    bearing_deg: float        # box centre; negative is left of straight ahead
     distance_m: float | None  # that sector's range, or None if it reads unknown
     head_pan_deg: float       # where the head was pointing when this was taken
 
     @property
     def side(self) -> str:
         return "left" if self.bearing_deg < 0 else "right"
+
+
+def _bearing(centre_x: float, width: int) -> float:
+    """Degrees off straight ahead of pixel column `centre_x`, negative left.
+
+    From the box centre itself rather than its sector's centre: with 7 sectors
+    over the Gemini's 94 deg a sector is 13 deg wide, so the sector angle can
+    only say 0 or +-13 — and +-13 is past SEEK_CENTRE_DEG on either side of a
+    target sitting 10 deg off, which is how the approach ended up swinging
+    left-right-left without ever driving. Pinhole, principal point assumed
+    central (the D2C colour frame's is within a few pixels of it).
+    """
+    half = math.radians(config.STEREO_HFOV_DEG) / 2.0
+    offset = (2.0 * centre_x / width - 1.0) * math.tan(half)
+    return math.degrees(math.atan(offset))
 
 
 def _describe_distance(metres: float | None) -> str:
@@ -125,8 +144,9 @@ class Seeker:
         n = len(reading.sectors)
         centre_x = (best.bbox[0] + best.bbox[2]) / 2.0
         index = min(n - 1, max(0, int(centre_x / width * n)))
-        angle, distance = reading.sectors[index]
-        return Sighting(label, best.confidence, angle, distance, self._body.head_pan)
+        _, distance = reading.sectors[index]
+        return Sighting(label, best.confidence, _bearing(centre_x, width), distance,
+                        self._body.head_pan)
 
     def scan(self, label: str) -> Sighting | None:
         """Sweep the head over pan AND tilt; leave it where driving needs it.
@@ -200,7 +220,7 @@ class Seeker:
                             )
                         return f"lost sight of the {label}"
                     # Turn toward where it last was and look again.
-                    self._turn(cruise, hint)
+                    self._turn(cruise, hint, config.SEEK_TURN_DEG)
                     continue
 
                 lost = 0
@@ -208,7 +228,11 @@ class Seeker:
                 hint = seen.side
 
                 if abs(seen.bearing_deg) > config.SEEK_CENTRE_DEG:
-                    self._turn(cruise, seen.side)
+                    # Never further than the target is off: a fixed turn wider
+                    # than the centre window jumps straight over it, and the
+                    # next look sends the robot back the other way, forever.
+                    self._turn(cruise, seen.side,
+                               min(config.SEEK_TURN_DEG, abs(seen.bearing_deg)))
                     continue
 
                 if seen.distance_m is not None and seen.distance_m <= config.SEEK_ARRIVE_M:
@@ -252,10 +276,10 @@ class Seeker:
         where = _describe_distance(last.distance_m) if last else ""
         return f"gave up going to the {label} after {config.SEEK_TIMEOUT_S:g} seconds — {where}"
 
-    def _turn(self, cruise, side: str) -> None:
+    def _turn(self, cruise, side: str, degrees: float) -> None:
         """One short pivot toward `side`, by ANGLE when the IMU is answering.
 
-        With an IMU the turn ends when the body has turned `SEEK_TURN_DEG`,
+        With an IMU the turn ends when the body has turned `degrees`,
         so the same command means the same heading change on carpet as on
         lino, at a flat battery as at a full one. Without one it falls back to
         the timed burst this used to be — unmeasured, but exactly the
@@ -273,19 +297,20 @@ class Seeker:
         tracker = self._body.turn_tracker()
         cruise.go(side)
         if tracker is None:
-            time.sleep(config.SEEK_TURN_BURST_S)
+            # The burst is calibrated to SEEK_TURN_DEG; a smaller turn gets a
+            # proportionally shorter one.
+            time.sleep(config.SEEK_TURN_BURST_S * min(1.0, degrees / config.SEEK_TURN_DEG))
         else:
             deadline = time.monotonic() + config.SEEK_TURN_MAX_S
             while time.monotonic() < deadline:
                 turned = tracker.turned
-                if turned is not None and abs(turned) >= config.SEEK_TURN_DEG:
+                if turned is not None and abs(turned) >= degrees:
                     break
                 time.sleep(0.01)
             else:
                 log.info(
                     "pivot %s gave up after %.1fs having turned %.0f deg of %.0f",
-                    side, config.SEEK_TURN_MAX_S, abs(tracker.turned or 0.0),
-                    config.SEEK_TURN_DEG,
+                    side, config.SEEK_TURN_MAX_S, abs(tracker.turned or 0.0), degrees,
                 )
         cruise.hold()
         # A pivot's states are not the approach's. Dropping them keeps the next
