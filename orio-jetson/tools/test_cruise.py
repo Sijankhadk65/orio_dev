@@ -519,6 +519,70 @@ def test_tof_axial_distance() -> None:
           f"at {dist:.2f} m)")
 
 
+def test_tof_rows_mode() -> None:
+    """Rows mode: the floor never reaches the policy, however wrong the pitch.
+
+    On 2026-09-24 the full-grid floor classification put a steady phantom
+    obstacle at 1.46 m on an empty floor: row 5 of a LEVEL sensor grazes the
+    floor there, and config said 2.2 deg up, so the floor hit was computed 6 cm
+    high. Rows mode drops the floor rows and counts everything in the rest.
+    The scene is built with the TRUE pose (level) and reduced with the WRONG one.
+    """
+    print("\nrows mode: only the top rows count, and every return in them is an obstacle")
+    import numpy as np
+
+    from orio.tof import ToFArray, ToFSensor
+
+    h = 0.075
+    truth = ToFArray(ToFSensor(bus=-1, name="truth"), height_m=h, pitch_deg=0.0,
+                     yaw_deg=0.0, sectors=7, hfov_deg=73.1, mode="height")
+
+    def scene(box_d=None, box_h=0.0):
+        """Axial ranges for a floor plus an optional box face at `box_d` metres."""
+        up, ground = truth.geometry.up, truth.geometry.ground
+        los = np.full(up.shape, np.nan, np.float32)
+        down = up < 0
+        los[down] = h / -up[down]
+        if box_d is not None:
+            r_box = box_d / np.maximum(ground, 1e-9)
+            z = h + r_box * up
+            hits = (z >= 0) & (z <= box_h) & ~(los < r_box)
+            los[hits] = r_box[hits]
+        los[los > config.TOF_MAX_RANGE_M] = np.nan
+        return los / truth.range_scale
+
+    def known(array, ranges):
+        return [s.distance_m for s in array.reduce(ranges).sectors if s.known]
+
+    wrong = dict(height_m=h, pitch_deg=-2.2, yaw_deg=0.0, sectors=7, hfov_deg=73.1)
+    rows4 = ToFArray(ToFSensor(bus=-1, name="rows4"), mode="rows", rows=4, **wrong)
+    height = ToFArray(ToFSensor(bus=-1, name="height"), mode="height", **wrong)
+
+    empty = scene()
+    check("the lower 4 rows see the floor, the upper 4 see nothing",
+          int(np.isfinite(empty).sum()) > 0 and not np.isfinite(empty[rows4.used]).any())
+    check("height mode with a 2.2 deg pitch error invents an obstacle on empty floor",
+          bool(known(height, empty)), "no phantom — the scene no longer reproduces the bug")
+    check("rows mode reports nothing on the same empty floor",
+          not known(rows4, empty), f"{known(rows4, empty)}")
+
+    tall = known(rows4, scene(box_d=0.5, box_h=0.15))
+    check("a 15 cm box at 0.5 m is seen", bool(tall), "nothing")
+    check("at its ground distance", all(abs(d - 0.5) < 0.05 for d in tall),
+          f"{[round(d, 2) for d in tall]}")
+
+    # The price, pinned so nobody is surprised by it: the used rows start at the
+    # mount height, so a box shorter than that stays invisible.
+    check("a 5 cm box, lower than the 7.5 cm mount, is NOT seen with 4 rows",
+          not known(rows4, scene(box_d=0.5, box_h=0.05)))
+    rows5 = ToFArray(ToFSensor(bus=-1, name="rows5"), mode="rows", rows=5, **wrong)
+    check("row 5 adds the ray just below level", int(rows5.used.sum()) == 40)
+
+    cls = rows4.classify(empty)
+    check("the debug classes mark the floor rows ignored, not obstacle",
+          bool((cls[~rows4.used & np.isfinite(empty)] == 1).all()) and not (cls == 2).any())
+
+
 def test_tof_stale_drops_out() -> None:
     """A quiet ToF must leave the fusion, not age the map and halt the robot."""
     print("\na stale ToF map drops out of the fusion")
@@ -1246,6 +1310,7 @@ def main() -> int:
         test_ground_plane_geometry,
         test_tof_pose_lands_in_the_right_sector,
         test_tof_axial_distance,
+        test_tof_rows_mode,
         test_tof_stale_drops_out,
         test_tof_one_quiet_sensor,
         test_stall_on_recorded_telemetry,
