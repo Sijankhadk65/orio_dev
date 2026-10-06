@@ -934,6 +934,7 @@ dependencies = [
     { name = "ollama" },
     { name = "openwakeword" },
     { name = "pygame" },
+    { name = "pyorbbecsdk2" },
     { name = "pyserial" },
     { name = "python-dotenv" },
     { name = "sounddevice" },
@@ -952,6 +953,7 @@ requires-dist = [
     { name = "ollama", specifier = ">=0.6.2" },
     { name = "openwakeword", specifier = ">=0.6.0" },
     { name = "pygame", specifier = ">=2.6.1" },
+    { name = "pyorbbecsdk2", specifier = "==2.0.18" },
     { name = "pyserial", specifier = ">=3.5" },
     { name = "python-dotenv", specifier = ">=1.2.2" },
     { name = "sounddevice", specifier = ">=0.5.5" },
@@ -1153,6 +1155,16 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/b9/f2/d31e6ad42d657af07be2ffd779190353f759a07b51232b9e1d724f2cda46/pygame-2.6.1-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:1206125f14cae22c44565c9d333607f1d9f59487b1f1432945dfc809aeaa3e88", size = 13952653, upload-time = "2024-09-29T11:40:01.781Z" },
     { url = "https://files.pythonhosted.org/packages/f3/42/8ea2a6979e6fa971702fece1747e862e2256d4a8558fe0da6364dd946c53/pygame-2.6.1-cp312-cp312-win32.whl", hash = "sha256:84fc4054e25262140d09d39e094f6880d730199710829902f0d8ceae0213379e", size = 10252421, upload-time = "2024-09-29T11:14:26.877Z" },
     { url = "https://files.pythonhosted.org/packages/5f/90/7d766d54bb95939725e9a9361f9c06b0cfbe3fe100aa35400f0a461a278a/pygame-2.6.1-cp312-cp312-win_amd64.whl", hash = "sha256:3a9e7396be0d9633831c3f8d5d82dd63ba373ad65599628294b7a4f8a5a01a65", size = 10624591, upload-time = "2024-09-29T11:52:54.489Z" },
+]
+
+[[package]]
+name = "pyorbbecsdk2"
+version = "2.0.18"
+source = { registry = "https://pypi.org/simple" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/46/3a/7ab48216b0c22db058d02c9f8532b93192c9da307094625ed1739c2d55f9/pyorbbecsdk2-2.0.18-cp312-cp312-manylinux_2_27_aarch64.whl", hash = "sha256:f28fd3f1c1628cb68edc8819e18ba4d4327d5e2346c3c7d19eb07db4e51ec7f2", size = 16115814, upload-time = "2026-02-25T05:42:54.566Z" },
+    { url = "https://files.pythonhosted.org/packages/db/b2/8ea3169dccef8fc214c1a5da6a3e308dd049fc99334a06187985438b4837/pyorbbecsdk2-2.0.18-cp312-cp312-manylinux_2_27_x86_64.whl", hash = "sha256:3e90d2ff98948bce682374d3597da6aa293ba0cf7107d193a8515333279ffc2d", size = 16376718, upload-time = "2026-02-25T05:43:57.012Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/d6/e4da32eec0da7dc6594dc25e4058db1d8cc833e707c9eb4e80b9b75202bb/pyorbbecsdk2-2.0.18-cp312-cp312-win_amd64.whl", hash = "sha256:6d9d7438009a91ec4a4876f777d7d857bb9fc457f074b082a8815619e6ac4433", size = 3639999, upload-time = "2026-02-25T05:44:10.181Z" },
 ]
 
 [[package]]

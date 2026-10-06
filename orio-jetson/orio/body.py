@@ -277,15 +277,15 @@ class Body:
     def _open_sensor(self) -> None:
         sensor = Sensor()
         try:
-            # The first reading opens both Argus pipelines and takes ~2 s.
+            # The first reading opens the Gemini and takes a second or two.
             sensor.start()
         except Exception as exc:
             sensor.close()
             self.notes.append(
-                f"⚠ stereo failed to start: {exc}\n"
-                f"    Stereo needs BOTH sensors, so nothing else may hold one — "
-                f"check that no other run of the app, the vision debug window, or "
-                f"a bench tool is using a camera."
+                f"⚠ depth camera failed to start: {exc}\n"
+                f"    Only one process can open the Gemini — check that no other "
+                f"run of the app or a bench tool is using it, and that it shows "
+                f"in `lsusb` (vendor 2bc5) on a USB3 port."
             )
             return
         self._sensor = sensor
@@ -307,16 +307,7 @@ class Body:
                     f"Check `i2cdetect -y -r {config.TOF_BUSES[0]}` for 0x29, or set "
                     "ORIO_TOF=0 to stop trying."
                 )
-        if sensor.calibrated:
-            self.notes.append("obstacle avoidance armed (stereo calibrated)")
-        else:
-            self.notes.append(
-                "⚠ obstacle avoidance armed, but stereo is UNCALIBRATED — no "
-                "models/stereo/calibration.npz, so depth falls back to published "
-                f"optics. Obstacles still rank correctly, but the "
-                f"{config.AVOID_STOP_M:.2f} m stop distance is only as accurate as "
-                "those metres are. Fix with: uv run python tools/calibrate_stereo.py"
-            )
+        self.notes.append("obstacle avoidance armed (Gemini 336L depth)")
 
     def _open_drivetrain(self) -> None:
         try:
@@ -382,9 +373,8 @@ class Body:
     def sensor(self) -> Sensor | None:
         """The running stereo thread, for anything that needs a camera frame.
 
-        With avoidance always on, this thread holds both sensors for the whole
-        session. Argus will not hand a third handle to the same sensor, so the
-        vision tool takes its picture from here rather than opening its own.
+        The vision tool takes its picture from here rather than from the camera
+        directly, so a detection is paired with the depth map of the same frame.
         """
         return self._sensor
 

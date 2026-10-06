@@ -82,7 +82,7 @@ def main() -> int:
     link = Motion(args.motion_port).connect()
     detector = ObstacleDetector()
     try:
-        print("--- opening stereo (both sensors, ~2 s) ---")
+        print("--- opening the Gemini ---")
         detector.sense()
 
         rows = []

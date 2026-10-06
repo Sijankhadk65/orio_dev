@@ -1,0 +1,9 @@
+# Orbbec depth cameras (Gemini 336L on Orio): let non-root users open the device.
+# The SDK talks to the camera over libusb, which needs write access to the USB
+# device node; without this only root can open it and every tool reports
+# "no Orbbec camera found" even though lsusb lists it.
+#
+#   sudo cp udev/99-orbbec.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload && sudo udevadm trigger
+#   (then unplug and replug the camera)
+SUBSYSTEM=="usb", ATTR{idVendor}=="2bc5", MODE="0666"

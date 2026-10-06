@@ -60,13 +60,14 @@ make no progress at all.
 A sector with too few valid pixels reports `None`, and the distinction matters
 more here than it did for a stop-only guard. **Unknown is never steered
 toward**: it means a blank wall, a dark corner, or something closer than the
-~0.25 m the cameras can triangulate at, and committing to a heading you cannot
+~0.25 m the camera can triangulate at, and committing to a heading you cannot
 see is how a robot finds furniture. But unknown is deliberately NOT treated as
-a repulsive obstacle either, because sector 0 reads UNKNOWN permanently at 0%
-valid pixels — it is the undefined black border rectification leaves at the
-frame edge, measured still 0% after calibration. Scoring that as a wall would
-put a phantom obstacle on the far left of every frame and bias every turn to
-the right forever. Only *known* sectors vote.
+a repulsive obstacle either: the outermost sectors run to the edge of the
+colour frame, which is slightly wider than what the depth pair covers, so they
+read thin or unknown for reasons that have nothing to do with the room. (On the
+IMX219 sector 0 was permanently 0% valid — the rectification border.) Scoring
+that as a wall would put a phantom obstacle at the frame edge and bias every
+turn away from it forever. Only *known* sectors vote.
 
 ## What has not changed
 
@@ -77,11 +78,8 @@ cornered robot can always be recovered by hand. A stale reading (older than
 camera stops the robot rather than leaving it driving on a frozen picture of
 an empty corridor.
 
-Distances are only as good as `models/stereo/calibration.npz`; without it the
-script says so at startup and every threshold below is approximate.
-
-Stereo needs BOTH sensors, so nothing else may hold a camera: stop the vision
-tool and the main app (`ORIO_STEREO=0`, `ORIO_VISION_DEBUG=0`) first.
+Distances come factory-calibrated from the Gemini 336L. Only one process can
+open the camera, so stop the main app first.
 
 Controls:
   W          cruise forward, avoiding    [ / ]    duty -/+ 5%
@@ -89,8 +87,7 @@ Controls:
   A / D      turn in place (manual)      G        toggle avoidance off/on
   Q / Esc    quit (stops first)
 
-POSIX only: it wants a cbreak terminal, and the CSI cameras mean it only runs
-on the Jetson anyway.
+POSIX only: it wants a cbreak terminal, and it only runs on the robot anyway.
 """
 
 from __future__ import annotations
@@ -186,7 +183,8 @@ def parse_args() -> argparse.Namespace:
                              f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
     parser.add_argument("--stop-m", type=float, default=config.AVOID_STOP_M,
                         help="never drive forward inside this")
-    parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
+    parser.add_argument("--clear-m", type=float, default=config.AVOID_CLEAR_M,
+                        help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
     parser.add_argument("--stale-s", type=float, default=0.50, help="reading older than this halts")
     parser.add_argument(
@@ -207,7 +205,7 @@ def parse_args() -> argparse.Namespace:
         help="half the robot's width plus clearance margin, in metres — sets how "
              "wide the forward corridor is that must stay clear. Widening it also "
              "moves the distance inside which turning cannot clear the corridor "
-             "at all (half-width / sin 31.8 deg); see the back-off note in decide()",
+             "at all (half-width / sin 40.3 deg); see the back-off note in decide()",
     )
     parser.add_argument(
         "--release-m", type=float, default=0.12,
@@ -441,7 +439,7 @@ def main() -> int:
 
     try:
         fan = config.TOF_ENABLED and not args.no_tof
-        print("--- opening stereo (both sensors, ~2 s)"
+        print("--- opening the Gemini"
               + (" and the ToF fan (firmware upload, seconds)" if fan else "")
               + " ---")
         bumps_on = config.BUMP_ENABLED and not args.no_bump
@@ -451,9 +449,9 @@ def main() -> int:
         try:
             sensor.start()
         except Exception as exc:
-            # StereoCamera's own message already explains sensor contention, which
-            # is the usual cause; don't bury it under a traceback.
-            print(f"\nstereo failed to start: {exc}")
+            # GeminiCamera's own message already says what to check (lsusb,
+            # the udev rule); don't bury it under a traceback.
+            print(f"\ndepth camera failed to start: {exc}")
             sensor.close()
             return 1
         if fan:
@@ -466,14 +464,6 @@ def main() -> int:
                 print(f"    ToF fan DEGRADED — {sensor.tof_error}\n"
                       f"    driving on stereo alone, which is blind below the "
                       f"camera band and inside {config.STEREO_MIN_RANGE_M:.2f} m")
-        if not sensor.calibrated:
-            print(
-                "\n*** UNCALIBRATED STEREO — distances are approximate ***\n"
-                "    No models/stereo/calibration.npz, so depth uses published optics.\n"
-                "    Obstacles rank correctly, but the metres carry real error and\n"
-                f"    --stop-m {args.stop_m:.2f} is only as accurate as they are.\n"
-                "    Fix with: uv run python tools/calibrate_stereo.py\n"
-            )
 
         print(f"--- opening drivetrain on {args.port} ---")
         duty_percent = args.duty

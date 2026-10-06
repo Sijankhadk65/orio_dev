@@ -112,10 +112,10 @@ def what_do_you_see() -> str:
     below its normal eyeline, not just straight ahead.
     """
     body = get_body()
-    # Whenever Orio can drive, the avoidance thread owns both CSI sensors and
-    # Argus will not give the detector a handle of its own — so the picture comes
-    # from the stereo pair. detect_once() is the fallback for a no-driving run,
-    # where nothing holds the cameras and the head may not even be connected.
+    # Whenever Orio can drive, the picture comes from the avoidance thread's
+    # latest frame, so each detection is paired with the depth taken with it.
+    # detect_once() is the path for a no-driving run, where the head may not
+    # even be connected: it reads the shared camera directly.
     try:
         if body is not None and body.can_look:
             return _report(_sweep(body, body.head_pan, config.LOOK_TILT_SWEEP_DEG))

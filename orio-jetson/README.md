@@ -25,16 +25,16 @@ A drive tool call lands in `orio/body.py`, which owns the STM32 links, and every
 move it makes runs under the obstacle-avoidance policy in `orio/avoid.py` — the
 model asks to go forward, the policy decides the heading thirty times a second.
 There is no unguarded path to the wheels and no flag that makes one; if the
-cameras will not open, the drive tools are not offered at all. The board's own
+depth camera will not open, the drive tools are not offered at all. The board's own
 watchdog e-stops it 500 ms after the last heartbeat regardless. The model
 chooses *what*; nothing it can say chooses *how*.
 
 ```
 mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools → TTS (ElevenLabs) → speaker
-                                                          ├ vision: camera → YOLO
+                                                          ├ vision: Gemini colour → YOLO
                                                           ├ knowledge base: sqlite-vec RAG
                                                           └ drive: body.py (bounded hop)
-                                                                └ avoid.py ⇄ stereo (30 Hz)
+                                                                └ avoid.py ⇄ Gemini depth (30 Hz)
                                                               → STM32 drivetrain → FSESCs → motors
                                                               → STM32 motion → neck servos
 ```
@@ -54,8 +54,9 @@ mic → ASR (ElevenLabs Scribe) → LLM (Claude or Ollama) ⇄ tools → TTS (El
 | `orio/seek.py` | The "go to that" behaviour: scan with the head, face the target, close the distance, all closed-loop |
 | `orio/drivetrain.py` | Framed serial link to the drivetrain board (WHOAMI handshake, heartbeat, `set_drive`) |
 | `orio/motion.py` | Framed serial link to the motion board (neck + arm servos) |
-| `orio/stereo.py` | Stereo depth from the IMX219-83 pair, reduced to per-sector obstacle distances |
-| `orio/vision.py` | Camera capture (OpenCV) + YOLO (`ultralytics`) object detection |
+| `orio/gemini.py` | The Orbbec Gemini 336L: depth (computed on the camera) + colour, aligned, shared by every reader |
+| `orio/stereo.py` | Gemini depth reduced to per-sector obstacle distances |
+| `orio/vision.py` | YOLO (`ultralytics`) object detection on the Gemini's colour frames |
 | `orio/knowledge.py` | Per-profile RAG knowledge base (sqlite-vec + local ONNX embeddings) |
 | `orio/kb_ingest.py` | CLI to ingest `.md`/`.txt` documents into a knowledge-base profile |
 | `orio/tts.py` | Pluggable TTS (`elevenlabs` engine, `console` fallback) |
@@ -116,10 +117,23 @@ on a Jetson, where "default" captured pure silence but "pipewire" correctly
 reached the USB mic. An explicit `ORIO_MIC_DEVICE`/`ORIO_SPEAKER_DEVICE`
 always overrides this.
 
-**5. Camera (for the vision tool)** — on the Jetson this is the IMX219 CSI
-pair, captured through the ISP via Argus. That needs an OpenCV built with
-GStreamer, which PyPI's `opencv-python` is not, so the project uses JetPack's
-system build instead. Link it into the venv (idempotent, safe to re-run):
+**5. Camera** — an **Orbbec Gemini 336L** on a USB3 port, for both the
+obstacle map (depth, computed on the camera) and the vision tool (colour). The
+SDK is `pyorbbecsdk2`, a normal dependency, so `uv sync` installs it. Once, give
+non-root users access to the device, then replug the camera:
+
+```bash
+sudo cp udev/99-orbbec.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
+uv run python tools/gemini_check.py     # finds it, opens it, reports depth coverage
+```
+
+`pyorbbecsdk2` is pinned to 2.0.18 on purpose: 2.1.x requires `numpy>=2` on
+Python 3.12 (which the system cv2 below cannot load) and drags in
+`opencv-python`, `pygame`, `av` and `pynput`.
+
+OpenCV itself is still JetPack's system build, linked into the venv
+(idempotent, safe to re-run):
 
 ```bash
 sudo apt install python3-opencv      # once, if not already present
@@ -127,15 +141,11 @@ uv run python tools/link_system_cv2.py
 ```
 
 **Re-run that after recreating the venv** — `uv sync` alone will not restore
-the link, and without it CSI capture cannot work. Two related pins exist for
-the same reason and should not be "cleaned up": `requires-python = ">=3.12,<3.13"`
-(the system cv2 is built for 3.12 only) and `numpy<2` (it is compiled against
-numpy 1.x). `[tool.uv] override-dependencies` also keeps `opencv-python` out of
-the environment so it cannot shadow the link.
-
-For a plain USB webcam instead, set `ORIO_CAMERA_USE_ARGUS=0` and pick the
-device with `ORIO_CAMERA_INDEX` — that path is ordinary V4L2 and needs none of
-the above.
+the link. Two related pins exist for the same reason and should not be
+"cleaned up": `requires-python = ">=3.12,<3.13"` (the system cv2 is built for
+3.12 only) and `numpy<2` (it is compiled against numpy 1.x). `[tool.uv]
+override-dependencies` also keeps `opencv-python` out of the environment so it
+cannot shadow the link.
 
 The YOLO nano checkpoint (~6 MB) auto-downloads into `models/yolo/`
 (gitignored) the first time the vision tool actually runs. No camera, or want
@@ -202,7 +212,6 @@ orio" or press Ctrl-C to stop.
 | No tools (no camera, or don't want vision) | `ORIO_TOOLS=0 uv run main.py` | `$env:ORIO_TOOLS="0"; uv run main.py` |
 | Talk only — don't open the boards or cameras | `ORIO_DRIVE=0 ORIO_NECK=0 uv run main.py` | `$env:ORIO_DRIVE="0"; $env:ORIO_NECK="0"; uv run main.py` |
 | Drive gently (first run on a new floor) | `ORIO_DRIVE_SPEED_PERCENT=15 ORIO_DRIVE_MAX_STEP_S=1 uv run main.py` | `$env:ORIO_DRIVE_SPEED_PERCENT="15"; $env:ORIO_DRIVE_MAX_STEP_S="1"; uv run main.py` |
-| Pin a specific camera | `ORIO_CAMERA_INDEX=1 uv run main.py` | `$env:ORIO_CAMERA_INDEX="1"; uv run main.py` |
 
 PowerShell env vars set with `$env:` persist for the rest of that terminal
 session (until you close it or explicitly clear them), so once set they apply
@@ -231,34 +240,28 @@ way.
 | `ORIO_VAD_MAX_PHRASE_S` | `15` | Hard cap on a single phrase's length |
 | `ORIO_VAD_THRESHOLD_FACTOR` | `3.0` | Speech threshold as a multiple of the ambient noise floor |
 | `ORIO_TOOLS` | `1` | `0` to disable all LLM tool-calling (e.g. no camera) |
-| `ORIO_CAMERA_INDEX` | `0` | `cv2.VideoCapture` device index (USB webcams only, i.e. when Argus is off) |
-| `ORIO_CAMERA_USE_ARGUS` | `1` | `1` to capture CSI cameras via `nvarguscamerasrc`; `0` for plain V4L2 |
-| `ORIO_CAMERA_SENSOR_ID` | `0` | Argus sensor id — *not* the `/dev/video*` number, the two are inverted |
-| `ORIO_CAMERA_WIDTH` | `1280` | Frame width handed to YOLO (ISP downscales in hardware) |
-| `ORIO_CAMERA_HEIGHT` | `720` | Frame height handed to YOLO |
-| `ORIO_CAMERA_FPS` | `30` | Sensor capture rate |
 | `ORIO_YOLO_MODEL` | `models/yolo/yolo11n.pt` | Ultralytics checkpoint name or path; auto-downloads if missing |
 | `ORIO_YOLO_CONFIDENCE` | `0.5` | Minimum detection confidence [0,1] to report an object |
 | `ORIO_VISION_DEBUG` | `0` | `1` for a live camera + detection-box preview window |
 | `ORIO_VISION_DEBUG_FPS` | `15` | Preview window's target refresh rate |
 | `ORIO_STEREO` | `0` | `1` to enable stereo depth / obstacle detection |
-| `ORIO_STEREO_LEFT_SENSOR_ID` | `0` | Argus sensor that is the physically *left* camera |
-| `ORIO_STEREO_RIGHT_SENSOR_ID` | `1` | Argus sensor that is the physically *right* camera |
-| `ORIO_STEREO_CAPTURE_WIDTH` / `_HEIGHT` | `1640` / `1232` | Sensor capture mode — the *binned* full-FOV one; see below |
-| `ORIO_STEREO_WIDTH` / `_HEIGHT` | `320` / `240` | Matching resolution (small is faster *and* denser) |
-| `ORIO_STEREO_PHOTOMETRIC_MATCH` | `1` | Relevel the right eye onto the left before matching |
-| `ORIO_STEREO_EXPOSURE_NS` / `_GAIN` | *(unset)* | Pin both sensors to one fixed exposure/gain; unset = auto |
+| `ORIO_GEMINI_WIDTH` / `_HEIGHT` / `_FPS` | `640` / `400` / `30` | Colour and (aligned) depth resolution. 16:10 is the full colour FOV; 640x400 keeps the 0.25 m minimum depth distance |
+| `ORIO_GEMINI_HW_ALIGN` | `1` | Align depth to colour on the camera; falls back to software by itself if the mode has no hardware pairing |
+| `ORIO_GEMINI_TEMPORAL` | `1` | Temporal depth filter — halves depth noise (0.40% → 0.20% of range) for 1.4 ms/frame |
+| `ORIO_GEMINI_SPATIAL` | `fast` | Spatial depth filter: `fast`, `advanced` (8 ms, barely better), or `off`. No hole filling — it would invent depth |
+| `ORIO_GEMINI_NOISE_REMOVAL` | `1` | On-camera speckle removal (firmware default, pinned here) |
+| `ORIO_GEMINI_PRESET` | `Default` | Depth preset. `AMR with IR-Pass` is worth trying in sunlight; `High Accuracy` costs ~12 points of coverage |
+| `ORIO_STEREO_HFOV_DEG` | `94.0` | Colour-frame hfov the ToF fan and bump memory lay their sectors out with — match it to what `tools/gemini_check.py` prints |
 | `ORIO_STEREO_SECTORS` | `7` | Sectors the depth map is reduced to |
 | `ORIO_STEREO_MIN_RANGE_M` / `_MAX_RANGE_M` | `0.25` / `4.0` | Usable range; outside reads unknown |
 | `ORIO_STEREO_MIN_VALID_FRAC` | `0.10` | Valid-pixel floor before a sector reports a distance |
-| `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.35` / `0.71` | Image band that can hold a collidable obstacle |
-| `ORIO_STEREO_CALIBRATION` | `models/stereo/calibration.npz` | Calibration from `tools/calibrate_stereo.py` |
+| `ORIO_STEREO_BAND_TOP` / `_BOTTOM` | `0.36` / `0.60` | Image band that can hold a collidable obstacle |
 | `ORIO_STEREO_GROUND_PLANE` | `0` | `1` to classify depth by *height above the floor* instead of by image row — needs the two measurements below |
 | `ORIO_STEREO_CAM_HEIGHT_M` / `_CAM_PITCH_DEG` | `0.35` / `0.0` | **Placeholders.** Camera height and downward pitch at the current neck pose; measure before switching the line above on |
 | `ORIO_STEREO_FLOOR_TOL_M` | `0.03` | A point this far above the floor *is* the floor |
 | `ORIO_ROBOT_HEIGHT_M` | `0.60` | **Placeholder.** Anything taller is driven under, not around |
-| `ORIO_STEREO_HEIGHT_TRUST_M` | `1.2` | Past this the disparity noise swamps the height estimate and the row band takes over |
-| `ORIO_STEREO_GROUND_STRIDE` | `2` | Pixel decimation for the ground-plane reduction |
+| `ORIO_STEREO_HEIGHT_TRUST_M` | `1.2` | Past this the depth noise swamps the height estimate and the row band takes over |
+| `ORIO_STEREO_GROUND_STRIDE` | `4` | Pixel decimation for the ground-plane reduction |
 | `ORIO_TOF` | `0` | `1` to open the VL53L5CX fan and fuse it into the sector map |
 | `ORIO_TOF_BUSES` / `_ADDRESSES` | `7,1` / `0x29,0x29` | One sensor per I2C bus — which is why the shared 0x29 never has to be changed |
 | `ORIO_TOF_NAMES` | `tof-left,tof-right` | Per-sector provenance in the debug views |
@@ -289,7 +292,7 @@ way.
 | `ORIO_NECK` | `1` | `0` to leave the head alone and not open the motion board |
 | `ORIO_NECK_PAN_DEG` / `_TILT_DEG` | `175` / `40` | Pose the neck is held at (vendor scale). **Tilt is the avoidance policy's aim — usable window is ~35–45, see `config.py`** |
 | `ORIO_AVOID_STOP_M` | `0.50` | Never drive forward with anything known nearer than this |
-| `ORIO_AVOID_CLEAR_M` | `1.20` | Beyond this the way ahead counts as open and Orio goes straight |
+| `ORIO_AVOID_CLEAR_M` | `0.70` | Beyond this the way ahead counts as open and Orio goes straight. Keep above the 0.62 m turn radius or steering around things stops working |
 | `ORIO_AVOID_MIN_SCALE` | `0.35` | Duty scale at `STOP_M`, ramping to full at `CLEAR_M` |
 | `ORIO_AVOID_STALE_S` | `0.50` | A reading older than this stops the robot — in every direction |
 | `ORIO_AVOID_HALF_WIDTH_M` | `0.40` | Half the chassis plus margin — how wide the corridor that must stay clear is |
@@ -347,13 +350,11 @@ YOLO nano model, and gets back the actual objects, their rough position
 not a guess. It's read-only: the tool only reports what's visible, it never
 drives or moves anything.
 
-**Why capture goes through Argus** — the IMX219 exposes exactly one V4L2
-format, `RG10` (10-bit packed Bayer), and only the Jetson ISP debayers it. A
-plain `cv2.VideoCapture(index)` therefore returns a **solid green frame while
-reporting success**: `read()` gives `True`, the array has the right shape, and
-every pixel is identical. Nothing raises — it just looks like the camera works
-and YOLO never detects anything. `ObjectDetector` logs an explicit error if it
-ever sees a single-colour frame, so that failure can't go quiet again.
+**Blank-frame guard** — `ObjectDetector` logs an explicit error if it ever
+sees a single-colour frame. A mis-negotiated capture path does not always
+raise: it can hand back a uniform buffer that looks like a working camera
+while YOLO never detects anything. (On the old IMX219, a plain V4L2 grab did
+exactly that — a solid green frame, reported as success.)
 
 Missing camera, opencv, or ultralytics? `get_tools()` in `orio/tools.py`
 catches it and Orio just runs with no tools, same as any other optional piece
@@ -407,7 +408,7 @@ the policy steers around anything nearer than `AVOID_CLEAR_M` and won't drive
 forward at all inside `AVOID_STOP_M`. Past that range "go to them" and "don't
 hit them" are opposite instructions, and the guard wins — `go_to` gets no
 exemption. So `ORIO_SEEK_ARRIVE_M` defaults to `AVOID_CLEAR_M`: Orio stops about
-a metre short, which is where you'd stop in front of someone anyway.
+0.7 m short.
 
 **Looking is two-dimensional.** One tilt is one horizontal slice of the room,
 and the tilt that finds a *person* is much higher than intuition suggests
@@ -468,14 +469,12 @@ returns what *actually* happened — "steering around something in the way",
 "couldn't go forward", "stopped: no known clearance in any sector" — and the
 system prompt tells Orio to report that rather than claim a clean success.
 
-**The cameras are shared, not duplicated.** Stereo needs both sensors, and Argus
-won't open a third handle on one it already owns. So with avoidance armed the
-`what_do_you_see` tool is handed the stereo pair's rectified left frame
-(`ObjectDetector.detect_in`) instead of opening its own capture. That frame is
-`ORIO_STEREO_WIDTH`×`_HEIGHT` (320×240) rather than 1280×720, so expect the
-model to miss small or distant objects it would otherwise catch. For the same
-reason `ORIO_VISION_DEBUG=1` is refused while the body holds the cameras — use
-`tools/stereo_debug.py` instead.
+**The camera is shared, not duplicated.** `orio/gemini.py` runs one grab
+thread and every reader takes the latest frameset from it, so the avoidance
+thread, the vision tool and `ORIO_VISION_DEBUG=1` all run at once. With
+avoidance armed, `what_do_you_see` is handed the avoidance thread's latest
+colour frame (`ObjectDetector.detect_in`), so each detection is paired with
+the depth map taken with it — the two share one pixel grid.
 
 **The head is aimed at startup and held there.** `body.start()` puts the neck at
 `ORIO_NECK_PAN_DEG` / `_TILT_DEG` before anything else: pan 175 makes the
@@ -501,23 +500,26 @@ order and swaps between boots, and both boards share the same framing, so a
 drive frame sent to the motion board decodes cleanly as a joint angle. Each link
 also confirms the board's identity on the wire before arming it.
 
-## Stereo depth & obstacle detection
+## Depth & obstacle detection
 
-`orio/stereo.py` turns the IMX219-83's two sensors into depth, and reduces that
-to the nearest obstacle in each of a few sectors across the view:
+`orio/gemini.py` opens the **Orbbec Gemini 336L** — active stereo on a 95 mm
+baseline, with depth computed *on the camera* and aligned onto the colour frame
+in hardware — and `orio/stereo.py` reduces that depth to the nearest obstacle
+in each of a few sectors across the view:
 
 ```python
 from orio.stereo import ObstacleDetector
 det = ObstacleDetector()
 omap = det.sense()
-omap.describe()          # "nearest 0.53 m left (uncalibrated, approximate)"
+omap.describe()          # "nearest 0.53 m left"
 omap.clearance_ahead()   # metres straight on, or None if unknown
 ```
 
-See it live — the stereo counterpart to `ORIO_VISION_DEBUG`:
+Bring-up, and see it live — the depth counterpart to `ORIO_VISION_DEBUG`:
 
 ```bash
-uv run python tools/stereo_debug.py
+uv run python tools/gemini_check.py    # device, intrinsics, fps, valid-depth coverage
+uv run python tools/stereo_debug.py    # colour + sectors | depth (G: height classes)
 ```
 
 The ToF fan has the same two tools:
@@ -529,8 +531,9 @@ uv run python tools/tof_pose.py --selftest   # check the pose maths, no hardware
 uv run python tools/tof_pose.py --wall       # squared to a wall: pitch and yaw
 ```
 
-Left pane is the camera with per-sector distance and valid-pixel percentage,
-right pane is the depth map (warm near, cool far, black unknown).
+Left pane is the colour frame with per-sector distance and valid-pixel
+percentage, right pane is the depth map (warm near, cool far, black unknown).
+The two are pixel-aligned.
 
 **Perception only, still.** `ObstacleMap` carries distances, never velocities.
 Nothing in `stereo.py` decides how fast to go, when to stop, or which way to
@@ -538,164 +541,37 @@ turn, and nothing here talks to the STM32. Those decisions live one layer up in
 `orio/avoid.py`, which is what the drive tools and the teleop tool both steer
 with — this file only ever describes the world.
 
-### Calibrate before trusting the numbers
+### No calibration step
 
-Uncalibrated, depth falls back to published optics plus a measured row offset.
-Obstacles *rank* correctly — nearer things read nearer — but the absolute
-metres carry real error. `ObstacleMap.calibrated` reports which mode produced a
-reading, and `describe()` says "approximate" out loud rather than hiding it.
+The Gemini is factory-calibrated and reports metres, so every map is
+`calibrated=True` and there is nothing to run. (The IMX219 pair needed a
+checkerboard calibration, an eye/sensor mapping, a measured row offset and
+exposure matching; all of that is gone.)
 
-```bash
-uv run python tools/calibrate_stereo.py --square-mm 25
-```
+### Numbers to re-check on the new mount
 
-Print a checkerboard, tape it flat to something rigid, and capture 20+ pairs at
-varied distances and angles. Measure a square with calipers — that number sets
-the scale of the entire calibration.
-
-### Four hardware quirks, all measured
-
-Both are silent failures, so they are pinned in config rather than discovered
-again later:
-
-- **The eye/sensor mapping depends on the cabling.** Argus sensor 0 is the
-  physically *left* camera (`ORIO_STEREO_LEFT_SENSOR_ID` defaults to `0`), but
-  the ribbons were crossed until 2026-09-05 and sensor 1 was left. Get it
-  backwards and every disparity comes out negative; `depth()` drops negative
-  disparities, so the map goes blank rather than raising. Re-measure after any
-  CSI recabling.
-- **The sensors are not row-aligned.** There is a consistent vertical offset —
-  9 px at 240 px tall on the binned capture mode. SGBM assumes row-aligned
-  input, so this is removed before matching — by the calibration when present,
-  by the measured constant otherwise.
-- **The capture mode is load-bearing.** `1920x1080` looks like the obvious
-  choice and is a trap: it is a 1.71x centre *crop* of the array with no
-  binning. Measured against the binned `1640x1232` mode it carries **4.7x the
-  sensor noise** (sigma 8.47 vs 1.82) — each pixel gets a quarter of the light,
-  the ISP answers with analog gain, and SGBM matches the noise. It also narrows
-  the FOV to ~47° while `obstacles()` assumes 73°, and changes the focal length,
-  so distances read ~28% low. Valid depth: **29.7% on the crop, 50.6% binned.**
-- **The eyes auto-expose independently.** Argus has no cross-sensor sync, and
-  they drift far apart — 56% brightness and 63% contrast mismatch on one indoor
-  scene. SGBM compares raw intensities and is not illumination-invariant, so
-  the right eye is releveled onto the left's mean/std before matching. Worth
-  **29.7% → 41.9%** on its own, and **50.6% → 72.1%** combined with the binned
-  mode. Set `ORIO_STEREO_EXPOSURE_NS`/`_GAIN` to fix it at the source instead.
-
-  CLAHE is the tempting alternative here and is *worse* (24.5%): it amplifies
-  each eye's noise independently, and the two eyes' noise differs.
-
-### Why 320x240
-
-Counter-intuitively, matching small is better here: it runs SGBM fast *and*
-produces more valid pixels than 640-wide matching, because coarser matching
-copes better with the blank walls this robot faces. Obstacle avoidance needs
-range, not fine detail. The 4:3 aspect matches the binned capture mode — 320x180
-against a 4:3 sensor mode would squash the frame and shear the epipolar
-geometry. End to end, `sense_with_frames()` measured **29.7 fps at 67.7% valid
-depth** on an indoor scene.
+- **Field of view.** Sectors are laid out over the colour frame's hfov (94° at
+  16:10), wider than the IMX219's 74°. The ToF fan and bump memory use
+  `ORIO_STEREO_HFOV_DEG`; `tools/gemini_check.py` prints the camera's own value
+  and `gemini.py` warns if they differ by more than 2°. The outermost sector
+  centre moves from 31.8° to 40.3°, so the back-off radius
+  (`half_width / sin`) drops from 0.76 m to 0.62 m.
+- **The band.** `ORIO_STEREO_BAND_TOP`/`_BOTTOM` (0.36 / 0.60) keep the same
+  angles as before on the taller 68° frame. Check by eye in `stereo_debug.py`.
+- **Ground plane.** `ORIO_STEREO_CAM_HEIGHT_M` / `_CAM_PITCH_DEG` were
+  placeholders before and the mount has changed; measure before enabling
+  `ORIO_STEREO_GROUND_PLANE`.
 
 A sector below `ORIO_STEREO_MIN_VALID_FRAC` valid pixels reports `None`, not a
-distance. Untextured surfaces genuinely cannot be measured by a passive stereo
-pair, and unknown must never be acted on as clear.
-
-## Knowledge base (RAG)
-
-Orio's second tool: ask what it is, what it can do, or anything covered by
-its deployment's knowledge, and the LLM calls `search_knowledge_base`, which
-embeds the question locally and does a nearest-neighbor search over a
-[sqlite-vec](https://github.com/asg017/sqlite-vec) collection —
-`orio/knowledge.py`. Embeddings come from a small local ONNX model
-(`BAAI/bge-small-en-v1.5` via
-[fastembed](https://github.com/qdrant/fastembed)) — torch-free and
-CPU-friendly, same reasoning as the ONNX wake-word backend. No API key, no
-per-query network call. A question with no close-enough match returns
-nothing rather than a random chunk, so the model can honestly say it doesn't
-know instead of guessing — the distance cutoff (`_MAX_DISTANCE` in
-`knowledge.py`) is tuned to favor that over confidently answering an
-unrelated question; see the module's comments if a deployment needs it
-retuned for a larger knowledge set.
-
-Knowledge is split into **profiles** — each one its own sqlite-vec
-collection under `kb/` (gitignored, generated data), selected by
-`ORIO_KB_PROFILE` (see Configuration below). The default profile, `"orio"`,
-self-seeds on first query with facts about Orio itself, the nex-ON platform
-it runs on, and the CozmoBot Robotics team — no setup needed. To point Orio
-at a different domain (e.g. turn it into a grocery-store assistant), ingest
-that venue's documents into a new profile and switch to it:
-
-```bash
-uv run python -m orio.kb_ingest --profile grocery-store aisles.md hours.md
-ORIO_KB_PROFILE=grocery-store uv run main.py
-```
-
-```powershell
-uv run python -m orio.kb_ingest --profile grocery-store aisles.md hours.md
-$env:ORIO_KB_PROFILE = "grocery-store"; uv run main.py
-```
-
-`kb_ingest.py` splits each `.md`/`.txt` file on blank lines — one paragraph
-becomes one chunk — so write source documents as short, self-contained
-paragraphs; a chunk is returned to the LLM verbatim and read aloud. Add
-`--replace` to clear a profile's existing chunks before ingesting (e.g. when
-re-ingesting an updated document set). The first embedding call downloads the
-ONNX model (~130 MB, cached by `fastembed`/`huggingface_hub`) — needs
-internet once, same pattern as the YOLO checkpoint.
-
-## Eyes / face display
-
-Animated eyes react to Orio's FSM state (idle / listening / thinking /
-speaking / asleep / error) — off by default (`ORIO_EYES=0`), since headless/CI
-runs shouldn't try to open a display. On the robot it renders fullscreen on the
-Elecrow 7" panel (1024×600); on a dev box, run it windowed instead.
-
-To just eyeball the look without the mic/LLM running, use the demo tool — it
-drives a `StateMachine` through every state on a timer:
-
-```bash
-ORIO_EYES_FULLSCREEN=0 uv run python tools/eyes_demo.py
-```
-
-PowerShell:
-
-```powershell
-$env:ORIO_EYES_FULLSCREEN = "0"; uv run python tools/eyes_demo.py
-```
-
-Ctrl-C to quit. To enable the face in the real conversation loop, set
-`ORIO_EYES=1` (and `ORIO_EYES_FULLSCREEN=0` if you're not on the panel) before
-`uv run main.py`. See `docs/eyes_animation_plan.md` — the expressions are
-procedural code in `orio/eyes.py`, not asset files.
-
-## Scope
-
-The system prompt in `config.py` keeps the small local model on-task: it talks
-only about what Orio can do (driving, looking, moving arms/head, status) and
-declines off-topic requests. Vision is real (see above) — it uses the tool and
-reports the actual result instead of guessing, and so is driving. Arms still
-aren't wired up: it won't pretend to pick anything up, and says it'll be able to
-once those controls are connected. The movement half of the prompt is chosen at
-startup from the tools that actually bound, so what Orio claims about moving
-always matches what it can really do.
-
-Small local models (llama3.2:3b, the previous default) were occasionally
-over-eager about invoking the tool, or invoked one that doesn't exist, on
-questions that have nothing to do with vision — the main reason the default
-backend switched to Claude. The system prompt explicitly guards against this
-("only call it when actually asked about what you can see... never invent a
-tool... never write JSON in your reply") regardless of backend, but it's worth
-knowing this was largely a small-model quirk, not a bug in the tool-calling
-code, if you see it recur on `ORIO_LLM_PROVIDER=ollama`.
+distance. The depth map still has holes — glass, very dark surfaces, and the
+frame edges the depth pair does not cover — and unknown must never be acted on
+as clear.
 
 ## Next
 
 **Rear sensing.** The one hole the current guard cannot cover: reverse is blind,
 including the policy's own back-off. Everything else is bounded by something;
 this is bounded only by keeping it short.
-
-**Give the vision tool its resolution back.** It currently reads the 320×240
-stereo frame because both sensors are spoken for. Either run YOLO on a
-full-resolution grab between hops, or accept the smaller frame and say so.
 
 After that: arm tools (`move_arm_to`) on the motion board, and `get_status`
 telemetry. See the `orio_kb` notes (`orio_llm_command_layer.md`).

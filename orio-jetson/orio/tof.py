@@ -14,13 +14,12 @@ Two volumes, neither of which is a tuning problem:
 * **Below the frame.** The stereo band is a crop and the ground-plane
   classification can only recover view the cameras actually deliver. Something
   3 cm off the floor and 20 cm ahead is under the lens, not in it.
-* **Inside 0.25 m.** `STEREO_MIN_RANGE_M` is not a policy, it is a 60 mm
-  baseline: disparity saturates and the cameras genuinely cannot triangulate
+* **Inside 0.25 m.** `STEREO_MIN_RANGE_M` is not a policy, it is the depth
+  camera's minimum distance: inside it the camera genuinely cannot triangulate
   closer. These parts range from about 2 cm.
 
-They also work in the dark and against a blank wall, which is exactly where
-SGBM is weakest — it has no texture to match and reports unknown, and unknown
-blocks the robot.
+They also range off glass and very dark surfaces, where the camera's depth
+map has holes — it reports unknown there, and unknown blocks the robot.
 
 ## Where they are wired, and why it is the Jetson
 

@@ -4,7 +4,7 @@
 to live in `stereo.py`, which was fine while the cameras were the only thing
 that could see; they moved here when the ToF fan arrived, so that a second
 sensor could emit the same shape without importing the stereo pipeline (and its
-OpenCV, and its Argus) to do it. `stereo.py` re-exports both, so every existing
+camera SDK) to do it. `stereo.py` re-exports both, so every existing
 `from .stereo import ObstacleMap` still resolves.
 
 Two functions on top of that:
@@ -279,7 +279,7 @@ class SectorGeometry:
             # and still counts toward `valid_frac`: the far floor is perfectly
             # good evidence that the ground is clear, and only the obstacle
             # decision is the one the noise ruins. Something further out than
-            # this is the row band's business (see stereo.DepthEstimator).
+            # this is the row band's business (see stereo.DepthReducer).
             is_obstacle &= rk <= trust_m
 
         seen = np.bincount(idx, minlength=self.sectors)[: self.sectors]
