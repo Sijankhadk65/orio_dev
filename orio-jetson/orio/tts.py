@@ -29,7 +29,7 @@ class ConsoleTTS:
 class ElevenLabsTTS:
     """ElevenLabs cloud TTS → sounddevice playback. Needs an API key + internet."""
 
-    _SAMPLE_RATE = 24000  # matches the pcm_24000 output_format requested below
+    SAMPLE_RATE = 24000  # matches the pcm_24000 output_format requested below
 
     def __init__(
         self,
@@ -50,29 +50,46 @@ class ElevenLabsTTS:
         self._model_id = model_id
         self._device = device
 
-    def speak(self, text: str) -> None:
-        text = text.strip()
-        if not text:
-            return
+    @property
+    def voice_id(self) -> str:
+        return self._voice_id
+
+    def synthesize(self, text: str):
+        """Render `text` to int16 PCM at `SAMPLE_RATE`, or None on failure."""
         import numpy as np
+
+        try:
+            chunks = self._client.text_to_speech.convert(
+                voice_id=self._voice_id,
+                model_id=self._model_id,
+                text=text,
+                output_format=f"pcm_{self.SAMPLE_RATE}",
+            )
+            return np.frombuffer(b"".join(chunks), dtype=np.int16)
+        except Exception as exc:  # network error, bad key, etc.
+            print(f"\n✗ ElevenLabs synthesis failed: {exc}")
+            return None
+
+    def play(self, audio) -> None:
+        """Play int16 PCM at `SAMPLE_RATE` on the speaker; blocks until done."""
         import sounddevice as sd
 
         from .audio_input import resolve_device
 
         device = resolve_device(self._device, "output")
         try:
-            chunks = self._client.text_to_speech.convert(
-                voice_id=self._voice_id,
-                model_id=self._model_id,
-                text=text,
-                output_format=f"pcm_{self._SAMPLE_RATE}",
-            )
-            pcm = b"".join(chunks)
-            audio = np.frombuffer(pcm, dtype=np.int16)
-            sd.play(audio, samplerate=self._SAMPLE_RATE, device=device)
+            sd.play(audio, samplerate=self.SAMPLE_RATE, device=device)
             sd.wait()
-        except Exception as exc:  # network error, bad key, bad output device, etc.
+        except Exception as exc:  # bad output device, etc.
             print(f"\n✗ ElevenLabs playback failed (device {device!r}): {exc}")
+
+    def speak(self, text: str) -> None:
+        text = text.strip()
+        if not text:
+            return
+        audio = self.synthesize(text)
+        if audio is not None:
+            self.play(audio)
 
 
 def get_tts(engine: str = config.TTS_ENGINE) -> TTS:

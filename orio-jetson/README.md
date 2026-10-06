@@ -337,6 +337,8 @@ way.
 | `ORIO_WAKE_PHRASES` | `hey orio,okay orio,…` | Comma-separated accepted phrases |
 | `ORIO_WAKE_FUZZY` | `0.82` | Fuzzy-match tolerance (0–1); `>1.0` disables |
 | `ORIO_FOLLOWUP_WINDOW_S` | `8.0` | Seconds to stay awake for a follow-up after replying |
+| `ORIO_LISTEN_CUE` | `1` | `0` to stop Orio saying "Hmm?" when woken (played only if you pause after the wake word) |
+| `ORIO_LISTEN_CUE_PHRASES` | `Hmm?,Umm?` | Comma-separated cues, one picked at random, spoken in the TTS voice and cached in `cues/` |
 | `ORIO_WAKE_OWW_MODEL` | `hey_jarvis` | openWakeWord model path or built-in name |
 | `ORIO_WAKE_OWW_THRESHOLD` | `0.5` | Detection score above which a frame counts as the wake word |
 | `ORIO_WAKE_OWW_FRAMEWORK` | `onnx` | `onnx` or `tflite` inference backend |

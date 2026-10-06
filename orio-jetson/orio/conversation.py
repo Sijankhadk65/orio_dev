@@ -108,6 +108,24 @@ def _make_waker(stt):
     return TranscribeWaker(stt)
 
 
+def _make_listen_cue(tts: TTS):
+    """Build the wake cue (cues.ListenCue), prewarmed; None when switched off.
+
+    Never raises: a cue that can't be synthesized only costs Orio the "Hmm?".
+    """
+    if not config.LISTEN_CUE_ENABLED:
+        return None
+    try:
+        from .cues import ListenCue
+
+        cue = ListenCue(tts)
+        cue.prewarm()
+        return cue if cue.enabled else None
+    except Exception as exc:
+        print(f"⚠ listen cue disabled: {exc}")
+        return None
+
+
 def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
     """Voice loop. Wake-word gated unless config.WAKE_ENABLED is off."""
     try:
@@ -122,6 +140,7 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
     stt = SpeechToText()
     gated = config.WAKE_ENABLED
     waker = _make_waker(stt) if gated else None
+    cue = _make_listen_cue(tts) if gated else None
 
     if gated:
         print(f'Ready. Say "{waker.label}" to wake Orio (Ctrl-C to stop).')
@@ -139,6 +158,10 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
             pending = woke
             print("\r" + " " * 40 + "\r", end="")  # clear the asleep line
             fsm.to(State.LISTENING)  # hearing the wake word is itself a listen
+            if not pending and cue is not None:
+                # They stopped after "Hey Orio" and are waiting to be heard. A
+                # command run on from the wake word gets no "Hmm?" — it's said.
+                cue.play()
 
         # Awake: take commands, with a follow-up window between them so the user
         # can chain requests without re-waking. An empty window sends us back to

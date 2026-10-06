@@ -27,3 +27,6 @@ settings.json
 
 # Orbbec SDK log (orio/gemini.py routes it here)
 Log/
+
+# Synthesized listen-cue clips (cues.py) — per-voice cache, regenerated on demand
+cues/

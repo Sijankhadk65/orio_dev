@@ -1266,6 +1266,23 @@ WAKE_FUZZY = float(_env("ORIO_WAKE_FUZZY", "0.82"))
 # re-saying the wake word each time.
 FOLLOWUP_WINDOW_S = float(_env("ORIO_FOLLOWUP_WINDOW_S", "8.0"))
 
+# Spoken cue on waking: after the wake word, and only when the person paused
+# after it, Orio says one of these (picked at random) in its TTS voice before
+# the mic opens, so they hear that it is listening without looking at the eyes.
+# Not played for the follow-up window — after every reply it would be a tic.
+# Clips are synthesized once and cached in CUE_CACHE_DIR (see cues.py); set
+# ORIO_LISTEN_CUE=0 to turn the cue off. Silent with ORIO_TTS=console.
+LISTEN_CUE_ENABLED = _env("ORIO_LISTEN_CUE", "1").strip().lower() not in (
+    "0",
+    "false",
+    "no",
+    "off",
+)
+LISTEN_CUE_PHRASES: tuple[str, ...] = tuple(
+    p.strip() for p in _env("ORIO_LISTEN_CUE_PHRASES", "Hmm?,Umm?").split(",") if p.strip()
+)
+CUE_CACHE_DIR = Path(_env("ORIO_CUE_CACHE_DIR", str(ROOT / "cues")))
+
 # Wake-word engine — two strategies share the same wake-gate seam:
 #   "whisper" — (default) reuse the Whisper ASR: transcribe each dormant phrase
 #               and string-match it (wake.py). No extra model/dependency, but
