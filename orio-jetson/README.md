@@ -292,7 +292,7 @@ way.
 | `ORIO_NECK` | `1` | `0` to leave the head alone and not open the motion board |
 | `ORIO_NECK_PAN_DEG` / `_TILT_DEG` | `175` / `40` | Pose the neck is held at (vendor scale). **Tilt is the avoidance policy's aim — usable window is ~35–45, see `config.py`** |
 | `ORIO_AVOID_STOP_M` | `0.50` | Never drive forward with anything known nearer than this |
-| `ORIO_AVOID_CLEAR_M` | `1.20` | Beyond this the way ahead counts as open and Orio goes straight |
+| `ORIO_AVOID_CLEAR_M` | `0.70` | Beyond this the way ahead counts as open and Orio goes straight. Keep above the 0.62 m turn radius or steering around things stops working |
 | `ORIO_AVOID_MIN_SCALE` | `0.35` | Duty scale at `STOP_M`, ramping to full at `CLEAR_M` |
 | `ORIO_AVOID_STALE_S` | `0.50` | A reading older than this stops the robot — in every direction |
 | `ORIO_AVOID_HALF_WIDTH_M` | `0.40` | Half the chassis plus margin — how wide the corridor that must stay clear is |
@@ -408,7 +408,7 @@ the policy steers around anything nearer than `AVOID_CLEAR_M` and won't drive
 forward at all inside `AVOID_STOP_M`. Past that range "go to them" and "don't
 hit them" are opposite instructions, and the guard wins — `go_to` gets no
 exemption. So `ORIO_SEEK_ARRIVE_M` defaults to `AVOID_CLEAR_M`: Orio stops about
-a metre short, which is where you'd stop in front of someone anyway.
+0.7 m short.
 
 **Looking is two-dimensional.** One tilt is one horizontal slice of the room,
 and the tilt that finds a *person* is much higher than intuition suggests

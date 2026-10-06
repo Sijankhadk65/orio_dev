@@ -307,7 +307,14 @@ CRUISE_DEADMAN_S = float(_env("ORIO_CRUISE_DEADMAN_S", "1.0"))
 # close encounters end in a back-off more often than a turn. The braking distance
 # at the 5% duty ceiling has not been re-measured against it.
 AVOID_STOP_M = float(_env("ORIO_AVOID_STOP_M", "0.20"))
-AVOID_CLEAR_M = float(_env("ORIO_AVOID_CLEAR_M", "1.20"))
+# 0.70 since 2026-09-25 (was 1.20), at the user's request for a robot that
+# reacts later and closer. 0.70 and not the 0.40 first asked for, because CLEAR_M
+# must stay above the 0.62 m turn radius: below it an obstacle is still inside
+# the corridor at every angle the camera can see, so steering around it is
+# impossible — every encounter would become stop, pivot until the thing leaves
+# the frame, then drive forward and clip it with a shoulder. SEEK_ARRIVE_M
+# follows this, so seek now stops ~0.7 m from its target.
+AVOID_CLEAR_M = float(_env("ORIO_AVOID_CLEAR_M", "0.70"))
 
 # Duty scale at STOP_M, ramping to full at CLEAR_M — the robot slows as it
 # closes rather than driving flat out into the last half metre.

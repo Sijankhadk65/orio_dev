@@ -183,7 +183,8 @@ def parse_args() -> argparse.Namespace:
                              f"ORIO_DRIVE_SPEED_MAX_PERCENT)")
     parser.add_argument("--stop-m", type=float, default=config.AVOID_STOP_M,
                         help="never drive forward inside this")
-    parser.add_argument("--clear-m", type=float, default=1.20, help="straight on is good beyond this")
+    parser.add_argument("--clear-m", type=float, default=config.AVOID_CLEAR_M,
+                        help="straight on is good beyond this")
     parser.add_argument("--min-scale", type=float, default=0.35, help="duty scale at --stop-m")
     parser.add_argument("--stale-s", type=float, default=0.50, help="reading older than this halts")
     parser.add_argument(
