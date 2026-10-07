@@ -36,8 +36,8 @@ The robot's `hello` lists what it serves. The app disables everything not listed
 | --- | --- | --- |
 | `status` | `status` | Phase 2 |
 | `transcript` | `transcript` | Phase 2 |
-| `commands` | `command`, `result`, `event` | the mock, 2026-10-07; the robot in Phase 5 |
-| `drive` | `drive` | the mock, 2026-10-07; the robot in Phase 6 |
+| `commands` | `command`, `result`, `event` | the mock and the robot, 2026-10-07 |
+| `drive` | `drive` | the mock and the robot, 2026-10-07 |
 | `video` | `video` (app), binary camera frames (robot) | JPEG fallback, 2026-10-07; WebRTC is Phase 7 |
 | `lidar` | (not yet specified) | after the L2 is fitted |
 
@@ -56,9 +56,9 @@ Until `drive` is listed, `drive` messages are ignored.
 // robot -> app, ~5 Hz
 {"type":"status","t":1760000000.2,
  "state":"LISTENING",              // FSM: ASLEEP IDLE LISTENING THINKING SPEAKING ERROR
- "behaviour":"cruise",             // idle | cruise today; go_to, follow_me, stay, driving from Phase 1/5/6
+ "behaviour":"cruise",             // idle | cruise (voice) | go_to (app) | driving (joystick)
  "behaviour_detail":"forward",     // free text, may be ""
- "wheel_owner":null,               // null until Phase 1 gives the wheels an owner
+ "wheel_owner":null,               // "app" (joystick), "go_to" (an app go_to), or null
  "heading_deg":12.5,               // IMU yaw, null when there is no fresh IMU reading
  "speed_percent":5,                // drive duty ceiling
  "sensors":{                       // name -> {ok, detail}; names present depend on what is fitted
@@ -79,14 +79,15 @@ Until `drive` is listed, `drive` messages are ignored.
 {"type":"transcript","t":...,"kind":"tool","text":"go_to","name":"go_to",
  "args":{"target":"chair"},"result":"went to the chair — standing 0.7 m away, facing them"}
 
-// robot -> app, as it happens (Phase 5)
+// robot -> app, as it happens
 {"type":"event","t":...,"kind":"arrived|halted|blocked|lost","text":"stopped about a metre from the chair"}
 
-// app -> robot, and the reply (Phase 5)
-{"type":"command","id":"c7","name":"stop|stay|follow_me|go_to","target":"chair"}
+// app -> robot, and the reply. stay and follow_me are always refused (ok: false):
+// the robot has no such behaviours.
+{"type":"command","id":"c7","name":"stop|go_to|stay|follow_me","target":"chair"}
 {"type":"result","id":"c7","ok":true,"text":"on my way to the chair"}
 
-// app -> robot, ~10 Hz while the pad is held, one zero on release (Phase 6)
+// app -> robot, ~10 Hz while the pad is held, one zero on release
 {"type":"drive","seq":42,"x":0.0,"y":0.8}
 
 // robot -> app, anything the user should see; usually followed by a close
@@ -124,7 +125,29 @@ the fps or width first.
 ## Commands and the joystick
 
 `orio/server.py` serves both when it is given handlers for them; the laptop
-mock passes its own, the robot passes none until Phases 1, 5 and 6.
+mock passes its own, and the robot passes `RobotControl`. The app fits what the
+robot already does; the robot's behaviours are not changed for the app.
+
+On the robot:
+
+- **`stop`** is `Body.stop()`, the same as the voice `stop_moving`. It ends an
+  app `go_to` and the joystick too.
+- **`go_to`** runs the same approach as the voice tool (`seek.Seeker`), on its
+  own thread: the `result` is "on my way to the chair", and the outcome follows
+  as an `event` (`arrived`, `blocked`, `lost`, or `halted` when it was stopped
+  or the wheels were taken). A second `go_to` replaces the first.
+- **`stay` and `follow_me`** are refused, with a reason.
+- **The joystick is a 4-way pad**, not proportional: the larger axis picks
+  forward, backward, left or right, at the robot's speed (5%), under the
+  avoider. **Backward is blind** — the cameras face forward. A stop from voice
+  or the app ends joystick driving, and the stick does nothing more until it has
+  been back to the centre.
+- One set of wheels, newest wins: the joystick ends an app `go_to`; a voice move
+  or `go_to` ends the joystick. A voice `go_to` still holds the conversation
+  until it finishes, as it always has; stopping it from the app stops the wheels
+  at once. A voice `move_*` or `turn_*` hop is the exception: it holds the
+  wheels for its whole length (up to `ORIO_DRIVE_MAX_STEP_S`, 4 s), and a stop
+  or the stick from the app takes effect when it ends.
 
 - **Commands** run on a worker thread each, so a slow one (`go_to`) never holds
   up status or a `stop` sent after it. Every `command` gets exactly one

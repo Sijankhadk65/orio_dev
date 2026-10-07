@@ -19,7 +19,7 @@ which a laptop neither has nor needs.
 The camera view is a moving test pattern, JPEG-encoded at 640 px wide like the
 robot's, so a frozen or laggy stream is easy to see. Commands and the joystick
 are acted out in the status (behaviour, wheel owner, heading), with the same
-results and events the robot will send once Phases 5 and 6 land; the joystick
+results and events `server.RobotControl` sends on the robot; the joystick
 deadman is the real one in `orio/server.py`.
 
 The Android emulator reaches this at ws://10.0.2.2:8765/ws; a phone on the same
@@ -41,7 +41,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from orio import telemetry  # noqa: E402
-from orio.server import AppServer  # noqa: E402
+from orio.server import UNSUPPORTED_COMMANDS, AppServer  # noqa: E402
 
 DIALOGUE = [
     ("wake", "Hey Orio"),
@@ -69,7 +69,7 @@ class FakeOrio:
         self.sectors: list[float | None] = [1.5] * 7
         self.behaviour = "idle"
         self.detail = ""
-        self.owner: str | None = None   # who has the wheels: app, go_to, follow_me
+        self.owner: str | None = None   # who has the wheels: app (joystick) or go_to
         self._turn = 0.0                # joystick x, turning the heading while driving
         self._lock = threading.Lock()
         self._job = 0                   # bumped by anything that takes the wheels
@@ -126,7 +126,7 @@ class FakeOrio:
         img.save(out, "JPEG", quality=60)
         return after + 1, t, out.getvalue()
 
-    # ── commands and the joystick (what Phases 1, 5 and 6 will do for real) ──
+    # ── commands and the joystick (what server.RobotControl does for real) ──
 
     def _take_wheels(self, owner: str | None, behaviour: str, detail: str = "") -> int:
         with self._lock:
@@ -140,12 +140,8 @@ class FakeOrio:
         if name == "stop":
             self._take_wheels(None, "idle")
             return True, "stopped"
-        if name == "stay":
-            self._take_wheels(None, "stay", "holding still")
-            return True, "staying put"
-        if name == "follow_me":
-            self._take_wheels("follow_me", "follow_me", "tracking the nearest person")
-            return True, "following you"
+        if name in UNSUPPORTED_COMMANDS:  # the robot has no such behaviours
+            return False, UNSUPPORTED_COMMANDS[name]
         if name == "go_to":
             if not target:
                 return False, "go to what? Give an object, like chair"
@@ -177,7 +173,7 @@ class FakeOrio:
             if self.owner != "app" or self.detail != direction:
                 logging.info("drive %s (x=%.2f y=%.2f)", direction, x, y)
             if self.owner != "app":
-                self._job += 1  # the stick overrides go_to and follow_me
+                self._job += 1  # the stick overrides a go_to
             self.owner, self.behaviour, self.detail = "app", "driving", direction
             self._turn = x if direction in ("left", "right") else 0.0
 

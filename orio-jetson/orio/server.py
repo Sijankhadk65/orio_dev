@@ -14,10 +14,10 @@ built so the robot cannot tell whether an app is connected:
 
 The robot advertises `status` and `transcript`, plus `video` when there is a
 frame source. `commands` and `drive` are advertised only when the caller hands
-in handlers for them — the laptop mock does today; the robot will in Phases 5
-and 6, after Phase 1 gives the wheels an owner. Without a handler a `command`
-is answered with a refusal and `drive` is ignored, so the app greys both out
-and a stray message can do nothing.
+in handlers for them: `RobotControl` on the robot, which serves them from the
+behaviours voice already uses, and fakes in the laptop mock. Without a handler
+a `command` is answered with a refusal and `drive` is ignored, so the app greys
+both out and a stray message can do nothing.
 
 The joystick's deadman lives here, not in the handler, so every robot gets it:
 a client whose `drive` messages stop for `ORIO_APP_DRIVE_DEADMAN_S` while the
@@ -458,13 +458,283 @@ class _Client:
         self.jobs: set[asyncio.Task] = set()  # running commands, kept from GC
 
 
+# ── the real robot's commands and joystick ───────────────────────────────────
+# The app fits the robot, not the other way round: everything below is built
+# from what voice already drives through — `Body.stop()`, `Body.cruise()` and
+# the `Seeker` behind the `go_to` tool — and changes none of it. Whatever the
+# robot cannot do (stay, follow me) is refused in words, not added for the app.
+
+# How a finished go_to reads as a protocol `event`, by the words Seeker uses.
+_GO_TO_EVENTS = (
+    ("went to", "arrived"),
+    ("got as close", "blocked"),
+    ("lost sight", "lost"),
+    ("couldn't find", "lost"),
+)
+
+UNSUPPORTED_COMMANDS = {
+    "stay": "Orio has no stay behaviour — it already stays put whenever nothing is driving it",
+    "follow_me": "Orio can't follow anyone yet; use go to person instead",
+}
+
+
+class _Cancelled(Exception):
+    """An app go_to that was stopped, or whose wheels were taken by something else."""
+
+
+class _Watched:
+    """The body as one app go_to sees it: it goes blind once the errand is over.
+
+    `Seeker` runs unchanged against this. The errand is over when the app
+    cancels it, or when the cruise it started is no longer the body's — a voice
+    `stop_moving`, the joystick or a voice `go_to` took the wheels. The wheels
+    stopped at that moment (ending a cruise stops them); this only makes the
+    approach notice at its next look, instead of looking on at a dead cruise
+    until `SEEK_TIMEOUT_S`.
+    """
+
+    def __init__(self, body, cancelled: threading.Event) -> None:
+        self._body = body
+        self._cancelled = cancelled
+        self._cruise = None
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._body, name)
+
+    def _check(self) -> None:
+        superseded = self._cruise is not None and getattr(self._body, "_cruise", None) is not self._cruise
+        if superseded or self._cancelled.is_set():
+            self._cancelled.set()
+            raise _Cancelled
+
+    def snapshot(self):
+        self._check()
+        return self._body.snapshot()
+
+    def look(self, pan_deg: float, tilt_deg: float | None = None) -> str | None:
+        self._check()
+        return self._body.look(pan_deg, tilt_deg)
+
+    def cruise(self):
+        self._check()
+        self._cruise = self._body.cruise()
+        return self._cruise
+
+
+class _Stick:
+    """The joystick as a 4-way latch on a `Body` cruise, the way the robot drives.
+
+    `Cruise.go()` latches forward, backward, left or right at the body's speed
+    (5%), under the avoider, so the stick's larger axis picks the direction and
+    its size is ignored. Backward is blind, as it is for voice.
+
+    A cruise is started on the first off-centre position and renewed by every
+    position after it, so its own deadman (`CRUISE_DEADMAN_S`) backs up the
+    server's. The centre ends it with `Body.stop()`. A stop from anywhere else,
+    or any other behaviour starting a cruise, ends it too; the stick then does
+    nothing until it has been back to the centre, so a held thumb never undoes
+    a spoken "stop".
+
+    `set()` is called on the server's event loop, so it only latches; starting a
+    cruise can wait out a voice hop or a head move and happens on this thread.
+    """
+
+    def __init__(self, get_body: Callable[[], Any]) -> None:
+        self._get_body = get_body
+        self._cv = threading.Condition()
+        self._want: str | None = None
+        self._fresh = 0
+        self._cruise = None
+        self._thread: threading.Thread | None = None
+
+    @staticmethod
+    def direction(x: float, y: float) -> str | None:
+        if x == 0 and y == 0:
+            return None
+        if abs(y) >= abs(x):
+            return "forward" if y > 0 else "backward"
+        return "right" if x > 0 else "left"
+
+    def set(self, x: float, y: float) -> None:
+        with self._cv:
+            self._want = self.direction(x, y)
+            self._fresh += 1
+            self._cv.notify()
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._loop, name="app-stick", daemon=True)
+                self._thread.start()
+
+    def driving(self) -> str | None:
+        """The direction the stick is driving right now, or None."""
+        body, cruise = self._get_body(), self._cruise
+        if body is None or cruise is None or getattr(body, "_cruise", None) is not cruise:
+            return None
+        return cruise.direction
+
+    def _latest(self) -> str | None:
+        with self._cv:
+            return self._want
+
+    def _loop(self) -> None:
+        seen, wait_centre = 0, False
+        while True:
+            with self._cv:
+                self._cv.wait_for(lambda: self._fresh != seen)
+                want, seen = self._want, self._fresh
+            body = None
+            try:
+                body = self._get_body()
+                if body is None or not body.can_drive:
+                    continue
+                cruise = self._cruise
+                if cruise is not None and getattr(body, "_cruise", None) is not cruise:
+                    self._cruise = cruise = None  # stopped, or taken by something else
+                    wait_centre = True
+                if want is None:
+                    wait_centre = False
+                    if cruise is not None:
+                        self._cruise = None
+                        body.stop()
+                    continue
+                if wait_centre:
+                    continue
+                if cruise is None:
+                    cruise = self._cruise = body.cruise()
+                    want = self._latest()  # starting can take a while; the thumb may have lifted
+                    if want is None:
+                        self._cruise = None
+                        body.stop()
+                        continue
+                cruise.go(want)
+            except Exception:
+                log.exception("app joystick failed; stopping the wheels")
+                self._cruise = None
+                try:
+                    if body is not None:
+                        body.stop()
+                except Exception:
+                    log.exception("and the stop failed too")
+
+
+class RobotControl:
+    """The `commands` and `drive` handlers for the real robot.
+
+    * `stop` is `Body.stop()`, the same call as the voice `stop_moving`, after
+      cancelling any app go_to.
+    * `go_to` runs the voice tool's `Seeker` on a thread of its own, so the
+      result can say "on my way" and the outcome follows as an `event`, the
+      shape the app and the mock already use. A second go_to replaces the first.
+    * `stay` and `follow_me` are refused: the robot has no such behaviours.
+    * `drive` is `_Stick`.
+
+    A voice `go_to` still blocks the conversation as it always has; a stop or
+    the stick from the app ends its cruise, and the wheels stop, but the voice
+    tool call only returns when its own approach gives up.
+    """
+
+    def __init__(self, get_body: Callable[[], Any] | None = None,
+                 detector: Callable[[], Any] | None = None) -> None:
+        if get_body is None:
+            from .body import get as get_body
+        self._get_body = get_body
+        self._detector = detector
+        self._lock = threading.Lock()
+        self._errand: tuple[threading.Thread, threading.Event, str] | None = None
+        self.stick = _Stick(get_body)
+
+    # ── handlers ─────────────────────────────────────────────────────────────
+
+    def command(self, name: str, target: str | None) -> tuple[bool, str]:
+        from .body import NO_WHEELS
+
+        if name in UNSUPPORTED_COMMANDS:
+            return False, UNSUPPORTED_COMMANDS[name]
+        if name not in ("stop", "go_to"):
+            return False, f"unknown command {name!r}"
+        body = self._get_body()
+        if body is None or not body.can_drive:
+            return False, NO_WHEELS
+        if name == "stop":
+            self._cancel(wait=False)
+            text = body.stop()
+            return text == "stopped", text
+        return self._go_to(body, target)
+
+    def drive(self, x: float, y: float) -> None:
+        self.stick.set(x, y)
+
+    def status(self) -> dict[str, Any]:
+        """What the app is doing with the wheels, laid over `Body.telemetry()`."""
+        direction = self.stick.driving()
+        if direction is not None:
+            return {"wheel_owner": "app", "behaviour": "driving", "behaviour_detail": direction}
+        errand = self._errand
+        if errand is not None and errand[0].is_alive() and not errand[1].is_set():
+            return {"wheel_owner": "go_to", "behaviour": "go_to",
+                    "behaviour_detail": f"approaching the {errand[2]}"}
+        return {}
+
+    # ── go_to ────────────────────────────────────────────────────────────────
+
+    def _go_to(self, body, target: str | None) -> tuple[bool, str]:
+        from .tools import _LABEL_ALIASES, get_detector
+
+        if not target:
+            return False, "go to what? Give an object, like chair"
+        label = target.strip().lower()
+        label = _LABEL_ALIASES.get(label, label)
+        try:
+            detector = (self._detector or get_detector)()
+            known = set(detector.labels())
+        except Exception as exc:
+            return False, f"camera error: {exc}"
+        if known and label not in known:
+            return False, f"Orio doesn't know how to recognise a {target!r}, so it can't walk to one"
+
+        with self._lock:
+            self._cancel(wait=True)
+            cancelled = threading.Event()
+            thread = threading.Thread(target=self._approach,
+                                      args=(body, detector, label, cancelled),
+                                      name="app-go-to", daemon=True)
+            self._errand = (thread, cancelled, label)
+            thread.start()
+        return True, f"on my way to the {label}"
+
+    def _cancel(self, wait: bool) -> None:
+        errand = self._errand
+        if errand is None:
+            return
+        thread, cancelled, _label = errand
+        cancelled.set()
+        if wait and thread is not threading.current_thread():
+            thread.join(timeout=3.0)
+
+    def _approach(self, body, detector, label: str, cancelled: threading.Event) -> None:
+        from .seek import Seeker
+
+        try:
+            text = Seeker(_Watched(body, cancelled), detector.detect_in).approach(label)
+        except _Cancelled:
+            telemetry.event("halted", f"stopped on the way to the {label}")
+            return
+        except Exception as exc:
+            log.exception("app go_to(%r) failed", label)
+            body.stop()
+            telemetry.event("halted", f"something went wrong on the way: {exc}")
+            return
+        kind = next((k for prefix, k in _GO_TO_EVENTS if text.startswith(prefix)), "halted")
+        telemetry.event(kind, text)
+
+
 # ── the real robot's status ──────────────────────────────────────────────────
 
 
-def robot_status(fsm) -> dict[str, Any]:
+def robot_status(fsm, control: RobotControl | None = None) -> dict[str, Any]:
     """Status from the FSM and the body, in the protocol's `status` shape.
 
-    `wheel_owner` stays null until Phase 1 gives the wheels an owner to report.
+    `wheel_owner` is the app's, when it is driving the wheels: "app" for the
+    joystick, "go_to" for a go_to it started. Voice has no owner to report.
     """
     from . import body as body_mod
 
@@ -478,6 +748,8 @@ def robot_status(fsm) -> dict[str, Any]:
     distances = tel.pop("sectors")
     tel.pop("can_drive")
     status.update(tel)
+    if control is not None:
+        status.update(control.status())
     if distances:
         status["sectors"] = {"fov_deg": config.STEREO_HFOV_DEG, "distance_m": distances,
                              "stop_m": config.AVOID_STOP_M, "clear_m": config.AVOID_CLEAR_M}
@@ -540,6 +812,8 @@ def start(fsm) -> tuple[AppServer | None, str]:
             video = camera_frames()
         except Exception as exc:  # no cv2: serve everything but the camera view
             video_note = f"; no camera view ({exc})"
-    server = AppServer(lambda: robot_status(fsm), video=video)
+    control = RobotControl()
+    server = AppServer(lambda: robot_status(fsm, control), video=video,
+                       commands=control.command, drive=control.drive)
     note = server.start() + video_note
     return (server if server.running else None), note
