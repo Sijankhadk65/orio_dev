@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -207,5 +208,44 @@ void main() {
     await pumpEventQueue();
     expect(last.sent.last, {'type': 'video', 'on': true});
     s.dispose();
+  });
+
+  group('connect errors read as reasons', () {
+    final robot = Uri.parse('ws://orio:8765/ws');
+
+    test('a closed port says the server is not running', () async {
+      final free = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = free.port;
+      await free.close();
+      final link = WebSocketLink(Uri.parse('ws://127.0.0.1:$port/ws'));
+      Object? error;
+      try {
+        await link.ready;
+      } catch (e) {
+        error = e;
+      }
+      expect(error, isNotNull);
+      expect(
+        explainConnectError(error!, Uri.parse('ws://127.0.0.1:$port/ws')),
+        '127.0.0.1 is reachable, but nothing is listening on port $port. Is main.py running on the Jetson?',
+      );
+    });
+
+    test('an unknown Tailscale name asks about Tailscale', () {
+      final e = SocketException("Failed host lookup: 'orio'");
+      expect(explainConnectError(e, robot), "can't find orio. Is Tailscale switched on on this device?");
+    });
+
+    test('a timeout says the robot may be off', () {
+      expect(explainConnectError(TimeoutException('x'), robot), startsWith('no answer from orio.'));
+    });
+
+    test('a web server on the port is not mistaken for Orio', () {
+      final e = Exception(
+        "WebSocketException: Connection to 'http://orio:8765/ws#' was not upgraded "
+        'to websocket, HTTP status code: 404',
+      );
+      expect(explainConnectError(e, robot), contains("not as Orio's app server (HTTP 404)"));
+    });
   });
 }

@@ -80,7 +80,7 @@ class RobotSession extends ChangeNotifier {
       await link.ready.timeout(connectTimeout);
     } catch (e) {
       if (_link != link) return;
-      _onDrop('could not connect: ${_short(e)}');
+      _onDrop(explainConnectError(e, Uri.tryParse(profile.url)));
       return;
     }
     if (_link != link) return;
@@ -265,4 +265,36 @@ class RobotSession extends ChangeNotifier {
     video.dispose();
     super.dispose();
   }
+}
+
+/// Why a connection couldn't be opened, in words a person can act on, rather
+/// than the raw socket exception. No trailing full stop: the banner adds one.
+String explainConnectError(Object e, Uri? uri) {
+  final host = uri?.host ?? 'the robot';
+  final port = uri?.port ?? 0;
+  final raw = e.toString();
+  bool says(String s) => raw.contains(s);
+  if (e is TimeoutException || says('timed out')) {
+    return 'no answer from $host. The Jetson may be off, or not on this network';
+  }
+  if (says('Connection refused')) {
+    return "$host is reachable, but nothing is listening on port $port. "
+        'Is main.py running on the Jetson?';
+  }
+  if (says('Failed host lookup') || says('No address associated')) {
+    if (host.endsWith('.local')) {
+      return "can't find $host. Is this device on the robot's Wi-Fi? Some phones can't look up .local "
+          'names; try the Tailscale profile';
+    }
+    if (!host.contains('.')) return "can't find $host. Is Tailscale switched on on this device?";
+    return "can't find $host. Check the address";
+  }
+  if (says('Network is unreachable')) return 'this device has no network connection';
+  if (says('No route to host')) return 'no route to $host. The Jetson may be off, or not on this network';
+  final status = RegExp(r'HTTP status code: (\d+)').firstMatch(raw);
+  if (says('not upgraded to websocket')) {
+    return '$host answered, but not as Orio\'s app server'
+        '${status == null ? '' : ' (HTTP ${status.group(1)})'}. Check the port and path in the URL';
+  }
+  return 'could not connect: ${raw.length > 120 ? '${raw.substring(0, 120)}…' : raw}';
 }

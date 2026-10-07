@@ -44,8 +44,8 @@ class LinkBanner extends StatelessWidget {
         'Connected, but no status for over '
             '${RobotSession.staleAfter.inMilliseconds / 1000} s. What you see may be out of date.',
       LinkState.lost =>
-        'Connection lost (${session.error ?? 'unknown'}). Retrying… '
-            'Orio keeps running on its own.',
+        '${session.hello == null ? "Can't reach Orio" : 'Connection lost'}: '
+            '${session.error ?? 'unknown'}. Retrying… Orio keeps running on its own.',
       LinkState.refused => '${session.error ?? 'Refused by the robot'}. Check the token, then retry.',
     };
     if (text == null) return const SizedBox.shrink();
