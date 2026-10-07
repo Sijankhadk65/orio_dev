@@ -20,6 +20,7 @@ import sys
 
 from . import body
 from . import config
+from . import telemetry
 from .fsm import State, StateMachine
 from .llm import TURN_BREAK, Conversation, LLMUnavailable
 from .tts import TTS, get_tts
@@ -57,6 +58,7 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
     resting state (LISTENING follow-up, ASLEEP, or IDLE); on an LLM failure it
     recovers through ERROR back to IDLE itself.
     """
+    telemetry.heard(user)
     fsm.to(State.THINKING)
     print("orio › ", end="", flush=True)
     segment: list[str] = []
@@ -67,6 +69,7 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
         segment.clear()
         fsm.to(State.SPEAKING)  # entered even when silent, so the turn always ends here
         if text:
+            telemetry.said(text)
             tts.speak(text)
 
     try:
@@ -157,11 +160,14 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
                 return  # Ctrl-C or capture failure
             pending = woke
             print("\r" + " " * 40 + "\r", end="")  # clear the asleep line
+            telemetry.wake(waker.label)
             fsm.to(State.LISTENING)  # hearing the wake word is itself a listen
             if not pending and cue is not None:
                 # They stopped after "Hey Orio" and are waiting to be heard. A
                 # command run on from the wake word gets no "Hmm?" — it's said.
-                cue.play()
+                phrase = cue.play()
+                if phrase:
+                    telemetry.said(phrase)
 
         # Awake: take commands, with a follow-up window between them so the user
         # can chain requests without re-waking. An empty window sends us back to
@@ -242,6 +248,7 @@ def run() -> None:
 
         eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
         vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
+        app_server = _start_app_server(fsm)  # the orio-app's window onto all this
 
         try:
             if config.INPUT_MODE == "voice":
@@ -251,6 +258,8 @@ def run() -> None:
         except KeyboardInterrupt:
             pass
         finally:
+            if app_server is not None:
+                app_server.stop()
             if eyes is not None:
                 eyes.stop()
             if vision_debug is not None:
@@ -273,6 +282,23 @@ def _start_body() -> None:
     """
     for note in body.start().notes:
         print(f"  {note}")
+
+
+def _start_app_server(fsm: StateMachine):
+    """Start the app's WebSocket (orio/server.py) if enabled; return it (or None).
+
+    Never raises, and nothing else waits on it: the app watches the robot, it
+    does not run it, so a port that will not bind only costs the app its view.
+    """
+    try:
+        from .server import start
+
+        server, note = start(fsm)
+    except Exception as exc:  # missing websockets, etc.
+        print(f"⚠ app server disabled: {exc}")
+        return None
+    print(f"  {note}")
+    return server
 
 
 def _start_vision_debug():

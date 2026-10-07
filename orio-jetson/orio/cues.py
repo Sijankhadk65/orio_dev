@@ -100,10 +100,13 @@ class ListenCue:
             for phrase in self._phrases:
                 self._clip(phrase)
 
-    def play(self) -> None:
-        """Play a cue and block until it has finished."""
+    def play(self) -> str | None:
+        """Play a cue and block until it has finished; return what was said."""
         if not self.enabled:
-            return
-        audio = self._clip(random.choice(self._phrases))
-        if audio is not None:
-            self._tts.play(audio)
+            return None
+        phrase = random.choice(self._phrases)
+        audio = self._clip(phrase)
+        if audio is None:
+            return None
+        self._tts.play(audio)
+        return phrase

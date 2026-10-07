@@ -21,6 +21,7 @@ from collections.abc import Iterator
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
 from . import config
+from . import telemetry
 from .tools import DRIVE_TOOL_NAMES, SILENT_TOOL_NAMES, get_tools
 
 # Guard against a runaway tool-call loop (a confused model calling tools
@@ -195,6 +196,7 @@ class Conversation:
                 yield TURN_BREAK
             for call in full.tool_calls:
                 result = self._run_tool(call)
+                telemetry.tool(call["name"], call["args"], result)
                 self._history.append(ToolMessage(content=result, tool_call_id=call["id"]))
             yield from self._respond(depth + 1)
             return

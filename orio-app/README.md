@@ -50,36 +50,15 @@ device. The defaults are:
 Port 8765 and the `/ws` path are placeholders until `server.py` picks them.
 iPad builds need a Mac with Xcode (see the plan's open questions).
 
-## Protocol (draft for `docs/app-protocol.md`)
+## Protocol
 
-One WebSocket. Every message is JSON with a `type`; the major `version` must
-match or the app refuses the robot. Models are in `lib/protocol/messages.dart`.
+The contract lives in [`docs/app-protocol.md`](../docs/app-protocol.md) at the
+repo root; the Dart models are `lib/protocol/messages.dart`. A message change
+updates both, and the robot's `orio-jetson/orio/server.py`, in the same commit.
 
-```jsonc
-// app -> robot, first message
-{"type":"hello","version":"0.1","client":"orio-app","token":"..."}
-// robot -> app, once
-{"type":"hello","version":"0.1","robot":"orio","features":["status","transcript","commands","drive","video"]}
-// robot -> app, ~5 Hz
-{"type":"status","t":1760000000.2,"state":"LISTENING","behaviour":"go_to","behaviour_detail":"approaching chair",
- "wheel_owner":"go_to","heading_deg":12.5,"speed_percent":5,
- "sensors":{"camera":{"ok":true,"detail":"Gemini 336L · 30 fps"},"imu":{"ok":true},"tof":{"ok":true}},
- "sectors":{"fov_deg":94,"distance_m":[1.6,1.2,null,0.9,1.4,2.0,1.8],"stop_m":0.2,"clear_m":0.7}}
-// robot -> app, as it happens (the last ~50 transcript lines on connect)
-{"type":"event","t":...,"kind":"arrived|halted|blocked|lost","text":"stopped about a metre from the chair"}
-{"type":"transcript","t":...,"kind":"wake|heard|said|tool","text":"go to the chair"}
-{"type":"transcript","t":...,"kind":"tool","name":"go_to","args":{"target":"chair"},"result":"arrived"}
-// app -> robot, and the reply
-{"type":"command","id":"c7","name":"stop|stay|follow_me|go_to","target":"chair"}
-{"type":"result","id":"c7","ok":true,"text":"on my way to the chair"}
-// app -> robot, ~10 Hz while the pad is held, one zero on release
-{"type":"drive","seq":42,"x":0.0,"y":0.8}
-// robot -> app, anything it wants the user to see
-{"type":"error","text":"wrong token"}
-```
-
-The app never sends wheel duties, only intent. The robot's avoider, 5% duty
-ceiling and deadman (no `drive` for ~300 ms = stop) decide what the wheels do.
+To develop against a real WebSocket without the robot, run the mock on the
+laptop: `cd orio-jetson && uv run tools/mock_server.py` (it installs only
+`websockets`), then pick the "Laptop mock" profile.
 
 ## Layout
 
