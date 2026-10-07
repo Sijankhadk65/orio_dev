@@ -13,6 +13,9 @@ abstract class RobotLink {
 
   void send(Map<String, dynamic> message);
 
+  /// The WebSocket close code once the link has closed, if there was one.
+  int? get closeCode;
+
   Future<void> close();
 }
 
@@ -36,6 +39,9 @@ class WebSocketLink implements RobotLink {
 
   @override
   void send(Map<String, dynamic> message) => _channel.sink.add(jsonEncode(message));
+
+  @override
+  int? get closeCode => _channel.closeCode;
 
   @override
   Future<void> close() => _channel.sink.close();

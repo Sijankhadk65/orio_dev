@@ -7,7 +7,7 @@ import '../connection/robot_session.dart';
   LinkState.online => ('Online', Icons.wifi, Colors.green),
   LinkState.stale => ('No status', Icons.wifi_off, Colors.orange),
   LinkState.lost => ('Lost', Icons.cloud_off, c.error),
-  LinkState.incompatible => ('Wrong version', Icons.block, c.error),
+  LinkState.refused => ('Refused', Icons.block, c.error),
   LinkState.closed => ('Disconnected', Icons.link_off, c.outline),
 };
 
@@ -46,10 +46,10 @@ class LinkBanner extends StatelessWidget {
       LinkState.lost =>
         'Connection lost (${session.error ?? 'unknown'}). Retrying… '
             'Orio keeps running on its own.',
-      LinkState.incompatible => session.error ?? 'Protocol version mismatch.',
+      LinkState.refused => '${session.error ?? 'Refused by the robot'}. Check the token, then retry.',
     };
     if (text == null) return const SizedBox.shrink();
-    final bad = session.state == LinkState.lost || session.state == LinkState.incompatible;
+    final bad = session.state == LinkState.lost || session.state == LinkState.refused;
     return Material(
       color: bad ? scheme.errorContainer : scheme.secondaryContainer,
       child: Padding(
@@ -62,7 +62,7 @@ class LinkBanner extends StatelessWidget {
                 style: TextStyle(color: bad ? scheme.onErrorContainer : scheme.onSecondaryContainer),
               ),
             ),
-            if (session.state == LinkState.lost || session.state == LinkState.incompatible)
+            if (session.state == LinkState.lost || session.state == LinkState.refused)
               TextButton(onPressed: session.connect, child: const Text('Retry now')),
           ],
         ),

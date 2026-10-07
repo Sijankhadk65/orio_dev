@@ -12,7 +12,7 @@ enum LinkState {
   online, // hello received, status fresh
   stale, // still connected, but status has stopped arriving
   lost, // dropped; retrying
-  incompatible, // robot speaks a different major protocol version
+  refused, // robot turned us away (wrong token or protocol version); no retry
   closed, // user disconnected
 }
 
@@ -44,6 +44,7 @@ class RobotSession extends ChangeNotifier {
   final List<TranscriptLine> transcript = [];
   final List<RobotEvent> events = [];
   int attempt = 0;
+  String? _robotError; // the robot's last `error` text, shown if it then closes
   Duration? lastLatency; // round trip of the most recent command
 
   RobotLink? _link;
@@ -63,6 +64,7 @@ class RobotSession extends ChangeNotifier {
     await _teardown();
     _set(LinkState.connecting);
     attempt++;
+    _robotError = null;
     final link = _linkFactory(profile);
     _link = link;
     try {
@@ -76,7 +78,7 @@ class RobotSession extends ChangeNotifier {
     _sub = link.messages.listen(
       _onMessage,
       onError: (e) => _onDrop(_short(e)),
-      onDone: () => _onDrop('connection closed'),
+      onDone: () => _onDrop('connection closed', closeCode: link.closeCode),
     );
     link.send(clientHello(profile.token));
     _watchdog = Timer.periodic(const Duration(milliseconds: 250), (_) => _checkStale());
@@ -89,19 +91,19 @@ class RobotSession extends ChangeNotifier {
         hello = Hello.fromJson(m);
         if (!hello!.compatible) {
           error = 'robot speaks protocol ${hello!.version}, app speaks $protocolVersion';
-          _set(LinkState.incompatible);
+          _set(LinkState.refused);
           _teardown();
           return;
         }
         // The robot re-sends its recent conversation on connect.
         transcript.clear();
         lastStatusAt = DateTime.now();
-        attempt = 0;
         error = null;
         _set(LinkState.online);
       case 'status':
         status = Status.fromJson(m);
         lastStatusAt = DateTime.now();
+        attempt = 0; // only a working link resets the backoff: a refusal also starts with hello
         if (state == LinkState.stale) state = LinkState.online;
       case 'transcript':
         _push(transcript, TranscriptLine.fromJson(m));
@@ -120,7 +122,7 @@ class RobotSession extends ChangeNotifier {
           ),
         );
       case 'error':
-        error = '${m['text'] ?? 'robot reported an error'}';
+        error = _robotError = '${m['text'] ?? 'robot reported an error'}';
         _push(events, RobotEvent(time: DateTime.now(), kind: 'error', text: error!));
     }
     _notify();
@@ -137,8 +139,19 @@ class RobotSession extends ChangeNotifier {
     if (last != null && DateTime.now().difference(last) > staleAfter) _set(LinkState.stale);
   }
 
-  void _onDrop(String why) {
-    if (state == LinkState.closed || state == LinkState.incompatible || _disposed) return;
+  /// Close codes the robot uses to refuse a client (docs/app-protocol.md):
+  /// 1002 protocol error or version mismatch, 1008 wrong token. Retrying
+  /// cannot fix either, so the session stops and says why.
+  static const refusalCodes = {1002, 1008};
+
+  void _onDrop(String why, {int? closeCode}) {
+    if (state == LinkState.closed || state == LinkState.refused || _disposed) return;
+    if (refusalCodes.contains(closeCode)) {
+      error = 'Refused by the robot: ${_robotError ?? 'close code $closeCode'}';
+      _set(LinkState.refused);
+      _teardown();
+      return;
+    }
     error = why;
     _set(LinkState.lost);
     _teardown();

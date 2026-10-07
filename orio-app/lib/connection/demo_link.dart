@@ -127,6 +127,9 @@ class DemoLink implements RobotLink {
   Future<void> get ready => Future.value();
 
   @override
+  int? get closeCode => null;
+
+  @override
   void send(Map<String, dynamic> m) {
     switch (m['type']) {
       case 'command':

@@ -8,9 +8,14 @@ import 'package:orio_app/connection/robot_session.dart';
 class FakeLink implements RobotLink {
   final _in = StreamController<Map<String, dynamic>>.broadcast();
   final sent = <Map<String, dynamic>>[];
+  @override
+  int? closeCode;
 
   void push(Map<String, dynamic> m) => _in.add(m);
-  Future<void> drop() => _in.close();
+  Future<void> drop({int? code}) {
+    closeCode = code;
+    return _in.close();
+  }
 
   @override
   Stream<Map<String, dynamic>> get messages => _in.stream;
@@ -52,7 +57,7 @@ void main() {
     await s.connect();
     link.push({'type': 'hello', 'version': '2.0', 'features': []});
     await pumpEventQueue();
-    expect(s.state, LinkState.incompatible);
+    expect(s.state, LinkState.refused);
     s.dispose();
   });
 
@@ -85,6 +90,53 @@ void main() {
     expect(s.state, LinkState.lost);
     expect(s.status, isNotNull);
     expect(s.command('stop'), isFalse);
+    s.dispose();
+  });
+
+  test('a wrong token stops the retries and says why', () async {
+    var links = 0;
+    final link = FakeLink();
+    final s = RobotSession(
+      profile,
+      linkFactory: (_) {
+        links++;
+        return link;
+      },
+    );
+    await s.connect();
+    // What the robot does: its hello first, then the token check.
+    link.push({
+      'type': 'hello',
+      'version': '0.1',
+      'features': ['status'],
+    });
+    link.push({'type': 'error', 'text': 'wrong token'});
+    await pumpEventQueue();
+    await link.drop(code: 1008);
+    await pumpEventQueue();
+    expect(s.state, LinkState.refused);
+    expect(s.error, contains('wrong token'));
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    expect(links, 1, reason: 'a refusal must not reconnect');
+    s.dispose();
+  });
+
+  test('a plain drop still retries', () async {
+    var links = 0;
+    late FakeLink last;
+    final s = RobotSession(
+      profile,
+      linkFactory: (_) {
+        links++;
+        return last = FakeLink();
+      },
+    );
+    await s.connect();
+    await last.drop();
+    await pumpEventQueue();
+    expect(s.state, LinkState.lost);
+    await Future<void>.delayed(const Duration(milliseconds: 1200));
+    expect(links, 2);
     s.dispose();
   });
 }
