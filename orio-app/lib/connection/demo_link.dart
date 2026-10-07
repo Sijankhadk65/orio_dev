@@ -19,6 +19,8 @@ class DemoLink implements RobotLink {
   String _behaviour = 'idle';
   String _detail = '';
   String? _owner;
+  String? _goingTo; // the target of a running go_to
+  bool _stickLatched = false; // after a stop the stick waits for the centre, as on the robot
   double _heading = 0;
   double _turnRate = 0; // deg per status tick, from the joystick
   final List<double?> _sectors = List.filled(7, 1.5);
@@ -145,9 +147,11 @@ class DemoLink implements RobotLink {
         final x = (m['x'] as num?)?.toDouble() ?? 0;
         final y = (m['y'] as num?)?.toDouble() ?? 0;
         if (x == 0 && y == 0) {
+          _stickLatched = false;
           if (_owner == 'app') _setIdle();
           return;
         }
+        if (_stickLatched) return;
         _owner = 'app';
         _behaviour = 'driving';
         _detail = y.abs() >= x.abs() ? (y > 0 ? 'forward' : 'backward') : (x > 0 ? 'right' : 'left');
@@ -155,25 +159,28 @@ class DemoLink implements RobotLink {
     }
   }
 
+  // The robot's refusals, word for word (UNSUPPORTED_COMMANDS in orio/server.py).
+  static const _unsupported = {
+    'stay': 'Orio has no stay behaviour — it already stays put whenever nothing is driving it',
+    'follow_me': "Orio can't follow anyone yet; use go to person instead",
+  };
+
   void _command(String id, String name, String? target) {
     String reply;
     switch (name) {
       case 'stop':
+        // As on the robot, a stop only raises an event when it ends an app go_to.
+        if (_owner == 'go_to') _event('halted', 'stopped on the way to the $_goingTo');
+        if (_owner == 'app') _stickLatched = true;
         _setIdle();
         reply = 'stopped';
-        _event('halted', 'stop from the app');
-      case 'stay':
-        _setIdle();
-        _behaviour = 'stay';
-        reply = 'staying put';
-      case 'follow_me':
-        _behaviour = 'follow_me';
-        _detail = 'tracking person';
-        _owner = 'follow_me';
-        reply = 'following you';
+      case 'stay' || 'follow_me':
+        _emit({'type': 'result', 'id': id, 'ok': false, 'text': _unsupported[name]});
+        return;
       case 'go_to':
         _behaviour = 'go_to';
-        _detail = 'approaching ${target ?? '?'}';
+        _detail = 'approaching the ${target ?? '?'}';
+        _goingTo = target;
         _owner = 'go_to';
         reply = 'on my way to the ${target ?? '?'}';
         _timers.add(

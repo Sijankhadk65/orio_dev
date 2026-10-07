@@ -3,8 +3,9 @@ import 'package:flutter/material.dart';
 import '../connection/robot_session.dart';
 import '../protocol/messages.dart';
 
-/// Stop, stay, follow me, go to. The same intents the voice assistant has —
-/// the app only asks; the robot's own guards decide what happens.
+/// Stop and go to: what the robot's voice tools can do. The app only asks; the
+/// robot's own guards decide what happens. There is no stay or follow me — the
+/// robot has neither behaviour, and it refuses both.
 class CommandBar extends StatelessWidget {
   final RobotSession session;
 
@@ -60,18 +61,6 @@ class CommandBar extends StatelessWidget {
                   icon: const Icon(Icons.stop_circle_outlined),
                   label: const Text('STOP'),
                 ),
-              ),
-              const SizedBox(width: 8),
-              _Small(
-                icon: Icons.front_hand_outlined,
-                label: 'Stay',
-                onPressed: enabled ? () => _send(context, 'stay') : null,
-              ),
-              const SizedBox(width: 8),
-              _Small(
-                icon: Icons.directions_walk,
-                label: 'Follow',
-                onPressed: enabled ? () => _send(context, 'follow_me') : null,
               ),
               const SizedBox(width: 8),
               _Small(

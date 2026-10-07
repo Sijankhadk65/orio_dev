@@ -207,7 +207,7 @@ class RobotSession extends ChangeNotifier {
     _retry = Timer(delay, connect);
   }
 
-  /// Sends one of stop, stay, follow_me, go_to. Returns false if not sent.
+  /// Sends stop or go_to. Returns false if not sent.
   bool command(String name, {String? target}) {
     final link = _link;
     if (link == null || !connected) return false;

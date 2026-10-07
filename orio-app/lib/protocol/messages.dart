@@ -89,7 +89,7 @@ class SectorMap {
 class Status {
   final DateTime time;
   final String fsmState; // ASLEEP, IDLE, LISTENING, THINKING, SPEAKING, ERROR
-  final String behaviour; // idle, go_to, follow_me, driving, ...
+  final String behaviour; // idle, cruise, go_to, driving
   final String behaviourDetail;
   final String? wheelOwner; // null = nobody
   final double? headingDeg;
@@ -222,7 +222,7 @@ Map<String, dynamic> clientHello(String token) => {
   'token': token,
 };
 
-/// `name` is one of stop, stay, follow_me, go_to. The app sends intent only —
+/// `name` is stop or go_to; the robot refuses stay and follow_me. The app sends intent only —
 /// never wheel duties (plan: "the robot decides what the wheels do").
 Map<String, dynamic> commandMessage(String id, String name, {String? target}) => {
   'type': 'command',
