@@ -56,13 +56,16 @@ class _VideoViewState extends State<VideoView> {
     final driving = session.status?.wheelOwner == 'app';
     final last = session.lastFrameAt;
     final stale = last == null || DateTime.now().difference(last) > staleAfter;
+    final camera = session.status?.sensors['camera'];
     final String? message = session.hello == null
         ? 'Waiting for the robot…'
         : !session.has(Feature.video)
         ? 'Video is not available on this robot yet'
-        : last == null
-        ? 'Waiting for the first frame…'
-        : null;
+        : last != null
+        ? null
+        : camera != null && !camera.ok
+        ? "The robot's camera isn't working: ${camera.detail.isEmpty ? 'no detail' : camera.detail}"
+        : 'Waiting for the first frame…';
     return ClipRRect(
       borderRadius: BorderRadius.circular(12),
       child: Container(

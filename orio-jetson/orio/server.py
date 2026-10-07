@@ -391,6 +391,9 @@ def robot_status(fsm) -> dict[str, Any]:
     return status
 
 
+_RETRY_S = 5.0
+
+
 def camera_frames(width: int = config.APP_VIDEO_WIDTH,
                   quality: int = config.APP_VIDEO_QUALITY) -> FrameSource:
     """Frames from the shared Gemini colour stream, scaled and JPEG-encoded.
@@ -399,17 +402,26 @@ def camera_frames(width: int = config.APP_VIDEO_WIDTH,
     which only looks at the newest frameset — it never takes a frame away from
     anyone else. A camera that has failed or stalled gives None, and the app
     shows its frames going stale.
+
+    `read()` opens the camera if nothing has yet, so with no camera attached
+    every grab would retry the SDK's open. After a failure it waits
+    `_RETRY_S` before asking again.
     """
     import cv2
 
     from .gemini import shared
 
     params = [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, quality))]
+    retry_at = 0.0
 
     def grab(after: int) -> tuple[int, float, bytes] | None:
+        nonlocal retry_at
+        if time.monotonic() < retry_at:
+            return None
         try:
             frames = shared().read(after=after, timeout=0.5)
         except Exception:
+            retry_at = time.monotonic() + _RETRY_S
             return None
         image = frames.color
         h, w = image.shape[:2]
