@@ -84,7 +84,7 @@ class StatusPanel extends StatelessWidget {
               children: [
                 _Fact('Voice', status.fsmState),
                 _Fact('Wheels', status.wheelOwner ?? 'nobody'),
-                if (status.headingDeg != null) _Fact('Heading', '${status.headingDeg!.toStringAsFixed(0)}°'),
+                if (status.headingDeg != null) _Fact('Heading', '${status.headingDeg!.round() % 360}°'),
                 if (status.speedPercent != null)
                   _Fact('Speed', '${status.speedPercent!.toStringAsFixed(0)}%'),
                 _Fact('Updated', ago(status.time)),

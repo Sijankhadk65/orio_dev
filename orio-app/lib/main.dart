@@ -1,8 +1,26 @@
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'screens/connect_screen.dart';
 
-void main() => runApp(const OrioApp());
+/// A screen whose short side is at least this wide (in logical pixels) is a tablet.
+const tabletShortestSide = 600.0;
+
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  // Tablets stay in landscape, where the two-pane layout fits. Phones rotate freely:
+  // a phone held sideways is too short for the panes.
+  final display = PlatformDispatcher.instance.displays.first;
+  if (display.size.shortestSide / display.devicePixelRatio >= tabletShortestSide) {
+    await SystemChrome.setPreferredOrientations([
+      DeviceOrientation.landscapeLeft,
+      DeviceOrientation.landscapeRight,
+    ]);
+  }
+  runApp(const OrioApp());
+}
 
 class OrioApp extends StatelessWidget {
   const OrioApp({super.key});
