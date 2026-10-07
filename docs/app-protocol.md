@@ -38,7 +38,7 @@ The robot's `hello` lists what it serves. The app disables everything not listed
 | `transcript` | `transcript` | Phase 2 |
 | `commands` | `command`, `result`, `event` | Phase 5 |
 | `drive` | `drive` | Phase 6 |
-| `video` | WebRTC signalling (not yet specified) | Phase 7 |
+| `video` | `video` (app), binary camera frames (robot) | JPEG fallback, 2026-10-07; WebRTC is Phase 7 |
 | `lidar` | (not yet specified) | after the L2 is fitted |
 
 Until `commands` is listed, a `command` is answered with `result` `ok: false`.
@@ -91,7 +91,35 @@ Until `drive` is listed, `drive` messages are ignored.
 
 // robot -> app, anything the user should see; usually followed by a close
 {"type":"error","text":"wrong token"}
+
+// app -> robot, start or stop camera frames for this client (feature `video`)
+{"type":"video","on":true}
 ```
+
+## Camera frames
+
+The only binary messages. The robot sends them to a client only between its
+`{"type":"video","on":true}` and `on:false` (or the disconnect), so a pane that
+is off screen costs the robot nothing. The app turns video off whenever the
+video pane is hidden, and on again after a reconnect.
+
+| Bytes | Type (big-endian) | Meaning |
+| --- | --- | --- |
+| 0–3 | ASCII | `OJPG` |
+| 4–7 | uint32 | frame seq, increasing (wraps at 2³²) |
+| 8–15 | float64 | capture time, Unix seconds (the app shows lag only if the clocks agree) |
+| 16– | bytes | one JPEG, 640 px wide by default, the camera's aspect |
+
+The robot grabs and encodes at most `ORIO_APP_VIDEO_FPS`, only while someone
+watches, once per frame for all viewers. Each viewer is sent the newest frame
+when its previous send completes, so a slow link skips frames instead of
+queueing them. A stalled camera simply stops the frames; the app marks the
+picture frozen after 2 s.
+
+The frames are the colour stream avoidance and the detector already read
+(`gemini.shared()`), never a second capture. Encoding runs on the CPU (the Orin
+Nano has no hardware encoder): if avoidance slows while someone watches, lower
+the fps or width first.
 
 The app never sends wheel duties, only intent. The robot's avoider, 5% duty
 ceiling and deadman (no `drive` for ~300 ms = stop) decide what the wheels do.
@@ -107,3 +135,7 @@ ceiling and deadman (no `drive` for ~300 ms = stop) decide what the wheels do.
 | `ORIO_APP_TOKEN` | unset | shared secret, `.env` only; unset accepts any client (with a startup warning) |
 | `ORIO_APP_STATUS_HZ` | `5` | status rate |
 | `ORIO_APP_TRANSCRIPT_BACKLOG` | `50` | lines sent on connect |
+| `ORIO_APP_VIDEO` | `1` | `0` drops `video` from the features |
+| `ORIO_APP_VIDEO_FPS` | `10` | most frames per second sent |
+| `ORIO_APP_VIDEO_WIDTH` | `640` | frame width in px; height keeps the aspect |
+| `ORIO_APP_VIDEO_QUALITY` | `60` | JPEG quality, 1–100 |

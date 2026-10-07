@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -7,6 +8,9 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 abstract class RobotLink {
   /// Decoded messages from the robot. Closes when the link drops.
   Stream<Map<String, dynamic>> get messages;
+
+  /// Binary messages from the robot (camera frames).
+  Stream<Uint8List> get binary;
 
   /// Completes once the link is open, or throws if it can't be opened.
   Future<void> get ready;
@@ -22,9 +26,14 @@ abstract class RobotLink {
 class WebSocketLink implements RobotLink {
   final WebSocketChannel _channel;
   late final Stream<Map<String, dynamic>> _messages;
+  late final Stream<Uint8List> _binary;
 
   WebSocketLink(Uri uri) : _channel = WebSocketChannel.connect(uri) {
-    _messages = _channel.stream
+    final raw = _channel.stream.asBroadcastStream();
+    _binary = raw
+        .where((m) => m is List<int>)
+        .map((m) => m is Uint8List ? m : Uint8List.fromList(m as List<int>));
+    _messages = raw
         .map((raw) => raw is String ? jsonDecode(raw) : null)
         .where((m) => m is Map<String, dynamic>)
         .cast<Map<String, dynamic>>()
@@ -33,6 +42,9 @@ class WebSocketLink implements RobotLink {
 
   @override
   Stream<Map<String, dynamic>> get messages => _messages;
+
+  @override
+  Stream<Uint8List> get binary => _binary;
 
   @override
   Future<void> get ready => _channel.ready;

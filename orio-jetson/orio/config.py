@@ -1361,6 +1361,19 @@ APP_TOKEN = os.environ.get("ORIO_APP_TOKEN", "")
 APP_STATUS_HZ = float(_env("ORIO_APP_STATUS_HZ", "5"))
 APP_TRANSCRIPT_BACKLOG = int(_env("ORIO_APP_TRANSCRIPT_BACKLOG", "50"))
 
+# Camera view for the app: JPEG frames over the same WebSocket, the plan's
+# fallback ahead of WebRTC (Phase 7). Encoded on the CPU — the Orin Nano has no
+# hardware encoder — but only while an app is actually watching, once per frame
+# however many apps are, and never faster than ORIO_APP_VIDEO_FPS. A viewer that
+# can't keep up skips frames rather than queueing them. If avoidance slows while
+# someone watches, lower the fps or width before anything else.
+APP_VIDEO_ENABLED = _env("ORIO_APP_VIDEO", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+APP_VIDEO_FPS = float(_env("ORIO_APP_VIDEO_FPS", "10"))
+APP_VIDEO_WIDTH = int(_env("ORIO_APP_VIDEO_WIDTH", "640"))   # height keeps the camera's aspect
+APP_VIDEO_QUALITY = int(_env("ORIO_APP_VIDEO_QUALITY", "60"))  # JPEG, 1..100
+
 
 
 # ── Scope / persona ──────────────────────────────────────────────────────────

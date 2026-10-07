@@ -12,13 +12,19 @@ built so the robot cannot tell whether an app is connected:
 * It never raises into the caller: a port that will not bind is a startup note,
   the same as a board that will not open.
 
-Phase 2 advertises `status` and `transcript` only. A `command` is answered with
-a refusal and `drive` is ignored, so the app greys both out and a stray message
-can do nothing. Those land in Phases 5 and 6, after the token check (Phase 4)
-is enforced.
+Phase 2 advertises `status` and `transcript`, plus `video` when there is a
+frame source. A `command` is answered with a refusal and `drive` is ignored, so
+the app greys both out and a stray message can do nothing. Those land in Phases
+5 and 6, after the token check (Phase 4) is enforced.
 
-`AppServer` takes the status as a callable so `tools/mock_server.py` can serve
-the same protocol from a laptop with nothing behind it.
+Video is JPEG frames over this same socket, sent only to clients that asked for
+them. One thread grabs and encodes while anyone is watching and sleeps when no
+one is; each viewer sends only the newest frame, so a slow link drops frames
+instead of building a backlog.
+
+`AppServer` takes the status and the frames as callables so
+`tools/mock_server.py` can serve the same protocol from a laptop with nothing
+behind it.
 """
 
 from __future__ import annotations
@@ -28,6 +34,7 @@ import hmac
 import json
 import logging
 import math
+import struct
 import threading
 import time
 from http import HTTPStatus
@@ -41,6 +48,15 @@ log = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "0.1"
 FEATURES = ("status", "transcript")
+
+# A video frame source: given the seq of the last frame it returned, the next
+# newer frame as (seq, capture time in Unix seconds, JPEG bytes), or None when
+# there is no new frame. Called from the video thread, never the event loop.
+FrameSource = Callable[[int], "tuple[int, float, bytes] | None"]
+
+# Binary message: "OJPG", uint32 seq, float64 capture time, then the JPEG.
+VIDEO_MAGIC = b"OJPG"
+_VIDEO_HEADER = struct.Struct(">4sId")
 
 # How long a new connection has to send its hello before it is dropped.
 _HELLO_TIMEOUT_S = 5.0
@@ -83,10 +99,21 @@ class AppServer:
         path: str = config.APP_PATH,
         token: str = config.APP_TOKEN,
         status_hz: float = config.APP_STATUS_HZ,
+        video: FrameSource | None = None,
+        video_fps: float = config.APP_VIDEO_FPS,
     ) -> None:
         self._status = status
         self._robot = robot
         self._features = list(features)
+        self._video = video
+        if video is not None and "video" not in self._features:
+            self._features.append("video")
+        self._video_period = 1.0 / max(video_fps, 0.5)
+        self._viewers: set[_Viewer] = set()   # touched only on the event loop
+        self._watching = 0                    # viewers with video on
+        self._want_video = threading.Event()  # set while _watching > 0; the video thread idles on it
+        self._frame: tuple[int, float, bytes] | None = None
+        self._video_thread: threading.Thread | None = None
         self._hub = hub
         self.host, self.port, self.path = host, port, path
         self._token = token
@@ -189,11 +216,14 @@ class AppServer:
         # Subscribe before taking the backlog: a line reported in between then
         # arrives twice rather than not at all.
         unsubscribe = self._hub.subscribe(lambda m: loop.call_soon_threadsafe(offer, m))
+        viewer = _Viewer()
+        self._viewers.add(viewer)
         try:
             for line in self._hub.backlog():
                 await ws.send(_encode(line))
             tasks = [asyncio.create_task(t) for t in
-                     (self._send_status(ws), self._forward(ws, queue), self._receive(ws))]
+                     (self._send_status(ws), self._forward(ws, queue),
+                      self._receive(ws, viewer), self._send_video(ws, viewer))]
             try:
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -203,6 +233,8 @@ class AppServer:
         except ConnectionClosed:
             pass
         finally:
+            self._set_watching(viewer, False)
+            self._viewers.discard(viewer)
             unsubscribe()
             log.info("app client %s disconnected", peer)
 
@@ -226,13 +258,16 @@ class AppServer:
         while True:
             await ws.send(_encode(await queue.get()))
 
-    async def _receive(self, ws) -> None:
+    async def _receive(self, ws, viewer: "_Viewer") -> None:
         async for raw in ws:
             message = self._parse(raw)
             if message is None:
                 continue
             kind = message.get("type")
-            if kind == "command":
+            if kind == "video":
+                if self._video is not None:
+                    self._set_watching(viewer, bool(message.get("on")))
+            elif kind == "command":
                 # Not advertised yet, so the app should not send one; answer
                 # anyway so a stray command is visibly refused, never silently lost.
                 await ws.send(_encode({
@@ -240,6 +275,66 @@ class AppServer:
                     "text": "this robot doesn't take commands from the app yet",
                 }))
             # `drive` is ignored until Phase 6: the wheels never hear of it.
+
+    # ── video ────────────────────────────────────────────────────────────────
+
+    def _set_watching(self, viewer: "_Viewer", on: bool) -> None:
+        """Turn one client's frames on or off; start the grabber for the first."""
+        if viewer.on == on:
+            return
+        viewer.on = on
+        self._watching += 1 if on else -1
+        if self._watching > 0:
+            self._want_video.set()
+        else:
+            self._want_video.clear()
+        if on:
+            viewer.wake.set()  # send the latest frame now rather than at the next one
+            if self._video_thread is None:
+                self._video_thread = threading.Thread(
+                    target=self._grab_loop, name="app-video", daemon=True)
+                self._video_thread.start()
+
+    def _grab_loop(self) -> None:
+        """Grab and encode at most video_fps while anyone watches; idle otherwise."""
+        loop, source = self._loop, self._video
+        if loop is None or source is None:
+            return
+        seq, failed = 0, False
+        while True:
+            self._want_video.wait()
+            started = time.monotonic()
+            try:
+                frame = source(seq)
+                failed = False
+            except Exception:
+                if not failed:
+                    log.exception("app video frame failed")
+                failed, frame = True, None
+            if frame is not None:
+                seq = frame[0]
+                loop.call_soon_threadsafe(self._publish, frame)
+            time.sleep(max(0.0, self._video_period - (time.monotonic() - started)))
+
+    def _publish(self, frame: tuple[int, float, bytes]) -> None:
+        self._frame = frame
+        for viewer in self._viewers:
+            if viewer.on:
+                viewer.wake.set()
+
+    async def _send_video(self, ws, viewer: "_Viewer") -> None:
+        sent = -1
+        while True:
+            await viewer.wake.wait()
+            viewer.wake.clear()
+            frame = self._frame
+            if not viewer.on or frame is None or frame[0] == sent:
+                continue
+            seq, t, jpeg = frame
+            # While this send is in flight newer frames only overwrite
+            # self._frame, so a slow client gets the newest, never a backlog.
+            await ws.send(_VIDEO_HEADER.pack(VIDEO_MAGIC, seq & 0xFFFFFFFF, t) + jpeg)
+            sent = seq
 
     @staticmethod
     def _parse(raw: Any) -> dict[str, Any] | None:
@@ -258,6 +353,16 @@ class AppServer:
             await ws.close(code=code, reason=text[:120])
         except Exception:
             pass
+
+
+class _Viewer:
+    """One connected client's video state."""
+
+    __slots__ = ("on", "wake")
+
+    def __init__(self) -> None:
+        self.on = False
+        self.wake = asyncio.Event()
 
 
 # ── the real robot's status ──────────────────────────────────────────────────
@@ -286,10 +391,50 @@ def robot_status(fsm) -> dict[str, Any]:
     return status
 
 
+def camera_frames(width: int = config.APP_VIDEO_WIDTH,
+                  quality: int = config.APP_VIDEO_QUALITY) -> FrameSource:
+    """Frames from the shared Gemini colour stream, scaled and JPEG-encoded.
+
+    Reads the same camera as avoidance and the detector, through `read()`,
+    which only looks at the newest frameset — it never takes a frame away from
+    anyone else. A camera that has failed or stalled gives None, and the app
+    shows its frames going stale.
+    """
+    import cv2
+
+    from .gemini import shared
+
+    params = [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(100, quality))]
+
+    def grab(after: int) -> tuple[int, float, bytes] | None:
+        try:
+            frames = shared().read(after=after, timeout=0.5)
+        except Exception:
+            return None
+        image = frames.color
+        h, w = image.shape[:2]
+        if w > width:
+            image = cv2.resize(image, (width, round(h * width / w)), interpolation=cv2.INTER_AREA)
+        ok, jpeg = cv2.imencode(".jpg", image, params)
+        if not ok:
+            return None
+        # The frameset carries a monotonic arrival time; the app wants wall time.
+        captured = time.time() - (time.monotonic() - frames.timestamp)
+        return frames.seq, captured, jpeg.tobytes()
+
+    return grab
+
+
 def start(fsm) -> tuple[AppServer | None, str]:
     """Start the app server for this robot run, if enabled. Never raises."""
     if not config.APP_SERVER_ENABLED:
         return None, "app server off (ORIO_APP_SERVER=0)"
-    server = AppServer(lambda: robot_status(fsm))
-    note = server.start()
+    video, video_note = None, ""
+    if config.APP_VIDEO_ENABLED:
+        try:
+            video = camera_frames()
+        except Exception as exc:  # no cv2: serve everything but the camera view
+            video_note = f"; no camera view ({exc})"
+    server = AppServer(lambda: robot_status(fsm), video=video)
+    note = server.start() + video_note
     return (server if server.running else None), note

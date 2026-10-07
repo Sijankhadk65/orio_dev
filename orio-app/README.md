@@ -5,9 +5,11 @@ window into the robot, not its controller: Orio runs on its own, and the app
 only shows what it is doing and sends it intents. The design lives in the
 *Orio Mobile App Plan* doc.
 
-The robot side (`orio-jetson/orio/server.py`) and the laptop mock are not built
-yet. Until they are, use **Demo** on the connect screen: a fake Orio inside the
-app that speaks the same protocol.
+It talks to `orio-jetson/orio/server.py` on the robot, or to the laptop mock
+(`uv run tools/mock_server.py` in `orio-jetson/`), which serves the same
+protocol with made-up numbers and a test-pattern camera. **Demo** on the
+connect screen is a fake Orio inside the app, for when neither is running; it
+has no video.
 
 ## What's in v1
 
@@ -17,7 +19,7 @@ app that speaks the same protocol.
 | Sector map | the forward fan, coloured against the stop (0.20 m) and clear (0.70 m) distances; unknown drawn grey, never clear | `status.sectors` |
 | Talk | what Orio heard, said, and which tools the LLM called | `transcript` |
 | Drive | STOP / Stay / Follow / Go to, plus a joystick over the video pane | `command`, `drive` |
-| Video | placeholder until Phase 7 (WebRTC) | `video` |
+| Video | the robot's colour camera as JPEG frames (~10 fps, 640 px), with fps and lag; requested only while the pane is on screen. WebRTC is Phase 7 | `video` |
 
 The robot lists its features in `hello`. Anything it doesn't list shows as
 "not available on this robot yet" instead of breaking, so screens can ship

@@ -1,18 +1,22 @@
 # /// script
 # requires-python = ">=3.11"
-# dependencies = ["websockets>=17", "python-dotenv>=1.0"]
+# dependencies = ["websockets>=17", "python-dotenv>=1.0", "pillow>=10.1"]
 # ///
 """A fake Orio for developing the app on a laptop — no robot, no Jetson stack.
 
     uv run tools/mock_server.py                  # ws://0.0.0.0:8765/ws
     uv run tools/mock_server.py --token secret   # check the app's token
     uv run tools/mock_server.py --stall-every 20 # freeze status 3 s in every 20
+    uv run tools/mock_server.py --no-video       # don't serve the camera view
 
 It serves through the robot's own `orio/server.py` and `orio/telemetry.py`, so
 the handshake, version check, token check and message encoding are the real
 ones; only the numbers are made up. The inline script metadata above keeps
 `uv run` from installing the robot's dependencies (torch, the Orbbec SDK, ...),
 which a laptop neither has nor needs.
+
+The camera view is a moving test pattern, JPEG-encoded at 640 px wide like the
+robot's, so a frozen or laggy stream is easy to see.
 
 The Android emulator reaches this at ws://10.0.2.2:8765/ws; a phone on the same
 Wi-Fi at ws://<laptop IP>:8765/ws. Keep it honest: a change to what the real
@@ -22,6 +26,7 @@ server sends changes this in the same commit.
 from __future__ import annotations
 
 import argparse
+import io
 import logging
 import random
 import sys
@@ -88,6 +93,28 @@ class FakeOrio:
                         "stop_m": 0.20, "clear_m": 0.70},
         }
 
+    def frame(self, after: int) -> tuple[int, float, bytes]:
+        """A test pattern that visibly moves, so a frozen stream is obvious."""
+        from PIL import Image, ImageDraw, ImageFont
+
+        w, h = 640, 400  # the Gemini's colour aspect
+        img = Image.new("RGB", (w, h), (16, 20, 24))
+        draw = ImageDraw.Draw(img)
+        bars = [(192, 192, 192), (192, 192, 0), (0, 192, 192), (0, 192, 0),
+                (192, 0, 192), (192, 0, 0), (0, 0, 192)]
+        for i, colour in enumerate(bars):  # one bar per sector, left to right
+            draw.rectangle([i * w // 7, 0, (i + 1) * w // 7, h // 2], fill=colour)
+        t = time.time()
+        x = int((t * 120) % w)
+        draw.ellipse([x - 24, h * 3 // 4 - 24, x + 24, h * 3 // 4 + 24], fill=(31, 138, 138))
+        font = ImageFont.load_default(size=22)
+        stamp = time.strftime("%H:%M:%S", time.localtime(t)) + f".{int(t * 1000) % 1000:03d}"
+        draw.text((16, h // 2 + 12), f"orio (mock) · frame {after + 1} · {stamp}",
+                  fill=(230, 230, 230), font=font)
+        out = io.BytesIO()
+        img.save(out, "JPEG", quality=60)
+        return after + 1, t, out.getvalue()
+
     def converse(self, period: float) -> None:
         step = 0
         while True:
@@ -120,12 +147,14 @@ def main() -> int:
     parser.add_argument("--talk-every", type=float, default=4.0, help="seconds between lines")
     parser.add_argument("--stall-every", type=float, default=0.0,
                         help="freeze status for 3 s once in this many seconds (0 = never)")
+    parser.add_argument("--no-video", action="store_true", help="don't serve the camera view")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s", datefmt="%H:%M:%S")
 
     orio = FakeOrio(args.stall_every)
     server = AppServer(orio.status, robot="orio (mock)", host=args.host, port=args.port,
-                       path=args.path, token=args.token)
+                       path=args.path, token=args.token,
+                       video=None if args.no_video else orio.frame)
     print(server.start())
     if not server.running:
         return 1

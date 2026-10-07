@@ -44,11 +44,20 @@ class RobotSession extends ChangeNotifier {
   final List<TranscriptLine> transcript = [];
   final List<RobotEvent> events = [];
   int attempt = 0;
+
+  /// The newest camera frame. Its own notifier, so ~10 frames a second repaint
+  /// only the video pane, not every screen listening to the session.
+  final ValueNotifier<VideoFrame?> video = ValueNotifier(null);
+  double videoFps = 0; // measured over the last second of frames
+  DateTime? lastFrameAt; // arrival time, on this device's clock
+  final List<DateTime> _frameTimes = [];
+  bool _wantVideo = false;
   String? _robotError; // the robot's last `error` text, shown if it then closes
   Duration? lastLatency; // round trip of the most recent command
 
   RobotLink? _link;
   StreamSubscription<Map<String, dynamic>>? _sub;
+  StreamSubscription<Uint8List>? _binarySub;
   Timer? _watchdog;
   Timer? _retry;
   int _commandSeq = 0;
@@ -80,6 +89,7 @@ class RobotSession extends ChangeNotifier {
       onError: (e) => _onDrop(_short(e)),
       onDone: () => _onDrop('connection closed', closeCode: link.closeCode),
     );
+    _binarySub = link.binary.listen(_onBinary);
     link.send(clientHello(profile.token));
     _watchdog = Timer.periodic(const Duration(milliseconds: 250), (_) => _checkStale());
   }
@@ -100,6 +110,8 @@ class RobotSession extends ChangeNotifier {
         lastStatusAt = DateTime.now();
         error = null;
         _set(LinkState.online);
+        // A reconnect starts with video off on the robot's side.
+        if (_wantVideo && has(Feature.video)) _link?.send(videoMessage(true));
       case 'status':
         status = Status.fromJson(m);
         lastStatusAt = DateTime.now();
@@ -126,6 +138,42 @@ class RobotSession extends ChangeNotifier {
         _push(events, RobotEvent(time: DateTime.now(), kind: 'error', text: error!));
     }
     _notify();
+  }
+
+  void _onBinary(Uint8List bytes) {
+    final frame = VideoFrame.parse(bytes);
+    if (frame == null || !_wantVideo) return;
+    final now = DateTime.now();
+    lastFrameAt = now;
+    _frameTimes.add(now);
+    _frameTimes.removeWhere((t) => now.difference(t) > const Duration(seconds: 1));
+    videoFps = _frameTimes.length.toDouble();
+    video.value = frame;
+  }
+
+  int _videoViewers = 0;
+
+  /// A video pane coming into view. Frames are requested while at least one
+  /// pane is watching — counted, so a layout change that builds the new pane
+  /// before disposing the old one never switches video off. Survives reconnects.
+  void watchVideo() => _setVideo(++_videoViewers > 0);
+
+  /// A video pane going out of view or away; pairs with [watchVideo].
+  void unwatchVideo() {
+    if (_videoViewers > 0) _videoViewers--;
+    _setVideo(_videoViewers > 0);
+  }
+
+  void _setVideo(bool on) {
+    if (_wantVideo == on) return;
+    _wantVideo = on;
+    if (!on) {
+      video.value = null;
+      lastFrameAt = null;
+      _frameTimes.clear();
+      videoFps = 0;
+    }
+    if (connected && has(Feature.video)) _link?.send(videoMessage(on));
   }
 
   void _push<T>(List<T> list, T item) {
@@ -186,12 +234,13 @@ class RobotSession extends ChangeNotifier {
   Future<void> _teardown() async {
     _watchdog?.cancel();
     _watchdog = null;
-    final sub = _sub, link = _link;
+    final sub = _sub, binarySub = _binarySub, link = _link;
     _sub = null;
+    _binarySub = null;
     _link = null;
     _pending.clear();
     // Start both now: a link's close() must run even if the cancel never settles.
-    await Future.wait([?sub?.cancel(), ?link?.close()]);
+    await Future.wait([?sub?.cancel(), ?binarySub?.cancel(), ?link?.close()]);
   }
 
   void _set(LinkState s) {
@@ -213,6 +262,7 @@ class RobotSession extends ChangeNotifier {
     _disposed = true;
     _retry?.cancel();
     _teardown();
+    video.dispose();
     super.dispose();
   }
 }

@@ -82,7 +82,7 @@ class _HomeScreenState extends State<HomeScreen> {
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.all(12),
-                child: VideoView(session: session),
+                child: VideoView(session: session, active: _tab == 2),
               ),
             ),
             Padding(

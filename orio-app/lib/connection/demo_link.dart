@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:math';
+import 'dart:typed_data';
 
 import '../protocol/messages.dart';
 import 'robot_link.dart';
@@ -40,7 +41,9 @@ class DemoLink implements RobotLink {
       'type': 'hello',
       'version': protocolVersion,
       'robot': 'orio (demo)',
-      'features': [Feature.status, Feature.transcript, Feature.commands, Feature.drive, Feature.video],
+      // No video: encoding JPEG in Dart isn't worth it for a demo. The laptop
+      // mock (tools/mock_server.py) serves a test pattern instead.
+      'features': [Feature.status, Feature.transcript, Feature.commands, Feature.drive],
     });
     _timers.add(Timer.periodic(const Duration(milliseconds: 200), (_) => _tick()));
     _timers.add(Timer.periodic(const Duration(seconds: 4), (_) => _converse()));
@@ -125,6 +128,9 @@ class DemoLink implements RobotLink {
 
   @override
   Future<void> get ready => Future.value();
+
+  @override
+  Stream<Uint8List> get binary => const Stream.empty();
 
   @override
   int? get closeCode => null;

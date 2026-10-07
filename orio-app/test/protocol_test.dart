@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orio_app/protocol/messages.dart';
 
@@ -70,5 +72,19 @@ void main() {
       'target': 'person',
     });
     expect(commandMessage('c2', 'stop').containsKey('target'), isFalse);
+  });
+
+  test('video frames parse, junk does not', () {
+    final header = ByteData(16)
+      ..setUint32(0, 0x4F4A5047) // "OJPG"
+      ..setUint32(4, 4000000000)
+      ..setFloat64(8, 1760000000.25);
+    final bytes = Uint8List.fromList([...header.buffer.asUint8List(), 0xFF, 0xD8, 1, 2]);
+    final f = VideoFrame.parse(bytes)!;
+    expect(f.seq, 4000000000);
+    expect(f.captured.millisecondsSinceEpoch, 1760000000250);
+    expect(f.jpeg, [0xFF, 0xD8, 1, 2]);
+    expect(VideoFrame.parse(Uint8List.fromList(List.filled(20, 0))), isNull);
+    expect(VideoFrame.parse(Uint8List(16)), isNull);
   });
 }

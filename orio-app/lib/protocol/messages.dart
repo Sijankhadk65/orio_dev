@@ -5,6 +5,8 @@
 // the robot side is not built yet, so a missing field falls back to "unknown"
 // instead of dropping the whole message.
 
+import 'dart:typed_data';
+
 const String protocolVersion = '0.1';
 
 /// Features a robot can advertise in its `hello`. The app hides or disables
@@ -183,6 +185,34 @@ class CommandResult {
       CommandResult(id: '${j['id']}', ok: j['ok'] != false, text: '${j['text'] ?? ''}');
 }
 
+/// robot -> app, one camera frame: a binary WebSocket message of "OJPG",
+/// uint32 seq and float64 capture time (Unix seconds), all big-endian, then
+/// the JPEG bytes.
+class VideoFrame {
+  static const headerLength = 16;
+  static const _magic = [0x4F, 0x4A, 0x50, 0x47]; // "OJPG"
+
+  final int seq;
+  final DateTime captured;
+  final Uint8List jpeg;
+
+  const VideoFrame({required this.seq, required this.captured, required this.jpeg});
+
+  /// Null for anything that isn't a well-formed frame.
+  static VideoFrame? parse(Uint8List bytes) {
+    if (bytes.length <= headerLength) return null;
+    for (var i = 0; i < _magic.length; i++) {
+      if (bytes[i] != _magic[i]) return null;
+    }
+    final header = ByteData.sublistView(bytes, 0, headerLength);
+    return VideoFrame(
+      seq: header.getUint32(4),
+      captured: DateTime.fromMillisecondsSinceEpoch((header.getFloat64(8) * 1000).round()),
+      jpeg: Uint8List.sublistView(bytes, headerLength),
+    );
+  }
+}
+
 // ── app -> robot ────────────────────────────────────────────────────────────
 
 Map<String, dynamic> clientHello(String token) => {
@@ -200,6 +230,10 @@ Map<String, dynamic> commandMessage(String id, String name, {String? target}) =>
   'name': name,
   'target': ?target,
 };
+
+/// Ask for camera frames, or stop them. The robot only encodes while someone
+/// watches, so the app turns this off whenever the video pane is out of view.
+Map<String, dynamic> videoMessage(bool on) => {'type': 'video', 'on': on};
 
 /// Joystick position, x (right +) and y (forward +) in -1..1.
 Map<String, dynamic> driveMessage(int seq, double x, double y) => {

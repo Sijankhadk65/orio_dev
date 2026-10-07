@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:orio_app/connection/profiles.dart';
@@ -7,11 +8,13 @@ import 'package:orio_app/connection/robot_session.dart';
 
 class FakeLink implements RobotLink {
   final _in = StreamController<Map<String, dynamic>>.broadcast();
+  final _bin = StreamController<Uint8List>.broadcast();
   final sent = <Map<String, dynamic>>[];
   @override
   int? closeCode;
 
   void push(Map<String, dynamic> m) => _in.add(m);
+  void pushBinary(Uint8List b) => _bin.add(b);
   Future<void> drop({int? code}) {
     closeCode = code;
     return _in.close();
@@ -19,6 +22,8 @@ class FakeLink implements RobotLink {
 
   @override
   Stream<Map<String, dynamic>> get messages => _in.stream;
+  @override
+  Stream<Uint8List> get binary => _bin.stream;
   @override
   Future<void> get ready => Future.value();
   @override
@@ -137,6 +142,70 @@ void main() {
     expect(s.state, LinkState.lost);
     await Future<void>.delayed(const Duration(milliseconds: 1200));
     expect(links, 2);
+    s.dispose();
+  });
+
+  Uint8List frameBytes(int seq) {
+    final header = ByteData(16)
+      ..setUint8(0, 0x4F)
+      ..setUint8(1, 0x4A)
+      ..setUint8(2, 0x50)
+      ..setUint8(3, 0x47)
+      ..setUint32(4, seq)
+      ..setFloat64(8, DateTime.now().millisecondsSinceEpoch / 1000);
+    return Uint8List.fromList([...header.buffer.asUint8List(), 0xFF, 0xD8, 0xFF, 0xD9]);
+  }
+
+  test('video is requested only while watched, and frames reach the notifier', () async {
+    final (s, link) = await connected(features: ['status', 'video']);
+    link.pushBinary(frameBytes(1));
+    await pumpEventQueue();
+    expect(s.video.value, isNull, reason: 'frames nobody asked for are dropped');
+
+    s.watchVideo();
+    expect(link.sent.last, {'type': 'video', 'on': true});
+    link.pushBinary(frameBytes(2));
+    await pumpEventQueue();
+    expect(s.video.value!.seq, 2);
+    expect(s.lastFrameAt, isNotNull);
+
+    s.watchVideo(); // a second pane, e.g. during a layout change
+    s.unwatchVideo();
+    expect(link.sent.last, {'type': 'video', 'on': true}, reason: 'one pane is still watching');
+    s.unwatchVideo();
+    expect(link.sent.last, {'type': 'video', 'on': false});
+    expect(s.video.value, isNull);
+    s.dispose();
+  });
+
+  test('video is not requested from a robot without it', () async {
+    final (s, link) = await connected(features: ['status']);
+    final before = link.sent.length;
+    s.watchVideo();
+    expect(link.sent.length, before);
+    s.dispose();
+  });
+
+  test('watching survives a reconnect', () async {
+    late FakeLink last;
+    final s = RobotSession(profile, linkFactory: (_) => last = FakeLink());
+    await s.connect();
+    last.push({
+      'type': 'hello',
+      'version': '0.1',
+      'features': ['video'],
+    });
+    await pumpEventQueue();
+    s.watchVideo();
+    await last.drop();
+    await Future<void>.delayed(const Duration(milliseconds: 1200)); // first retry is after 1 s
+    last.push({
+      'type': 'hello',
+      'version': '0.1',
+      'features': ['video'],
+    });
+    await pumpEventQueue();
+    expect(last.sent.last, {'type': 'video', 'on': true});
     s.dispose();
   });
 }
