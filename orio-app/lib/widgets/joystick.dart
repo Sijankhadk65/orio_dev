@@ -46,7 +46,15 @@ class _JoystickState extends State<Joystick> {
     _timer = Timer.periodic(widget.period, (_) => _emit());
   }
 
-  void _emit() => widget.onChanged(_knob.dx, -_knob.dy);
+  /// Positions this close to the centre are sent as (0, 0). Without it the
+  /// first touch, a pixel off centre, reads as a direction — often backward,
+  /// which on the robot is a blind reverse.
+  static const deadZone = 0.15;
+
+  void _emit() {
+    final k = _knob.distance < deadZone ? Offset.zero : _knob;
+    widget.onChanged(k.dx, -k.dy);
+  }
 
   void _end() {
     if (_timer == null) return;

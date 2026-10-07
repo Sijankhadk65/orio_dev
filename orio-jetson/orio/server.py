@@ -12,10 +12,17 @@ built so the robot cannot tell whether an app is connected:
 * It never raises into the caller: a port that will not bind is a startup note,
   the same as a board that will not open.
 
-Phase 2 advertises `status` and `transcript`, plus `video` when there is a
-frame source. A `command` is answered with a refusal and `drive` is ignored, so
-the app greys both out and a stray message can do nothing. Those land in Phases
-5 and 6, after the token check (Phase 4) is enforced.
+The robot advertises `status` and `transcript`, plus `video` when there is a
+frame source. `commands` and `drive` are advertised only when the caller hands
+in handlers for them — the laptop mock does today; the robot will in Phases 5
+and 6, after Phase 1 gives the wheels an owner. Without a handler a `command`
+is answered with a refusal and `drive` is ignored, so the app greys both out
+and a stray message can do nothing.
+
+The joystick's deadman lives here, not in the handler, so every robot gets it:
+a client whose `drive` messages stop for `ORIO_APP_DRIVE_DEADMAN_S` while the
+stick is off centre, or that disconnects mid-drive, is driven to (0, 0) and
+an `event` says why.
 
 Video is JPEG frames over this same socket, sent only to clients that asked for
 them. One thread grabs and encodes while anyone is watching and sleeps when no
@@ -53,6 +60,14 @@ FEATURES = ("status", "transcript")
 # newer frame as (seq, capture time in Unix seconds, JPEG bytes), or None when
 # there is no new frame. Called from the video thread, never the event loop.
 FrameSource = Callable[[int], "tuple[int, float, bytes] | None"]
+
+# A command handler: (name, target or None) -> (ok, text for the app). Runs on a
+# worker thread, so a slow one (go_to) never holds up status or a `stop`.
+CommandHandler = Callable[[str, "str | None"], "tuple[bool, str]"]
+
+# A drive handler: joystick (x right, y forward), each -1..1. Called on the
+# event loop for every message, so it must only latch the intent and return.
+DriveHandler = Callable[[float, float], None]
 
 # Binary message: "OJPG", uint32 seq, float64 capture time, then the JPEG.
 VIDEO_MAGIC = b"OJPG"
@@ -101,6 +116,9 @@ class AppServer:
         status_hz: float = config.APP_STATUS_HZ,
         video: FrameSource | None = None,
         video_fps: float = config.APP_VIDEO_FPS,
+        commands: CommandHandler | None = None,
+        drive: DriveHandler | None = None,
+        drive_deadman_s: float = config.APP_DRIVE_DEADMAN_S,
     ) -> None:
         self._status = status
         self._robot = robot
@@ -109,7 +127,13 @@ class AppServer:
         if video is not None and "video" not in self._features:
             self._features.append("video")
         self._video_period = 1.0 / max(video_fps, 0.5)
-        self._viewers: set[_Viewer] = set()   # touched only on the event loop
+        self._commands = commands
+        self._drive = drive
+        self._deadman_s = drive_deadman_s
+        for feature, handler in (("commands", commands), ("drive", drive)):
+            if handler is not None and feature not in self._features:
+                self._features.append(feature)
+        self._viewers: set[_Client] = set()   # touched only on the event loop
         self._watching = 0                    # viewers with video on
         self._want_video = threading.Event()  # set while _watching > 0; the video thread idles on it
         self._frame: tuple[int, float, bytes] | None = None
@@ -216,14 +240,16 @@ class AppServer:
         # Subscribe before taking the backlog: a line reported in between then
         # arrives twice rather than not at all.
         unsubscribe = self._hub.subscribe(lambda m: loop.call_soon_threadsafe(offer, m))
-        viewer = _Viewer()
+        viewer = _Client()
         self._viewers.add(viewer)
         try:
             for line in self._hub.backlog():
                 await ws.send(_encode(line))
-            tasks = [asyncio.create_task(t) for t in
-                     (self._send_status(ws), self._forward(ws, queue),
-                      self._receive(ws, viewer), self._send_video(ws, viewer))]
+            jobs = [self._send_status(ws), self._forward(ws, queue),
+                    self._receive(ws, viewer), self._send_video(ws, viewer)]
+            if self._drive is not None:
+                jobs.append(self._deadman(viewer))
+            tasks = [asyncio.create_task(job) for job in jobs]
             try:
                 await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
             finally:
@@ -235,6 +261,8 @@ class AppServer:
         finally:
             self._set_watching(viewer, False)
             self._viewers.discard(viewer)
+            if viewer.driving:
+                self._halt(viewer, "the app disconnected while driving")
             unsubscribe()
             log.info("app client %s disconnected", peer)
 
@@ -258,7 +286,7 @@ class AppServer:
         while True:
             await ws.send(_encode(await queue.get()))
 
-    async def _receive(self, ws, viewer: "_Viewer") -> None:
+    async def _receive(self, ws, viewer: "_Client") -> None:
         async for raw in ws:
             message = self._parse(raw)
             if message is None:
@@ -268,17 +296,78 @@ class AppServer:
                 if self._video is not None:
                     self._set_watching(viewer, bool(message.get("on")))
             elif kind == "command":
-                # Not advertised yet, so the app should not send one; answer
-                # anyway so a stray command is visibly refused, never silently lost.
-                await ws.send(_encode({
-                    "type": "result", "id": message.get("id"), "ok": False,
-                    "text": "this robot doesn't take commands from the app yet",
-                }))
-            # `drive` is ignored until Phase 6: the wheels never hear of it.
+                if self._commands is None:
+                    # Not advertised, so the app should not send one; answer anyway
+                    # so a stray command is visibly refused, never silently lost.
+                    await ws.send(_encode({
+                        "type": "result", "id": message.get("id"), "ok": False,
+                        "text": "this robot doesn't take commands from the app yet",
+                    }))
+                else:
+                    task = asyncio.create_task(self._run_command(ws, message))
+                    viewer.jobs.add(task)
+                    task.add_done_callback(viewer.jobs.discard)
+            elif kind == "drive" and self._drive is not None:
+                self._on_drive(viewer, message)
+            # Without a drive handler `drive` is ignored: the wheels never hear of it.
+
+    # ── commands and the joystick ────────────────────────────────────────────
+
+    async def _run_command(self, ws, message: dict[str, Any]) -> None:
+        from websockets.exceptions import ConnectionClosed
+
+        name = str(message.get("name", ""))
+        target = message.get("target")
+        target = target.strip() if isinstance(target, str) and target.strip() else None
+        try:
+            ok, text = await asyncio.get_running_loop().run_in_executor(
+                None, self._commands, name, target)
+        except Exception as exc:
+            log.exception("app command %s failed", name)
+            ok, text = False, f"{name} failed: {exc}"
+        try:
+            await ws.send(_encode({"type": "result", "id": message.get("id"),
+                                   "ok": bool(ok), "text": str(text)}))
+        except ConnectionClosed:
+            pass  # the command still happened; the app sees its effect in status
+
+    def _on_drive(self, client: "_Client", message: dict[str, Any]) -> None:
+        seq = message.get("seq")
+        if isinstance(seq, int):
+            if seq <= client.drive_seq:
+                return  # late or repeated; a newer position already went through
+            client.drive_seq = seq
+
+        def axis(v: object) -> float:
+            return max(-1.0, min(1.0, float(v))) if isinstance(v, (int, float)) and math.isfinite(v) else 0.0
+
+        x, y = axis(message.get("x")), axis(message.get("y"))
+        client.drive_at = time.monotonic()
+        client.driving = (x, y) != (0.0, 0.0)
+        self._call_drive(x, y)
+
+    async def _deadman(self, client: "_Client") -> None:
+        """Stop a client whose stick is off centre but whose messages stopped."""
+        while True:
+            await asyncio.sleep(min(0.05, self._deadman_s / 4))
+            if client.driving and time.monotonic() - client.drive_at > self._deadman_s:
+                self._halt(client, f"no joystick message for {self._deadman_s:g} s (deadman)")
+
+    def _halt(self, client: "_Client", why: str) -> None:
+        client.driving = False
+        self._call_drive(0.0, 0.0)
+        log.info("app drive stopped: %s", why)
+        self._hub.event("halted", why)
+
+    def _call_drive(self, x: float, y: float) -> None:
+        try:
+            self._drive(x, y)
+        except Exception:
+            log.exception("app drive handler failed")
 
     # ── video ────────────────────────────────────────────────────────────────
 
-    def _set_watching(self, viewer: "_Viewer", on: bool) -> None:
+    def _set_watching(self, viewer: "_Client", on: bool) -> None:
         """Turn one client's frames on or off; start the grabber for the first."""
         if viewer.on == on:
             return
@@ -322,7 +411,7 @@ class AppServer:
             if viewer.on:
                 viewer.wake.set()
 
-    async def _send_video(self, ws, viewer: "_Viewer") -> None:
+    async def _send_video(self, ws, viewer: "_Client") -> None:
         sent = -1
         while True:
             await viewer.wake.wait()
@@ -355,14 +444,18 @@ class AppServer:
             pass
 
 
-class _Viewer:
-    """One connected client's video state."""
+class _Client:
+    """One connected app: its video, joystick and in-flight commands."""
 
-    __slots__ = ("on", "wake")
+    __slots__ = ("on", "wake", "driving", "drive_at", "drive_seq", "jobs")
 
     def __init__(self) -> None:
-        self.on = False
-        self.wake = asyncio.Event()
+        self.on = False               # wants video frames
+        self.wake = asyncio.Event()   # a newer frame is ready for it
+        self.driving = False          # last drive was off centre
+        self.drive_at = 0.0           # monotonic time of the last drive
+        self.drive_seq = -1
+        self.jobs: set[asyncio.Task] = set()  # running commands, kept from GC
 
 
 # ── the real robot's status ──────────────────────────────────────────────────

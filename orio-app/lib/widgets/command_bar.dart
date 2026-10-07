@@ -39,43 +39,94 @@ class CommandBar extends StatelessWidget {
         : session.has(Feature.commands)
         ? null
         : 'Commands are not available on this robot yet';
-    return Tooltip(
-      message: reason ?? '',
-      child: Row(
-        children: [
-          Expanded(
-            flex: 2,
-            child: FilledButton.icon(
-              style: FilledButton.styleFrom(
-                backgroundColor: const Color(0xFFD32F2F), // the same red in light and dark
-                foregroundColor: Colors.white,
-                minimumSize: const Size.fromHeight(56),
-                textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _LastOutcome(session: session),
+        Tooltip(
+          message: reason ?? '',
+          child: Row(
+            children: [
+              Expanded(
+                flex: 2,
+                child: FilledButton.icon(
+                  style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFD32F2F), // the same red in light and dark
+                    foregroundColor: Colors.white,
+                    minimumSize: const Size.fromHeight(56),
+                    textStyle: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+                  ),
+                  onPressed: enabled ? () => _send(context, 'stop') : null,
+                  icon: const Icon(Icons.stop_circle_outlined),
+                  label: const Text('STOP'),
+                ),
               ),
-              onPressed: enabled ? () => _send(context, 'stop') : null,
-              icon: const Icon(Icons.stop_circle_outlined),
-              label: const Text('STOP'),
-            ),
+              const SizedBox(width: 8),
+              _Small(
+                icon: Icons.front_hand_outlined,
+                label: 'Stay',
+                onPressed: enabled ? () => _send(context, 'stay') : null,
+              ),
+              const SizedBox(width: 8),
+              _Small(
+                icon: Icons.directions_walk,
+                label: 'Follow',
+                onPressed: enabled ? () => _send(context, 'follow_me') : null,
+              ),
+              const SizedBox(width: 8),
+              _Small(
+                icon: Icons.place_outlined,
+                label: 'Go to',
+                onPressed: enabled ? () => _goTo(context) : null,
+              ),
+            ],
           ),
-          const SizedBox(width: 8),
-          _Small(
-            icon: Icons.front_hand_outlined,
-            label: 'Stay',
-            onPressed: enabled ? () => _send(context, 'stay') : null,
-          ),
-          const SizedBox(width: 8),
-          _Small(
-            icon: Icons.directions_walk,
-            label: 'Follow',
-            onPressed: enabled ? () => _send(context, 'follow_me') : null,
-          ),
-          const SizedBox(width: 8),
-          _Small(
-            icon: Icons.place_outlined,
-            label: 'Go to',
-            onPressed: enabled ? () => _goTo(context) : null,
-          ),
-        ],
+        ),
+      ],
+    );
+  }
+}
+
+/// The newest command result or robot event, for a few seconds, right above
+/// the buttons — on a phone the events list is on another tab.
+class _LastOutcome extends StatelessWidget {
+  final RobotSession session;
+
+  const _LastOutcome({required this.session});
+
+  static const showFor = Duration(seconds: 8);
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final last = session.events.isEmpty ? null : session.events.last;
+    final fresh = last != null && DateTime.now().difference(last.time) < showFor;
+    final bad = last != null && (last.kind == 'refused' || last.kind == 'error' || last.kind == 'halted');
+    return SizedBox(
+      height: 28, // reserved, so the buttons don't jump when a line appears
+      child: AnimatedOpacity(
+        opacity: fresh ? 1 : 0,
+        duration: const Duration(milliseconds: 200),
+        child: last == null
+            ? const SizedBox.shrink()
+            : Row(
+                children: [
+                  Icon(
+                    bad ? Icons.error_outline : Icons.check_circle_outline,
+                    size: 16,
+                    color: bad ? scheme.error : Colors.green,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      last.text,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ),
+                ],
+              ),
       ),
     );
   }

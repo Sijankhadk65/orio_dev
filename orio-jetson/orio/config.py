@@ -1374,6 +1374,11 @@ APP_VIDEO_FPS = float(_env("ORIO_APP_VIDEO_FPS", "10"))
 APP_VIDEO_WIDTH = int(_env("ORIO_APP_VIDEO_WIDTH", "640"))   # height keeps the camera's aspect
 APP_VIDEO_QUALITY = int(_env("ORIO_APP_VIDEO_QUALITY", "60"))  # JPEG, 1..100
 
+# Joystick deadman: the app sends `drive` ~10 Hz while the stick is held, so a
+# gap this long means the thumb, the phone or the link is gone, and the server
+# drives the robot to (0, 0). A disconnect mid-drive stops it at once.
+APP_DRIVE_DEADMAN_S = float(_env("ORIO_APP_DRIVE_DEADMAN_S", "0.3"))
+
 
 
 # ── Scope / persona ──────────────────────────────────────────────────────────

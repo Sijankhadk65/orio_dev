@@ -18,7 +18,7 @@ has no video.
 | Status | behaviour, voice FSM state, wheel owner, IMU heading, sensor health, recent events | `status`, `event` |
 | Sector map | the forward fan, coloured against the stop (0.20 m) and clear (0.70 m) distances; unknown drawn grey, never clear | `status.sectors` |
 | Talk | what Orio heard, said, and which tools the LLM called | `transcript` |
-| Drive | STOP / Stay / Follow / Go to, plus a joystick over the video pane | `command`, `drive` |
+| Drive | STOP / Stay / Follow / Go to with the latest result above the buttons, plus a joystick over the video pane (15% dead zone, ~10 Hz while held) | `command`, `drive` |
 | Video | the robot's colour camera as JPEG frames (~10 fps, 640 px), with fps and lag; requested only while the pane is on screen. WebRTC is Phase 7 | `video` |
 
 The robot lists its features in `hello`. Anything it doesn't list shows as

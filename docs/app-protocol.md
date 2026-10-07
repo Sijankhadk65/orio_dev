@@ -36,8 +36,8 @@ The robot's `hello` lists what it serves. The app disables everything not listed
 | --- | --- | --- |
 | `status` | `status` | Phase 2 |
 | `transcript` | `transcript` | Phase 2 |
-| `commands` | `command`, `result`, `event` | Phase 5 |
-| `drive` | `drive` | Phase 6 |
+| `commands` | `command`, `result`, `event` | the mock, 2026-10-07; the robot in Phase 5 |
+| `drive` | `drive` | the mock, 2026-10-07; the robot in Phase 6 |
 | `video` | `video` (app), binary camera frames (robot) | JPEG fallback, 2026-10-07; WebRTC is Phase 7 |
 | `lidar` | (not yet specified) | after the L2 is fitted |
 
@@ -121,8 +121,27 @@ The frames are the colour stream avoidance and the detector already read
 Nano has no hardware encoder): if avoidance slows while someone watches, lower
 the fps or width first.
 
+## Commands and the joystick
+
+`orio/server.py` serves both when it is given handlers for them; the laptop
+mock passes its own, the robot passes none until Phases 1, 5 and 6.
+
+- **Commands** run on a worker thread each, so a slow one (`go_to`) never holds
+  up status or a `stop` sent after it. Every `command` gets exactly one
+  `result` with its `id`. `ok: false` means refused or failed; `text` says why
+  in the words the voice tools use. Anything that happens later (arrived, lost
+  the target, blocked) is an `event`.
+- **`drive`** carries the joystick, x right and y forward, each -1..1. The app
+  applies a 15% dead zone, so a thumb resting near the centre sends (0, 0),
+  never a direction. A `seq` at or below the last one seen is ignored.
+- **Deadman, in the server, for every robot:** a client whose last `drive` was
+  off centre and that sends nothing for `ORIO_APP_DRIVE_DEADMAN_S` (0.3 s) is
+  driven to (0, 0) and gets `{"type":"event","kind":"halted","text":"no
+  joystick message for 0.3 s (deadman)"}`. Disconnecting mid-drive does the
+  same at once. A clean release, a single (0, 0), raises no event.
+
 The app never sends wheel duties, only intent. The robot's avoider, 5% duty
-ceiling and deadman (no `drive` for ~300 ms = stop) decide what the wheels do.
+ceiling and the deadman decide what the wheels do.
 
 ## Robot settings
 
@@ -139,3 +158,4 @@ ceiling and deadman (no `drive` for ~300 ms = stop) decide what the wheels do.
 | `ORIO_APP_VIDEO_FPS` | `10` | most frames per second sent |
 | `ORIO_APP_VIDEO_WIDTH` | `640` | frame width in px; height keeps the aspect |
 | `ORIO_APP_VIDEO_QUALITY` | `60` | JPEG quality, 1–100 |
+| `ORIO_APP_DRIVE_DEADMAN_S` | `0.3` | joystick silence before the server stops the wheels |
