@@ -327,12 +327,35 @@ _FRAMING = {
     "cut off at the side": "Move toward the middle, where I can see you.",
 }
 
+# The fixed things the coach says. Kept here, not inline, so `phrases()` can
+# list every sentence a session might speak — the voice synthesizes them all up
+# front (cues.CoachVoice) and a cue then plays with no network round trip.
+_NOT_SEEN = "I can't see you. Step in front of me."
+_STEP_BACK = "Step back a little."
+_PRAISE = "That's it. Hold it there, and breathe."
+_RELEASE = "And release. Well done."
+_TURN = "Turn to face me. Bring your {far} shoulder toward me a little."
+
+
+def phrases(pose: YogaPose) -> list[str]:
+    """Every sentence a Coach for `pose` can say."""
+    out = [pose.how_to, _NOT_SEEN, _STEP_BACK, _PRAISE, _RELEASE, *_FRAMING.values()]
+    if pose.view == "front":
+        out += [_TURN.format(far=side) for side in ("left", "right")]
+    for check in pose.checks:
+        for attr in ("below", "above", "say"):
+            text = getattr(check, attr, None)
+            if text:
+                out.append(text)
+    return list(dict.fromkeys(out))  # de-duplicated, order kept
+
+
 # How long the pose must be held (s) before it counts as entered, and lost before
 # it counts as left. Both stop a single odd frame from changing the state.
 _ENTER_S = 0.5
 _EXIT_S = 1.5
 _LOST_S = 3.0  # nobody in view this long before saying so
-_PROMPT_S = 10.0  # waiting this long for them to get into the pose -> repeat how_to
+_PROMPT_S = 15.0  # waiting this long for them to get into the pose -> repeat how_to
 
 
 @dataclass
@@ -433,7 +456,7 @@ class Coach:
         if not tr.failing:
             return None
         far = "left" if tr.value > 0 else "right"  # larger z = farther from the camera
-        return f"Turn to face me. Bring your {far} shoulder toward me a little."
+        return _TURN.format(far=far)
 
     # ── the frame ────────────────────────────────────────────────────────────
 
@@ -453,13 +476,13 @@ class Coach:
                 return None
             if self._seen_t is None and t - self._waiting_since < _LOST_S:
                 return None
-            return self._say(t, "I can't see you. Step in front of me.", "framing")
+            return self._say(t, _NOT_SEEN, "framing")
         self._seen_t = t
 
         problems = framing(person, width, height)
         if problems:
             self.failing = "framing"
-            return self._say(t, _FRAMING.get(problems[0], "Step back a little."), "framing")
+            return self._say(t, _FRAMING.get(problems[0], _STEP_BACK), "framing")
 
         # Which side leads: re-decided only while out of the pose.
         if self.state == "waiting" or self.lead is None:
@@ -493,11 +516,11 @@ class Coach:
         self.failing = None
         if self.state != "holding":
             self.state = "holding"
-            return self._say(t, "That's it. Hold it there, and breathe.", "praise", urgent=True)
+            return self._say(t, _PRAISE, "praise", urgent=True)
         self.held_s += dt
         if self.held_s >= self.pose.hold_s:
             self.state = "done"
-            return self._say(t, "And release. Well done.", "release", urgent=True)
+            return self._say(t, _RELEASE, "release", urgent=True)
         return None
 
     def _in_pose(self, person: Person, sides: dict, t: float) -> bool:

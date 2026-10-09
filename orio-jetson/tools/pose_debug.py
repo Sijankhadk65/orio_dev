@@ -5,6 +5,7 @@
     uv run python tools/pose_debug.py --no-window      # terminal only, over ssh
     uv run python tools/pose_debug.py --image me.jpg   # a still photo, no camera
     uv run python tools/pose_debug.py --coach tree     # also run the yoga coach
+    uv run python tools/pose_debug.py --coach tree --speak   # ...out loud
 
 Before any coaching rule can say "bend your front knee more", three things have
 to be true, and this is the tool for checking them:
@@ -31,8 +32,11 @@ their right — the right of the picture when they face the camera.
 Runs `yoga.Coach` on the live picture for one pose (mountain, warrior_ii, tree)
 and shows what it would say: the state, which side leads, the hold timer, the
 check it is working on, and the last cue. Cues are also printed to the terminal.
-Nothing is spoken — this is for tuning the bands and the timing by eye before
-the coach is given a voice.
+Add --speak to hear the cues in Orio's voice (ORIO_TTS, ElevenLabs by default),
+so the coach can be tried from the mat rather than read off the screen. Every
+sentence the pose can produce is synthesized at startup and cached under cues/,
+so the first run for a voice takes a little while and later runs start at once.
+Speech runs in the background: the picture never waits on it.
 
 Keys: Q or Esc quits. S saves the raw frame and a JSON of keypoints and angles
 to `captures/pose/` (gitignored) — the way to collect reference angles for the
@@ -256,7 +260,7 @@ def run_image(estimator, path: Path, window: bool) -> int:
     return 0
 
 
-def run_camera(estimator, window: bool, coach=None) -> int:
+def run_camera(estimator, window: bool, coach=None, voice=None) -> int:
     from orio.gemini import GeminiCamera
 
     cam = GeminiCamera()
@@ -279,6 +283,8 @@ def run_camera(estimator, window: bool, coach=None) -> int:
                 cue = coach.update(subject, w, h, now)
                 if cue is not None:
                     print(f"coach [{cue.kind}] {cue.text}", flush=True)
+                    if voice is not None:
+                        voice.say(cue.text)
 
             if not window:
                 if now - last_print >= 1.0:
@@ -298,6 +304,8 @@ def run_camera(estimator, window: bool, coach=None) -> int:
         pass
     finally:
         cam.close()
+        if voice is not None:
+            voice.close()
         if window:
             cv2.destroyAllWindows()
     return 0
@@ -311,6 +319,8 @@ def main() -> int:
                         help="pose checkpoint (.pt, or an exported .engine)")
     parser.add_argument("--coach", choices=sorted(POSES),
                         help="also run the yoga coach for this pose (camera only)")
+    parser.add_argument("--speak", action="store_true",
+                        help="speak the coach's cues (needs --coach)")
     parser.add_argument("--conf", type=float, default=config.POSE_CONFIDENCE,
                         help="minimum person-box confidence")
     args = parser.parse_args()
@@ -321,8 +331,23 @@ def main() -> int:
         if args.coach:
             parser.error("--coach needs the live camera: it judges a pose held over time")
         return run_image(estimator, args.image, not args.no_window)
+    if args.speak and not args.coach:
+        parser.error("--speak speaks the coach's cues: pick a pose with --coach")
     coach = Coach(POSES[args.coach]) if args.coach else None
-    return run_camera(estimator, not args.no_window, coach)
+    voice = None
+    if args.speak:
+        from orio.cues import CoachVoice
+        from orio.tts import get_tts
+        from orio.yoga import phrases
+
+        voice = CoachVoice(get_tts())
+        intro = f"Let's do {coach.pose.name}. {coach.pose.how_to}"
+        lines = [intro, *phrases(coach.pose)]
+        print(f"preparing {len(lines)} spoken cues for {coach.pose.name} "
+              "(first run for a voice synthesizes them; later runs load from cues/)...")
+        voice.prewarm(lines)
+        voice.say(intro)
+    return run_camera(estimator, not args.no_window, coach, voice)
 
 
 if __name__ == "__main__":
