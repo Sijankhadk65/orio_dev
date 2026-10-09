@@ -637,6 +637,31 @@ VISION_DEBUG = _env("ORIO_VISION_DEBUG", "0").strip().lower() not in (
 VISION_DEBUG_FPS = int(_env("ORIO_VISION_DEBUG_FPS", "15"))
 
 
+# ── Pose (human keypoints, for the yoga assistant) ────────────────────────────
+# YOLO pose checkpoint: 17 COCO body keypoints per person. Same download rule
+# as YOLO_MODEL_PATH — a bare Ultralytics name auto-downloads into models/yolo/.
+# Point it at an exported `.engine` (TensorRT) on the Jetson for real-time rates;
+# ultralytics loads either from the same call.
+POSE_MODEL_PATH = Path(
+    _env("ORIO_POSE_MODEL", str(ROOT / "models" / "yolo" / "yolo11n-pose.pt"))
+)
+
+# Minimum confidence [0,1] for a person box to count at all.
+POSE_CONFIDENCE = float(_env("ORIO_POSE_CONFIDENCE", "0.5"))
+
+# Minimum confidence [0,1] for a single keypoint to be used. Below it the joint
+# is treated as not seen — an occluded knee the model guessed at must not turn
+# into a confident "bend your knee more".
+POSE_KEYPOINT_CONFIDENCE = float(_env("ORIO_POSE_KEYPOINT_CONFIDENCE", "0.5"))
+
+# How far (metres) a keypoint's depth may sit from the torso's before it is
+# discarded. Thin limbs at the silhouette edge often sample the wall behind the
+# person instead of the person; this drops those rather than letting a wrist
+# "be" 3 m away and wreck a 3-D angle. Wider than a body is thick, narrower
+# than the gap to the background in any sensible room.
+POSE_DEPTH_GATE_M = float(_env("ORIO_POSE_DEPTH_GATE_M", "0.6"))
+
+
 
 # ── Depth camera: Orbbec Gemini 336L ─────────────────────────────────────────
 # One USB3 camera for both depth and colour (orio/gemini.py). Depth is computed

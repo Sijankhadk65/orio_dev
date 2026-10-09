@@ -28,5 +28,9 @@ settings.json
 # Orbbec SDK log (orio/gemini.py routes it here)
 Log/
 
+# Pose snapshots saved from tools/pose_debug.py (S key) — photos of people,
+# so never committed
+captures/
+
 # Synthesized listen-cue clips (cues.py) — per-voice cache, regenerated on demand
 cues/
