@@ -662,6 +662,28 @@ POSE_KEYPOINT_CONFIDENCE = float(_env("ORIO_POSE_KEYPOINT_CONFIDENCE", "0.5"))
 POSE_DEPTH_GATE_M = float(_env("ORIO_POSE_DEPTH_GATE_M", "0.6"))
 
 
+# ── Yoga coach (orio/yoga.py) ─────────────────────────────────────────────────
+# Seconds between spoken cues. Shorter than this and the person has no time to
+# act on one cue before the next arrives; a repeat of the SAME cue waits twice
+# as long, so a correction they are working on is not nagged.
+YOGA_CUE_INTERVAL_S = float(_env("ORIO_YOGA_CUE_INTERVAL_S", "4.0"))
+
+# Seconds to hold a pose once it is right, before "and release".
+YOGA_HOLD_S = float(_env("ORIO_YOGA_HOLD_S", "20"))
+
+# Time constant (s) of the smoothing on every measurement. Keypoints jitter a
+# few degrees frame to frame; unsmoothed, a joint sitting on a tolerance edge
+# would flip between right and wrong and the coach would chatter.
+YOGA_SMOOTHING_S = float(_env("ORIO_YOGA_SMOOTHING_S", "0.3"))
+
+# Depth difference (m) between the two shoulders beyond which a person meant to
+# face the camera is "turned". 2-D angles are only honest for a body square to
+# the camera, so this is checked before any of them. At shoulder width ~0.4 m,
+# 0.15 m is a turn of ~20 deg. Shoulders are torso, where depth is reliable —
+# unlike the limbs (see pose.py).
+YOGA_SQUARE_TOL_M = float(_env("ORIO_YOGA_SQUARE_TOL_M", "0.15"))
+
+
 
 # ── Depth camera: Orbbec Gemini 336L ─────────────────────────────────────────
 # One USB3 camera for both depth and colour (orio/gemini.py). Depth is computed

@@ -4,6 +4,7 @@
     uv run python tools/pose_debug.py                  # window: skeleton + angles
     uv run python tools/pose_debug.py --no-window      # terminal only, over ssh
     uv run python tools/pose_debug.py --image me.jpg   # a still photo, no camera
+    uv run python tools/pose_debug.py --coach tree     # also run the yoga coach
 
 Before any coaching rule can say "bend your front knee more", three things have
 to be true, and this is the tool for checking them:
@@ -21,9 +22,17 @@ to be true, and this is the tool for checking them:
    the one to believe. A `3D` of `--` means a keypoint had no usable depth
    (often the silhouette edge sampling the wall; see POSE_DEPTH_GATE_M).
 
-On the picture, each angle is drawn at its joint: green when it is the 3-D
-value, yellow when only 2-D was available. Blue limbs are the person's left,
-orange their right — the right of the picture when they face the camera.
+On the picture, each joint is labelled with its 2-D angle — the one the yoga
+coach judges by (see yoga.py for why). Blue limbs are the person's left, orange
+their right — the right of the picture when they face the camera.
+
+## --coach
+
+Runs `yoga.Coach` on the live picture for one pose (mountain, warrior_ii, tree)
+and shows what it would say: the state, which side leads, the hold timer, the
+check it is working on, and the last cue. Cues are also printed to the terminal.
+Nothing is spoken — this is for tuning the bands and the timing by eye before
+the coach is given a voice.
 
 Keys: Q or Esc quits. S saves the raw frame and a JSON of keypoints and angles
 to `captures/pose/` (gitignored) — the way to collect reference angles for the
@@ -49,6 +58,7 @@ import numpy as np
 
 from orio import config
 from orio.pose import JOINTS, KEYPOINTS, SKELETON, PoseEstimator, framing, joint_angles, lift
+from orio.yoga import POSES, Coach
 
 PANEL_W = 300
 LEFT_BGR = (230, 160, 40)    # person's left
@@ -94,8 +104,9 @@ def draw_person(img, person, angles, subject: bool) -> None:
     if not subject:
         return
     for a in angles:
-        colour = ANGLE_3D_BGR if a.deg_3d is not None else ANGLE_2D_BGR
-        text(img, f"{a.deg:.0f}", (int(a.vertex[0]) + 6, int(a.vertex[1]) - 6), colour, 0.5, 1)
+        if a.deg_2d is not None:
+            text(img, f"{a.deg_2d:.0f}", (int(a.vertex[0]) + 6, int(a.vertex[1]) - 6),
+                 ANGLE_2D_BGR, 0.5, 1)
 
 
 def draw_panel(height, subject, angles, problems, n_people, infer_ms, fps, has_depth):
@@ -131,6 +142,34 @@ def draw_panel(height, subject, angles, problems, n_people, infer_ms, fps, has_d
     y += 8
     text(panel, "S snapshot   Q quit", (10, y), DIM_BGR)
     return panel
+
+
+def wrap(s: str, width: int = 34) -> list[str]:
+    lines, line = [], ""
+    for word in s.split():
+        if line and len(line) + 1 + len(word) > width:
+            lines.append(line)
+            line = word
+        else:
+            line = f"{line} {word}".strip()
+    return lines + ([line] if line else [])
+
+
+def draw_coach(coach) -> np.ndarray:
+    """The coach's state, as a strip to stack under the angle panel."""
+    strip = np.full((150, PANEL_W, 3), 45, np.uint8)
+    p = coach.pose
+    text(strip, f"coach: {p.name}", (10, 20), TEXT_BGR)
+    lead = f"  lead {coach.lead}" if p.lead and coach.state != "waiting" else ""
+    colour = {"holding": ANGLE_3D_BGR, "done": ANGLE_3D_BGR, "adjusting": ANGLE_2D_BGR}.get(
+        coach.state, DIM_BGR)
+    text(strip, f"{coach.state}{lead}   hold {coach.held_s:4.1f}/{p.hold_s:.0f} s", (10, 42), colour)
+    if coach.failing:
+        text(strip, f"fixing: {coach.failing}", (10, 62), WARN_BGR)
+    if coach.last_cue is not None:
+        for k, line in enumerate(wrap(f'"{coach.last_cue.text}"')[:4]):
+            text(strip, line, (10, 86 + 18 * k), TEXT_BGR)
+    return strip
 
 
 def snapshot(frame, subject, angles, problems) -> Path:
@@ -174,12 +213,14 @@ def analyse(estimator, frame, depth, intrinsics):
     return people, subject, angles, problems, infer_ms
 
 
-def render(frame, people, subject, angles, problems, infer_ms, fps, has_depth):
+def render(frame, people, subject, angles, problems, infer_ms, fps, has_depth, coach=None):
     view = frame.copy()  # the camera's buffer is shared; never draw on it
     for p in people:
         draw_person(view, p, angles if p is subject else [], p is subject)
     panel = draw_panel(view.shape[0], subject, angles, problems, len(people),
                        infer_ms, fps, has_depth)
+    if coach is not None:
+        panel = np.vstack([panel, draw_coach(coach)])
     if panel.shape[0] > view.shape[0]:
         pad = np.zeros((panel.shape[0] - view.shape[0], view.shape[1], 3), np.uint8)
         view = np.vstack([view, pad])
@@ -215,7 +256,7 @@ def run_image(estimator, path: Path, window: bool) -> int:
     return 0
 
 
-def run_camera(estimator, window: bool) -> int:
+def run_camera(estimator, window: bool, coach=None) -> int:
     from orio.gemini import GeminiCamera
 
     cam = GeminiCamera()
@@ -233,6 +274,11 @@ def run_camera(estimator, window: bool) -> int:
 
             people, subject, angles, problems, infer_ms = analyse(
                 estimator, frames.color, frames.depth, cam.intrinsics)
+            if coach is not None:
+                h, w = frames.color.shape[:2]
+                cue = coach.update(subject, w, h, now)
+                if cue is not None:
+                    print(f"coach [{cue.kind}] {cue.text}", flush=True)
 
             if not window:
                 if now - last_print >= 1.0:
@@ -242,7 +288,7 @@ def run_camera(estimator, window: bool) -> int:
                 continue
 
             cv2.imshow("pose", render(frames.color, people, subject, angles, problems,
-                                      infer_ms, fps, True))
+                                      infer_ms, fps, True, coach))
             key = cv2.waitKey(1) & 0xFF
             if key in (27, ord("q")):
                 break
@@ -263,6 +309,8 @@ def main() -> int:
     parser.add_argument("--image", type=Path, help="run on a still image instead of the camera")
     parser.add_argument("--model", type=Path, default=config.POSE_MODEL_PATH,
                         help="pose checkpoint (.pt, or an exported .engine)")
+    parser.add_argument("--coach", choices=sorted(POSES),
+                        help="also run the yoga coach for this pose (camera only)")
     parser.add_argument("--conf", type=float, default=config.POSE_CONFIDENCE,
                         help="minimum person-box confidence")
     args = parser.parse_args()
@@ -270,8 +318,11 @@ def main() -> int:
 
     estimator = PoseEstimator(model_path=args.model, confidence=args.conf)
     if args.image is not None:
+        if args.coach:
+            parser.error("--coach needs the live camera: it judges a pose held over time")
         return run_image(estimator, args.image, not args.no_window)
-    return run_camera(estimator, not args.no_window)
+    coach = Coach(POSES[args.coach]) if args.coach else None
+    return run_camera(estimator, not args.no_window, coach)
 
 
 if __name__ == "__main__":
