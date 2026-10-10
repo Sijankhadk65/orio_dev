@@ -44,7 +44,7 @@ def _is_stop(text: str) -> bool:
     return t in STOP_PHRASES
 
 
-def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) -> None:
+def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) -> bool:
     """Generate (THINKING) then speak (SPEAKING) a reply to `user`.
 
     A reply that uses a tool arrives in segments split by `TURN_BREAK` (see
@@ -56,7 +56,8 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
 
     Leaves the machine in SPEAKING on success so the caller picks the next
     resting state (LISTENING follow-up, ASLEEP, or IDLE); on an LLM failure it
-    recovers through ERROR back to IDLE itself.
+    recovers through ERROR back to IDLE itself. Returns whether the model
+    answered at all.
     """
     fsm.to(State.THINKING)
     print("orio › ", end="", flush=True)
@@ -84,26 +85,37 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
         fsm.to(State.ERROR)
         print(f"\n✗ LLM error: {exc}")
         fsm.to(State.IDLE)
-        return
+        return False
     print()
 
     say()
+    return True
 
 
-def _yoga_guard(tts: TTS, fsm: StateMachine, text: str) -> bool:
+def _yoga_guard(convo: Conversation, tts: TTS, fsm: StateMachine, text: str) -> bool:
     """Stop a running yoga session on "stop" or any mention of pain.
 
-    Runs BEFORE the LLM and answers with a fixed line, so ending a session
-    never depends on the model picking the right tool — least of all when
-    someone says it hurts. Returns True when it handled the utterance, which
-    then does not go to the model at all.
+    The STOP happens here, before the LLM, so ending a session never depends on
+    the model picking the right tool — least of all when someone says it hurts.
+    What Orio SAYS about it is still the model's, told what just happened; only
+    if the model cannot be reached is a fixed line spoken instead. Returns True
+    when it handled the utterance.
     """
     if not coaching.active():
         return False
     kind = coaching.classify(text)
     if kind is None:
         return False
-    coaching.stop()
+    session = coaching.stop()
+    pose = session.pose.name if session is not None else "yoga"
+    if kind == "hurt":
+        note = (f"[The {pose} session has already been stopped, because they mentioned "
+                "pain. Tell them to come out of the pose gently, that stopping is always "
+                "fine, and to see a professional if the pain lasts. No medical advice.]")
+    else:
+        note = f"[The {pose} session has already been stopped, as they asked.]"
+    if _handle_turn(convo, tts, fsm, f"{text}\n{note}"):
+        return True
     line = coaching.HURT_LINE if kind == "hurt" else coaching.STOPPED_LINE
     fsm.to(State.THINKING)
     fsm.to(State.SPEAKING)
@@ -170,65 +182,87 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
     else:
         print("Ready. Speak to Orio (Ctrl-C to stop).")
 
-    while True:
-        pending = ""  # command carried over from the wake utterance, if any
-        if gated:
-            fsm.to(State.ASLEEP)
-            print(f'\n😴 asleep — say "{waker.label}"…', end="", flush=True)
-            woke = waker.await_wake()
-            if woke is None:
-                return  # Ctrl-C or capture failure
-            pending = woke
-            print("\r" + " " * 40 + "\r", end="")  # clear the asleep line
-            fsm.to(State.LISTENING)  # hearing the wake word is itself a listen
-            if not pending and cue is not None:
-                # They stopped after "Hey Orio" and are waiting to be heard. A
-                # command run on from the wake word gets no "Hmm?" — it's said.
-                cue.play()
-
-        # Awake: take commands, with a follow-up window between them so the user
-        # can chain requests without re-waking. An empty window sends us back to
-        # sleep (gated) or just keeps listening (always-on).
+    # The turn lock is held from the wake word until Orio goes back to sleep:
+    # while someone is talking with Orio, the yoga coach takes no turns of its
+    # own (see coaching.turn_lock). Taking it may wait out the end of a
+    # coaching sentence, which is the point — then the floor is theirs. So the
+    # coach speaks in the wake-gated mode (the default) and in text mode;
+    # always-on voice never sleeps, and never lets it in.
+    held = False
+    try:
         while True:
-            if pending:
-                text: str | None = pending
-                pending = ""
-                print(f"you › {text}")
-            else:
-                fsm.to(State.LISTENING)
-                print("\n🎤 listening…", end="", flush=True)
-                timeout = config.FOLLOWUP_WINDOW_S if gated else None
-                try:
-                    text = stt.listen(onset_timeout=timeout)
-                except KeyboardInterrupt:
-                    return
-                except RuntimeError as exc:  # audio capture failed
-                    fsm.to(State.ERROR)
-                    print(f"\n✗ {exc}")
-                    fsm.to(State.IDLE)
-                    return
-                if not text:
-                    print("\r              \r", end="")  # clear the listening line
-                    if gated:
-                        break  # follow-up window lapsed → back to sleep
-                    continue  # always-on → keep listening
-                # Clear "🎤 listening…" before printing — a plain "\r" alone
-                # only overwrites the start of the line, leaving its tail
-                # visible whenever the new text is shorter (e.g. "\ryou › Bye."
-                # left a stray "ng…" from the old line dangling after it).
-                print("\r" + " " * 20 + "\r", end="")
-                print(f"you › {text}")
-
-            if _is_stop(text):
+            pending = ""  # command carried over from the wake utterance, if any
+            if gated:
+                fsm.to(State.ASLEEP)
+                if held:
+                    coaching.turn_lock.release()
+                    held = False
+                print(f'\n😴 asleep — say "{waker.label}"…', end="", flush=True)
+                woke = waker.await_wake()
+                if woke is None:
+                    return  # Ctrl-C or capture failure
+                coaching.turn_lock.acquire()
+                held = True
+                pending = woke
+                print("\r" + " " * 40 + "\r", end="")  # clear the asleep line
+                fsm.to(State.LISTENING)  # hearing the wake word is itself a listen
+                if not pending and cue is not None:
+                    # They stopped after "Hey Orio" and are waiting to be heard. A
+                    # command run on from the wake word gets no "Hmm?" — it's said.
+                    cue.play()
+            if not _awake(convo, tts, fsm, stt, gated, pending):
                 return
-            if not _yoga_guard(tts, fsm, text):
-                _handle_turn(convo, tts, fsm, text)
-            if gated and coaching.active():
-                # No follow-up window during yoga: the coach is silent while
-                # Orio listens (see coaching.py), and 8 s of listening after
-                # every answer would be 8 s of no corrections. "Hey Orio"
-                # still works whenever they want to talk.
-                break
+    finally:
+        if held:
+            coaching.turn_lock.release()
+
+
+def _awake(convo: Conversation, tts: TTS, fsm: StateMachine, stt, gated: bool,
+           pending: str) -> bool:
+    """Take commands, with a follow-up window between them so the user can
+    chain requests without re-waking. Returns True to go back to sleep (gated:
+    the window lapsed), False to end the session.
+    """
+    while True:
+        if pending:
+            text: str | None = pending
+            pending = ""
+            print(f"you › {text}")
+        else:
+            fsm.to(State.LISTENING)
+            print("\n🎤 listening…", end="", flush=True)
+            timeout = config.FOLLOWUP_WINDOW_S if gated else None
+            try:
+                text = stt.listen(onset_timeout=timeout)
+            except KeyboardInterrupt:
+                return False
+            except RuntimeError as exc:  # audio capture failed
+                fsm.to(State.ERROR)
+                print(f"\n✗ {exc}")
+                fsm.to(State.IDLE)
+                return False
+            if not text:
+                print("\r              \r", end="")  # clear the listening line
+                if gated:
+                    return True  # follow-up window lapsed → back to sleep
+                continue  # always-on → keep listening
+            # Clear "🎤 listening…" before printing — a plain "\r" alone
+            # only overwrites the start of the line, leaving its tail
+            # visible whenever the new text is shorter (e.g. "\ryou › Bye."
+            # left a stray "ng…" from the old line dangling after it).
+            print("\r" + " " * 20 + "\r", end="")
+            print(f"you › {text}")
+
+        if _is_stop(text):
+            return False
+        if not _yoga_guard(convo, tts, fsm, text):
+            _handle_turn(convo, tts, fsm, text)
+        if gated and coaching.active():
+            # No follow-up window during yoga: the coach takes no turns while
+            # Orio listens (see coaching.py), and 8 s of listening after every
+            # answer would be 8 s of no coaching. "Hey Orio" still works
+            # whenever they want to talk.
+            return True
 
 
 def _run_text(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
@@ -244,8 +278,10 @@ def _run_text(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
             continue
         if _is_stop(line):
             return
-        if not _yoga_guard(tts, fsm, line):
-            _handle_turn(convo, tts, fsm, line)
+        with coaching.turn_lock:  # the person's turn: the yoga coach waits
+            if not _yoga_guard(convo, tts, fsm, line):
+                _handle_turn(convo, tts, fsm, line)
+            fsm.to(State.IDLE)
 
 
 def run() -> None:
@@ -270,10 +306,12 @@ def run() -> None:
 
         tts = get_tts()
         fsm = StateMachine()  # single source of truth for what Orio is doing
-        coaching.configure(tts, fsm)  # yoga sessions speak, and keep quiet, by these
+        # The yoga coach speaks by taking turns in this same conversation.
+        coaching.configure(fsm, lambda text: _handle_turn(convo, tts, fsm, text))
 
         eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
         vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
+        yoga_debug = _start_yoga_debug()  # pose + coaching view, if enabled
 
         try:
             if config.INPUT_MODE == "voice":
@@ -287,6 +325,8 @@ def run() -> None:
                 eyes.stop()
             if vision_debug is not None:
                 vision_debug.stop()
+            if yoga_debug is not None:
+                yoga_debug.stop()
             from .tools import close_tools
 
             close_tools()  # release the camera, if it was opened
@@ -329,6 +369,25 @@ def _start_vision_debug():
         return window
     except Exception as exc:  # missing deps, no camera, etc.
         print(f"⚠ vision debug preview disabled: {exc}")
+        return None
+
+
+def _start_yoga_debug():
+    """Start the yoga debug window if ORIO_YOGA_DEBUG is on; return it (or None).
+
+    Like the vision preview: import-local, and any failure only costs the
+    window, never the loop.
+    """
+    if not config.YOGA_DEBUG:
+        return None
+    try:
+        from .pose_view import YogaDebugWindow
+
+        window = YogaDebugWindow(fps=config.YOGA_DEBUG_FPS)
+        window.start()
+        return window
+    except Exception as exc:  # missing deps, no display, etc.
+        print(f"⚠ yoga debug view disabled: {exc}")
         return None
 
 

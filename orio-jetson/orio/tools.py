@@ -392,11 +392,11 @@ def start_yoga(pose: str) -> str:
     position. `pose` is one of: "mountain", "warrior two", "tree". If they did
     not say which, pick "mountain" for a beginner start, or ask.
 
-    Orio stays still and watches them through its camera, says how to get into
-    the pose, then gives spoken corrections one at a time and tells them when to
-    release. Its coach voice does all of that by itself after this returns, so
-    keep your own reply to a few words of encouragement — do not repeat the
-    instructions. Calling it again switches to another pose.
+    The session starts by getting them properly into view, then the pose.
+    From then on you are sent "[Yoga camera update]" messages describing what
+    the camera measures — answer each with what you say to them. After calling
+    this, reply with only a few words: the first camera update follows shortly.
+    Calling it again switches to another pose.
     """
     from . import coaching
 
@@ -409,8 +409,8 @@ def start_yoga(pose: str) -> str:
     except Exception as exc:
         log.exception("start_yoga(%r) failed", pose)
         return f"couldn't start the yoga session: {exc}"
-    return (f"started coaching {session.pose.name} (hold {session.pose.hold_s:.0f} s); "
-            "the coach voice is giving the instructions now")
+    return (f"started a {session.pose.name} session (hold {session.pose.hold_s:.0f} s); "
+            "first getting them into view — camera updates will follow")
 
 
 @tool
@@ -444,7 +444,31 @@ def yoga_status() -> str:
     return session.status()
 
 
-YOGA_TOOLS = [start_yoga, stop_yoga, yoga_status]
+@tool
+def center_on_person() -> str:
+    """Turn Orio on the spot to face the person, during yoga framing. No arguments.
+
+    Use when a yoga camera update says they are off to one side and turning
+    toward them is simpler than asking them to move. Only works while framing,
+    before the pose starts — Orio stays still once it begins. Pivots in place;
+    it never drives anywhere.
+    """
+    from . import coaching
+
+    session = coaching.current()
+    if session is None or not session.running:
+        return "no yoga session is running"
+    try:
+        return session.center()
+    except Exception as exc:
+        log.exception("center_on_person failed")
+        body = get_body()
+        if body is not None and body.can_drive:
+            body.stop()
+        return f"couldn't turn: {exc}"
+
+
+YOGA_TOOLS = [start_yoga, stop_yoga, yoga_status, center_on_person]
 
 
 # The drive half of the tool set, by name. llm.py picks the movement half of
@@ -463,8 +487,8 @@ DRIVE_TOOL_NAMES = frozenset(t.name for t in DRIVE_TOOLS)
 # enforced here too rather than left to the wording.
 SILENT_TOOL_NAMES = frozenset({
     search_knowledge_base.name,
-    # Instant, and start_yoga's coach voice does the talking: an announcement
-    # first would be Orio saying the same thing twice.
+    # Instant, and a camera update follows start_yoga with the real
+    # instructions: an announcement first would be Orio talking over itself.
     start_yoga.name, stop_yoga.name, yoga_status.name,
 })
 

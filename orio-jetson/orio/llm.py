@@ -145,6 +145,11 @@ class Conversation:
         max_msgs = config.MAX_HISTORY_TURNS * 2  # user+assistant per turn
         if len(self._history) > max_msgs:
             self._history = self._history[-max_msgs:]
+            # Never start on the middle of a tool exchange: a tool result whose
+            # call was trimmed away is rejected by the API. Yoga coaching makes
+            # tool turns frequent enough for a cut to land there.
+            while self._history and not isinstance(self._history[0], HumanMessage):
+                self._history.pop(0)
 
     def _run_tool(self, call: dict) -> str:
         fn = self._tools_by_name.get(call["name"])

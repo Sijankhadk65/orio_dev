@@ -50,8 +50,12 @@ class State(Enum):
 # SPEAKING within itself: say what you're about to do, do it, report back.
 # IDLE is the resting state when wake-gating is off (always-on) and in text
 # mode.
+#
+# ASLEEP → THINKING is the yoga coach (coaching.py): while a session runs, Orio
+# speaks up about what its camera sees without being woken first, then goes
+# straight back to sleep.
 _TRANSITIONS: dict[State, set[State]] = {
-    State.ASLEEP: {State.LISTENING, State.IDLE, State.ERROR},
+    State.ASLEEP: {State.LISTENING, State.THINKING, State.IDLE, State.ERROR},
     State.IDLE: {State.ASLEEP, State.LISTENING, State.THINKING, State.ERROR},
     State.LISTENING: {State.THINKING, State.ASLEEP, State.IDLE, State.ERROR},
     State.THINKING: {State.SPEAKING, State.IDLE, State.ERROR},

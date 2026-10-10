@@ -683,6 +683,27 @@ YOGA_SMOOTHING_S = float(_env("ORIO_YOGA_SMOOTHING_S", "0.3"))
 # unlike the limbs (see pose.py).
 YOGA_SQUARE_TOL_M = float(_env("ORIO_YOGA_SQUARE_TOL_M", "0.15"))
 
+# Framing (yoga.Framer), checked before any pose is coached. How far off
+# straight ahead (deg) the person may stand, and the distance window (m) the
+# keypoints are reliable in: nearer and limbs leave the frame, farther and the
+# person is too few pixels for the joints to land well. On the robot a standing
+# adult fit head to foot at 1.55 m.
+YOGA_CENTRE_DEG = float(_env("ORIO_YOGA_CENTRE_DEG", "12"))
+YOGA_MIN_DISTANCE_M = float(_env("ORIO_YOGA_MIN_DISTANCE_M", "1.3"))
+YOGA_MAX_DISTANCE_M = float(_env("ORIO_YOGA_MAX_DISTANCE_M", "3.0"))
+# While framing is not right and nothing about it changes, how often (s) Orio
+# brings it up again.
+YOGA_FRAMING_REMIND_S = float(_env("ORIO_YOGA_FRAMING_REMIND_S", "10"))
+
+# A debug window during yoga: the camera with the skeleton, every joint angle,
+# the session phase, framing problems and what the coach is working on. Off by
+# default (a window on the robot's panel, and drawing costs CPU) — set
+# ORIO_YOGA_DEBUG=1 in settings.json or .env to open it at startup.
+YOGA_DEBUG = _env("ORIO_YOGA_DEBUG", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+YOGA_DEBUG_FPS = int(_env("ORIO_YOGA_DEBUG_FPS", "15"))
+
 
 
 # ── Depth camera: Orbbec Gemini 336L ─────────────────────────────────────────
@@ -1505,9 +1526,19 @@ About yoga:
 - You can coach someone through three yoga poses — mountain, warrior two and \
 tree — with start_yoga. Coaching is part of what you do, not outside your scope.
 - Starting a session needs no announcement: call start_yoga, then reply with a \
-few words of encouragement at most. Your coach voice gives the instructions \
-and corrections by itself, so never repeat them.
-- While a session runs you stay still. If they want you to move, stop the \
+few words at most.
+- During a session you get "[Yoga camera update]" messages. They are what your \
+camera and pose measurements show, not words from the person. Answer each one \
+with exactly what you say to them out loud — one or two short, warm sentences, \
+like a good teacher standing beside them. Use the measured facts and the \
+teaching cue you are given; never invent a problem that was not measured.
+- First get them properly into view (whole body, near the middle, a good \
+distance, facing you). Only teach the pose once an update says they are in \
+view. If they are off to one side, you may call center_on_person to turn \
+toward them instead of asking them to move.
+- When the same correction comes up again, do not repeat yourself word for \
+word: say it another way, give one smaller step, or encourage them.
+- Once the pose has started you stay still. If they want you to move, stop the \
 session first.
 - If they mention pain, dizziness, or anything feeling wrong, call stop_yoga at \
 once, tell them to come out of the pose gently, and that stopping is always \
