@@ -1337,6 +1337,19 @@ EYES_DEBUG = _env("ORIO_EYES_DEBUG", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
+# Face style — a variation on the same eyes/mouth (see `_STYLES` in orio/eyes.py):
+# "plain" (default) or "outlined" (white ring around each eye).
+EYES_STYLE = _env("ORIO_EYES_STYLE", "plain").strip().lower()
+
+# Face color: a hex color (e.g. "4ddbff") keeps the eyes and mouth that one color
+# in every state; "state" colors them by FSM state instead (blue asleep, green
+# listening, purple thinking, yellow speaking, red error).
+_eyes_color = _env("ORIO_EYES_COLOR", "4ddbff").strip().lower().lstrip("#")
+EYES_COLOR = (
+    None if _eyes_color == "state"
+    else (int(_eyes_color[0:2], 16), int(_eyes_color[2:4], 16), int(_eyes_color[4:6], 16))
+)
+
 
 
 # ── Scope / persona ──────────────────────────────────────────────────────────

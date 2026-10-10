@@ -332,6 +332,8 @@ way.
 | `ORIO_EYES_SIZE` | `1024x600` | Render size — match your panel |
 | `ORIO_EYES_FPS` | `30` | Render frame rate |
 | `ORIO_EYES_DEBUG` | `0` | `1` to overlay the FSM state name + FPS |
+| `ORIO_EYES_STYLE` | `plain` | Face style: `plain`, or `outlined` (white ring around each eye) |
+| `ORIO_EYES_COLOR` | `4ddbff` | One hex color for the face in every state, or `state` to color it per FSM state |
 | `ORIO_WAKE` | `1` | `0` to disable wake-word gating (always listening) |
 | `ORIO_WAKE_ENGINE` | `whisper` | `whisper` (reuse ASR) or `oww` (dedicated openWakeWord model) |
 | `ORIO_WAKE_PHRASES` | `hey orio,okay orio,…` | Comma-separated accepted phrases |

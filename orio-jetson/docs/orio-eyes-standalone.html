@@ -3,39 +3,34 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>ORIO · Eye FSM</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet">
+<title>Orio · Face FSM</title>
 <style>
   html, body { margin: 0; padding: 0; background: #08080c; }
   a { color: #4ddbff; text-decoration: none; }
   a:hover { color: #ffd24d; }
-  @keyframes scanDrift { from { transform: translateY(0) } to { transform: translateY(6px) } }
-  @keyframes crtFlicker { 0%,100% { opacity: .98 } 46% { opacity: .94 } 47% { opacity: 1 } 74% { opacity: .95 } }
 </style>
 </head>
 <body>
-<div style="min-height: 100vh; background: #08080c; color: #8e97b8; font-family: 'VT323', monospace; padding: 24px; display: flex; flex-direction: column; gap: 16px; align-items: center;">
+<div style="min-height: 100vh; background: #08080c; color: #8e97b8; font-family: system-ui, -apple-system, 'Segoe UI', sans-serif; padding: 24px; display: flex; flex-direction: column; gap: 16px; align-items: center;">
 
   <div style="width: 100%; max-width: 1040px; display: flex; align-items: baseline; justify-content: space-between;">
-    <div id="title" style="font-family: 'Press Start 2P', monospace; font-size: 12px; color: #4ddbff; letter-spacing: 1px;">ORIO · EYE FSM</div>
-    <div id="readout" style="font-size: 19px; letter-spacing: 2px; color: #59617e;">IDLE</div>
+    <div id="title" style="font-size: 15px; font-weight: 600; color: #4ddbff; letter-spacing: .5px;">Orio · Face FSM</div>
+    <div id="readout" style="font-size: 14px; color: #59617e;">IDLE</div>
   </div>
 
-  <div style="width: 100%; max-width: 1040px; position: relative; background: #0a0a0e; border: 1px solid #1b1d29; overflow: hidden;">
-    <canvas id="eyes" width="128" height="72" style="display: block; width: 100%; height: auto; image-rendering: pixelated; transition: filter .3s linear; animation: crtFlicker 5s steps(1) infinite;"></canvas>
-    <div style="position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(to bottom, rgba(0,0,0,.30) 0px, rgba(0,0,0,.30) 2px, rgba(0,0,0,0) 2px, rgba(0,0,0,0) 6px); animation: scanDrift 1.6s linear infinite;"></div>
-    <div style="position: absolute; inset: 0; pointer-events: none; background: repeating-linear-gradient(to right, rgba(255,0,80,.03) 0px, rgba(255,0,80,.03) 2px, rgba(0,255,160,.03) 2px, rgba(0,255,160,.03) 4px, rgba(60,120,255,.03) 4px, rgba(60,120,255,.03) 6px);"></div>
-    <div style="position: absolute; inset: 0; pointer-events: none; background: radial-gradient(120% 100% at 50% 50%, rgba(0,0,0,0) 58%, rgba(0,0,0,.6) 100%);"></div>
+  <div style="width: 100%; max-width: 1040px; background: #07070b; border: 1px solid #1b1d29; border-radius: 12px; overflow: hidden;">
+    <canvas id="eyes" width="2048" height="1152" style="display: block; width: 100%; height: auto;"></canvas>
   </div>
 
   <div id="chips" style="width: 100%; max-width: 1040px; display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;"></div>
 
-  <div style="width: 100%; max-width: 1040px; font-size: 18px; color: #4a5170; letter-spacing: 1px;">KEYS 1-6 · SHAPE-ONLY EXPRESSION, NO PUPILS · window.orioEyes.setState('THINKING')</div>
+  <div style="width: 100%; max-width: 1040px; font-size: 13px; color: #4a5170;">Keys 1–6 · O toggles outlined style · C toggles per-state colors · shape-only expression, no pupils · mouth per state · window.orioEyes.setState('THINKING')</div>
 </div>
 
 <script>
 // ORIO eye FSM — standalone. Shape-only: every expression is width / height / radius / slant / offset.
+// Geometry is authored in a 128x72 unit space and drawn smooth at the canvas's real resolution.
+// The mouth is the same idea: one stroke whose width / opening / curve / tilt / zigzag morph per state.
 const HUE = {
   ASLEEP:    { main: '#2f7fb5' },
   IDLE:      { main: '#4ddbff' },
@@ -46,13 +41,20 @@ const HUE = {
 };
 
 const STATES = [
-  { name: 'ASLEEP',    key: '1', note: 'flat bars · slow breath' },
-  { name: 'IDLE',      key: '2', note: 'tall blobs · sway + blink' },
-  { name: 'LISTENING', key: '3', note: 'taller · level pulse' },
-  { name: 'THINKING',  key: '4', note: 'small · slanted · drifting up' },
-  { name: 'SPEAKING',  key: '5', note: 'syllable bounce' },
-  { name: 'ERROR',     key: '6', note: 'angry slant · jitter' }
+  { name: 'ASLEEP',    key: '1', note: 'flat bars · slow breath · tiny o' },
+  { name: 'IDLE',      key: '2', note: 'tall blobs · sway + blink · smile' },
+  { name: 'LISTENING', key: '3', note: 'taller · level pulse · ooh' },
+  { name: 'THINKING',  key: '4', note: 'small · slanted · drifting up · hmm' },
+  { name: 'SPEAKING',  key: '5', note: 'syllable bounce · talking' },
+  { name: 'ERROR',     key: '6', note: 'angry slant · jitter · zigzag' }
 ];
+
+// face styles — variations on the same geometry/motion (mirrors _STYLES in orio/eyes.py).
+// eyeBorder = ring thickness in units (0 = none), scaled by the state's dim like the eyes.
+const STYLES = {
+  plain:    { eyeBorder: 0,   eyeBorderColor: [255, 255, 255] },
+  outlined: { eyeBorder: 1.5, eyeBorderColor: [255, 255, 255] }
+};
 
 const lerp = (a, b, k) => a + (b - a) * k;
 const hex2rgb = (h) => [parseInt(h.slice(1, 3), 16), parseInt(h.slice(3, 5), 16), parseInt(h.slice(5, 7), 16)];
@@ -67,8 +69,10 @@ class OrioEyes {
     this.enterT = 0;
     this.mic = 0;
     this.nextBlink = 2.4; this.blinkStart = -1; this.winkStart = -1; this.winkEye = 0;
-    this.g = { w: 26, h: 30, r: 9, dx: 0, dy: 0, skew: 0, dim: 1 };
+    this.g = { w: 26, h: 30, r: 9, dx: 0, dy: 0, skew: 0, dim: 1, mw: 14, mopen: 0, mcurve: 3, mtilt: 0, mzig: 0, mdx: 0 };
     this.col = hex2rgb(HUE.IDLE.main);
+    this.style = 'plain';
+    this.fixedColor = '#4ddbff';   // one color for every state; null = color by state (HUE)
     this.onChange = null;
     this.raf = requestAnimationFrame(this.loop);
   }
@@ -85,29 +89,39 @@ class OrioEyes {
 
   destroy() { cancelAnimationFrame(this.raf); }
 
-  // target geometry per state — the whole animation vocabulary lives here
+  // target geometry per state — the whole animation vocabulary lives here.
+  // Eye keys: w h r dx dy skew dim. Mouth keys (m*): mw = width, mopen = how far
+  // the lips part at the middle, mcurve = smile (+) / frown (-) depth, mtilt =
+  // right-side-up (+) slant, mzig = zigzag amplitude, mdx = sideways offset.
   targets(st, t) {
     const age = t - this.enterT;
     const pop = Math.exp(-age * 4.5) * Math.sin(age * 15);   // settle overshoot
     switch (st) {
       case 'ASLEEP':
-        return { w: 28, h: 5 + Math.sin(t * 1.15) * 1.6, r: 2.5, dx: 0, dy: 7 + Math.sin(t * 1.15) * 1.2, skew: 0.06, dim: 0.55 };
+        return { w: 28, h: 5 + Math.sin(t * 1.15) * 1.6, r: 2.5, dx: 0, dy: 7 + Math.sin(t * 1.15) * 1.2, skew: 0.06, dim: 0.55,
+                 mw: 6, mopen: 1.5 + Math.sin(t * 1.15) * 1.2, mcurve: 0, mtilt: 0, mzig: 0, mdx: 0 };
       case 'IDLE': {
         const s = this.sway(t);
-        return { w: 26, h: 30 + pop * 5, r: 9, dx: s.x, dy: s.y + Math.sin(t * 1.5) * 1.1, skew: 0, dim: 1 };
+        return { w: 26, h: 30 + pop * 5, r: 9, dx: s.x, dy: s.y + Math.sin(t * 1.5) * 1.1, skew: 0, dim: 1,
+                 mw: 14, mopen: 0, mcurve: 3 + pop, mtilt: 0, mzig: 0, mdx: 0 };
       }
       case 'LISTENING':
-        return { w: 27 + this.mic * 1.5, h: 34 + this.mic * 4 + pop * 5, r: 10, dx: Math.sin(t * 0.8) * 1.6, dy: -1 - this.mic, skew: -0.05, dim: 1 };
+        return { w: 27 + this.mic * 1.5, h: 34 + this.mic * 4 + pop * 5, r: 10, dx: Math.sin(t * 0.8) * 1.6, dy: -1 - this.mic, skew: -0.05, dim: 1,
+                 mw: 7, mopen: 4 + pop, mcurve: 0, mtilt: 0, mzig: 0, mdx: 0 };
       case 'THINKING':
-        return { w: 22, h: 19, r: 8, dx: -3 + Math.cos(t * 1.5) * 2.2, dy: -5 + Math.sin(t * 1.5) * 1.4, skew: 0.3, dim: 1 };
+        return { w: 22, h: 19, r: 8, dx: -3 + Math.cos(t * 1.5) * 2.2, dy: -5 + Math.sin(t * 1.5) * 1.4, skew: 0.3, dim: 1,
+                 mw: 10, mopen: 0, mcurve: -0.5, mtilt: 2 + Math.sin(t * 1.5) * 0.5, mzig: 0, mdx: 6 };
       case 'SPEAKING': {
         const env = Math.sin(t * 8.5) * 0.6 + Math.sin(t * 4.1) * 0.4;
-        return { w: 26 - env * 1.2, h: 26 + env * 6, r: 9, dx: 0, dy: -env * 1.6, skew: -0.05, dim: 1 };
+        return { w: 26 - env * 1.2, h: 26 + env * 6, r: 9, dx: 0, dy: -env * 1.6, skew: -0.05, dim: 1,
+                 mw: 13 - env * 1.5, mopen: 3.5 + env * 3, mcurve: 1, mtilt: 0, mzig: 0, mdx: 0 };
       }
       case 'ERROR':
-        return { w: 28, h: 11 + pop * 4, r: 3, dx: 0, dy: 1, skew: 0.55, dim: 1 };
+        return { w: 28, h: 11 + pop * 4, r: 3, dx: 0, dy: 1, skew: 0.55, dim: 1,
+                 mw: 18, mopen: 0, mcurve: -1, mtilt: 0, mzig: 1.5, mdx: 0 };
       default:
-        return { w: 26, h: 30, r: 9, dx: 0, dy: 0, skew: 0, dim: 1 };
+        return { w: 26, h: 30, r: 9, dx: 0, dy: 0, skew: 0, dim: 1,
+                 mw: 14, mopen: 0, mcurve: 3, mtilt: 0, mzig: 0, mdx: 0 };
     }
   }
 
@@ -125,7 +139,7 @@ class OrioEyes {
     this.raf = requestAnimationFrame(this.loop);
   };
 
-  // pixel rounded rect with per-row horizontal slant
+  // rounded rect with per-row horizontal slant, in canvas pixels (skew is a per-row ratio, so scale-free)
   blob(cx, cy, w, h, r, skew, color) {
     const ctx = this.ctx;
     w = Math.max(2, Math.round(w)); h = Math.max(1, Math.round(h));
@@ -141,6 +155,30 @@ class OrioEyes {
     }
   }
 
+  // mouth: a 2-unit stroke bent by curve / tilt / zigzag and parted into a lens by `open`
+  // (widest at the middle, closed at the corners), thinning along a circle into round corners.
+  // cx/cy are canvas pixels, shape args are units, s = pixels per unit.
+  mouth(s, cx, cy, w, open, curve, tilt, zig, color) {
+    const ctx = this.ctx;
+    w = Math.max(2, Math.round(w * s));
+    const x0 = Math.round(cx - w / 2);
+    ctx.fillStyle = color;
+    let prev = null;
+    for (let col = 0; col < w; col++) {
+      const u = (col + 0.5) / w * 2 - 1;                     // -1 left corner … +1 right corner
+      const ph = ((col / s) % 6) / 6, tri = Math.abs(ph * 4 - 2) - 1;
+      const yc = cy + (curve * (0.5 - u * u) - tilt * u + zig * tri) * s;
+      const half = Math.max(0, open) / 2 * Math.sqrt(Math.max(0, 1 - u * u)) * s;
+      // span back to the previous column's centre too, so steep slopes stay one unbroken stroke
+      const lo = prev === null ? yc : Math.min(yc, prev), hi = prev === null ? yc : Math.max(yc, prev);
+      const d = Math.min(col, w - 1 - col) + 0.5;              // px from the nearest corner
+      const stroke = d < s ? Math.sqrt(Math.max(0, s * s - (s - d) * (s - d))) : s;
+      const top = Math.round(lo - stroke - half), bot = Math.round(hi + stroke + half);
+      ctx.fillRect(x0 + col, top, 1, Math.max(1, bot - top));
+      prev = yc;
+    }
+  }
+
   draw(t) {
     const ctx = this.ctx;
     const W = this.cv.width, H = this.cv.height;
@@ -148,10 +186,10 @@ class OrioEyes {
     const tg = this.targets(st, t);
     const g = this.g, k = 0.16;
 
-    for (const key of ['w', 'h', 'r', 'dx', 'dy', 'skew', 'dim']) g[key] = lerp(g[key], tg[key], k);
+    for (const key in g) g[key] = lerp(g[key], tg[key], k);
     this.mic = lerp(this.mic, st === 'LISTENING' ? Math.abs(Math.sin(t * 3.1) * 0.6 + Math.sin(t * 7.9) * 0.4) : 0, 0.18);
 
-    const target = hex2rgb((HUE[st] || HUE.IDLE).main);
+    const target = hex2rgb(this.fixedColor || (HUE[st] || HUE.IDLE).main);
     for (let i = 0; i < 3; i++) this.col[i] = lerp(this.col[i], target[i], 0.1);
 
     // blinks + occasional wink (idle family only)
@@ -173,30 +211,30 @@ class OrioEyes {
     ctx.fillStyle = '#07070b';
     ctx.fillRect(0, 0, W, H);
 
-    const cy = H / 2, gapHalf = 20;
+    // unit space -> canvas pixels: uniform scale to fit, centred
+    const s = Math.min(W / 128, H / 72);
+    const px = (ux) => W / 2 + ux * s, py = (uy) => H / 2 + uy * s;
+
+    // eyes sit a little above centre to leave room for the mouth below
+    const eyeY = -5, gapHalf = 20;
     const jitter = st === 'ERROR' && Math.random() < 0.22 ? Math.round(Math.random() * 3 - 1.5) : 0;
+    const color = rgbStr(this.col, g.dim);
+    const sty = STYLES[this.style] || STYLES.plain, border = sty.eyeBorder;
+    const borderColor = rgbStr(sty.eyeBorderColor.map(c => c * g.dim));
 
     for (let i = 0; i < 2; i++) {
       const lid = blink * (i === winkEye ? wink : 1);
       const h = Math.max(2, g.h * lid);
-      const cx = (i === 0 ? -gapHalf : gapHalf) + W / 2 + g.dx + jitter;
       const skew = g.skew * (i === 0 ? 1 : -1);
-      // single crisp silhouette — the phosphor glow is a CSS drop-shadow on the canvas
-      this.blob(cx, cy + g.dy, g.w, h, g.r, skew, rgbStr(this.col, g.dim));
-      // top-left specular pixel — retro shine, keeps blobs from reading flat
-      if (h > 8 && g.dim > 0.7) {
-        ctx.fillStyle = 'rgba(255,255,255,.5)';
-        const sx = Math.round(cx - g.w / 2 + g.r * 0.8 + skew * h / 3);
-        ctx.fillRect(sx, Math.round(cy + g.dy - h / 2 + 3), 2, 2);
-      }
+      const cx = px((i === 0 ? -gapHalf : gapHalf) + g.dx + jitter), cy = py(eyeY + g.dy);
+      // ring: the same blob grown by `border` on every side, with the eye drawn on top
+      if (border > 0) this.blob(cx, cy, (g.w + 2 * border) * s, (h + 2 * border) * s, (g.r + border) * s, skew, borderColor);
+      this.blob(cx, cy, g.w * s, h * s, g.r * s, skew, color);
     }
 
-    if (st === 'ERROR' && Math.random() < 0.3) {
-      const y = Math.floor(Math.random() * (H - 10)), hh = 4 + Math.floor(Math.random() * 6);
-      const slice = ctx.getImageData(0, y, W, hh);
-      ctx.fillStyle = '#07070b'; ctx.fillRect(0, y, W, hh);
-      ctx.putImageData(slice, Math.round(Math.random() * 10 - 5), y);
-    }
+    // mouth follows the eyes at reduced parallax, so the face moves as one but reads as having depth
+    this.mouth(s, px(g.dx * 0.6 + g.mdx + jitter), py(21 + g.dy * 0.4),
+               g.mw, g.mopen, g.mcurve, g.mtilt, g.mzig, color);
   }
 }
 
@@ -208,8 +246,8 @@ window.orioEyes = eyes;
 const chips = document.getElementById('chips');
 const buttons = STATES.map(s => {
   const b = document.createElement('button');
-  b.style.cssText = "cursor:pointer;appearance:none;font-family:'Press Start 2P',monospace;font-size:9px;letter-spacing:.5px;padding:12px 8px;text-align:left;border:1px solid #242739;background:transparent;color:" + HUE[s.name].main + ";";
-  b.innerHTML = '<div style="display:flex;align-items:center;gap:6px;"><span style="width:6px;height:6px;background:' + HUE[s.name].main + ';display:inline-block;"></span><span>' + s.key + '</span></div><div style="margin-top:8px;">' + s.name + '</div>';
+  b.style.cssText = "cursor:pointer;appearance:none;font-family:inherit;font-size:12px;font-weight:600;padding:12px 10px;text-align:left;border:1px solid #242739;border-radius:8px;background:transparent;color:" + HUE[s.name].main + ";";
+  b.innerHTML = '<div style="display:flex;align-items:center;gap:6px;"><span style="width:8px;height:8px;border-radius:50%;background:' + HUE[s.name].main + ';display:inline-block;"></span><span>' + s.key + '</span></div><div style="margin-top:8px;">' + s.name + '</div>';
   b.addEventListener('click', () => eyes.setState(s.name));
   chips.appendChild(b);
   return b;
@@ -219,7 +257,6 @@ function paintUI(name) {
   const h = HUE[name].main;
   document.getElementById('title').style.color = h;
   document.getElementById('readout').textContent = name + ' · ' + STATES.find(s => s.name === name).note;
-  canvas.style.filter = 'drop-shadow(0 0 3px ' + h + '80) drop-shadow(0 0 9px ' + h + '55)';
   buttons.forEach((b, i) => {
     const on = STATES[i].name === name;
     b.style.background = on ? 'rgba(255,255,255,.07)' : 'transparent';
@@ -233,6 +270,8 @@ paintUI('IDLE');
 window.addEventListener('keydown', e => {
   const s = STATES.find(s => s.key === e.key);
   if (s) eyes.setState(s.name);
+  if (e.key === 'o' || e.key === 'O') eyes.style = eyes.style === 'plain' ? 'outlined' : 'plain';
+  if (e.key === 'c' || e.key === 'C') eyes.fixedColor = eyes.fixedColor ? null : '#4ddbff';
 });
 </script>
 </body>

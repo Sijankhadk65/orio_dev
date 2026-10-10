@@ -54,5 +54,7 @@
   "ORIO_EYES_SIZE": "1024x600",
   "ORIO_EYES_FPS": "30",
   "ORIO_EYES_DEBUG": "0",
+  "ORIO_EYES_STYLE": "plain",
+  "ORIO_EYES_COLOR": "4ddbff",
   "ORIO_EYES_TRANSITION_MS": "400"
 }

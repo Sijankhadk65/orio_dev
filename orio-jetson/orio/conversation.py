@@ -317,6 +317,8 @@ def _start_eyes(fsm: StateMachine):
             fullscreen=config.EYES_FULLSCREEN,
             fps=config.EYES_FPS,
             debug=config.EYES_DEBUG,
+            style=config.EYES_STYLE,
+            color=config.EYES_COLOR,
         )
         eyes.start()
         return eyes

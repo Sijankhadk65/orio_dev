@@ -2,6 +2,7 @@
 
     ORIO_EYES_FULLSCREEN=0 uv run python tools/eyes_demo.py   # windowed (NoMachine)
     uv run python tools/eyes_demo.py                          # fullscreen panel
+    ORIO_EYES_STYLE=outlined uv run python tools/eyes_demo.py # a style variation
 
 Drives a real `StateMachine` through a representative sequence on a timer; the
 `EyesController` reacts exactly as it would to the live conversation loop. Ctrl-C
@@ -39,6 +40,8 @@ def main() -> None:
         fullscreen=config.EYES_FULLSCREEN,
         fps=config.EYES_FPS,
         debug=True,  # this is the eyeball-the-look tool; always show the overlay
+        style=config.EYES_STYLE,
+        color=config.EYES_COLOR,
     )
     eyes.start()
     print("Eyes demo — Ctrl-C to quit. Cycling states:")
