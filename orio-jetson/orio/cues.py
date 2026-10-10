@@ -174,6 +174,11 @@ class CoachVoice:
             self._pending = (text, time.monotonic())
             self._cond.notify()
 
+    def cancel(self) -> None:
+        """Drop the cue waiting to play, if any. One already playing finishes."""
+        with self._cond:
+            self._pending = None
+
     def _run(self) -> None:
         while True:
             with self._cond:

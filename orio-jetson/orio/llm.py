@@ -104,6 +104,7 @@ class Conversation:
         can_drive = bool(DRIVE_TOOL_NAMES & set(self._tools_by_name))
         self._system = SystemMessage(
             system_prompt + (config.DRIVE_PROMPT if can_drive else config.NO_DRIVE_PROMPT)
+            + (config.YOGA_PROMPT if "start_yoga" in self._tools_by_name else "")
         )
         self._history: list[BaseMessage] = []
 

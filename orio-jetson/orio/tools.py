@@ -32,6 +32,18 @@ log = logging.getLogger(__name__)
 
 _detector = None  # lazily-built ObjectDetector, shared across calls
 
+# What the movement tools answer while a yoga session runs. The robot is parked
+# for the session (see coaching.py) — nothing that turns a wheel or the head may
+# run under someone holding a pose in front of it.
+COACHING = ("Orio is coaching yoga right now and stays still while it does. "
+            "Stop the session first (stop_yoga) if they really want it to move.")
+
+
+def _parked() -> str | None:
+    from . import coaching
+
+    return COACHING if coaching.active() else None
+
 
 def get_detector():
     """The shared ObjectDetector (built on first use). Also used by
@@ -111,6 +123,8 @@ def what_do_you_see() -> str:
     down while looking, so this takes a few seconds and catches things above and
     below its normal eyeline, not just straight ahead.
     """
+    if (busy := _parked()) is not None:
+        return busy
     body = get_body()
     # Whenever Orio can drive, the picture comes from the avoidance thread's
     # latest frame, so each detection is paired with the depth taken with it.
@@ -162,6 +176,8 @@ def _seconds(value) -> float | None:
 
 
 def _drive(direction: str, seconds) -> str:
+    if (busy := _parked()) is not None:
+        return busy
     body = get_body()
     if body is None or not body.can_drive:
         return NO_WHEELS
@@ -229,16 +245,22 @@ def stop_moving() -> str:
     """Stop Orio's wheels right now. Takes no arguments.
 
     Use whenever asked to stop, halt, hold still, or wait. Safe to call at any
-    time, including when Orio is already stopped.
+    time, including when Orio is already stopped. Also ends a yoga session.
     """
+    from . import coaching
+
+    # "Stop" means stop everything: a model that reaches for this tool during
+    # yoga instead of stop_yoga must still end the session.
+    ended = coaching.stop()
+    note = f"stopped the {ended.pose.name} session; " if ended is not None else ""
     body = get_body()
     if body is None or not body.can_drive:
-        return NO_WHEELS
+        return note + NO_WHEELS
     try:
-        return body.stop()
+        return note + body.stop()
     except Exception as exc:
         log.exception("stop failed")
-        return f"the wheels didn't respond: {exc}"
+        return f"{note}the wheels didn't respond: {exc}"
 
 
 @tool
@@ -294,6 +316,8 @@ def look_around(direction: str) -> str:
     see the whole of what is over there, so it takes a few seconds. The head
     stays where you pointed it until Orio next drives, which straightens it out.
     """
+    if (busy := _parked()) is not None:
+        return busy
     body = get_body()
     if body is None or not body.can_look:
         return "Orio can't move its head right now"
@@ -330,6 +354,8 @@ def go_to(target: str) -> str:
     of the target, or not finding one at all. Don't call the move or turn tools
     to do this yourself; they cannot see where they are going.
     """
+    if (busy := _parked()) is not None:
+        return busy
     body = get_body()
     if body is None or not body.can_drive:
         return NO_WHEELS
@@ -352,6 +378,75 @@ def go_to(target: str) -> str:
         return f"something went wrong on the way: {exc}"
 
 
+# ── yoga ──────────────────────────────────────────────────────────────────────
+# The model starts and stops a session; everything inside one — watching,
+# correcting, praising — is coaching.py and yoga.py, deterministic, with the
+# model out of the loop.
+
+
+@tool
+def start_yoga(pose: str) -> str:
+    """Start coaching the person through one yoga pose, out loud.
+
+    Use when asked to do yoga, practise a pose, or for help with a yoga
+    position. `pose` is one of: "mountain", "warrior two", "tree". If they did
+    not say which, pick "mountain" for a beginner start, or ask.
+
+    Orio stays still and watches them through its camera, says how to get into
+    the pose, then gives spoken corrections one at a time and tells them when to
+    release. Its coach voice does all of that by itself after this returns, so
+    keep your own reply to a few words of encouragement — do not repeat the
+    instructions. Calling it again switches to another pose.
+    """
+    from . import coaching
+
+    key = coaching.resolve_pose(pose)
+    if key is None:
+        return (f"Orio doesn't know a {pose!r} pose yet — it can coach mountain, "
+                "warrior two and tree")
+    try:
+        session = coaching.start(key)
+    except Exception as exc:
+        log.exception("start_yoga(%r) failed", pose)
+        return f"couldn't start the yoga session: {exc}"
+    return (f"started coaching {session.pose.name} (hold {session.pose.hold_s:.0f} s); "
+            "the coach voice is giving the instructions now")
+
+
+@tool
+def stop_yoga() -> str:
+    """End the yoga session now. Takes no arguments.
+
+    Use when they want to stop, finish, or take a break from yoga — and ALWAYS
+    straight away if they say anything hurts, feels wrong, or they feel dizzy;
+    then tell them to come out of the pose gently and that stopping is fine.
+    """
+    from . import coaching
+
+    session = coaching.stop()
+    return f"stopped the {session.pose.name} session" if session else "no yoga session was running"
+
+
+@tool
+def yoga_status() -> str:
+    """How the current yoga session is going. Takes no arguments.
+
+    Use when asked during yoga how they are doing, how long is left, or which
+    pose this is.
+    """
+    from . import coaching
+
+    session = coaching.current()
+    if session is None:
+        return "no yoga session has been started"
+    if session.error:
+        return f"the yoga session stopped with an error: {session.error}"
+    return session.status()
+
+
+YOGA_TOOLS = [start_yoga, stop_yoga, yoga_status]
+
+
 # The drive half of the tool set, by name. llm.py picks the movement half of
 # the system prompt from whether these actually bound this run, so Orio's claim
 # about being able to move always matches the tools it really has.
@@ -366,7 +461,12 @@ DRIVE_TOOL_NAMES = frozenset(t.name for t in DRIVE_TOOLS)
 # sounds like stalling — the system prompt says the same thing, but a small
 # model generalizes the announce rule across every tool it has, so the split is
 # enforced here too rather than left to the wording.
-SILENT_TOOL_NAMES = frozenset({search_knowledge_base.name})
+SILENT_TOOL_NAMES = frozenset({
+    search_knowledge_base.name,
+    # Instant, and start_yoga's coach voice does the talking: an announcement
+    # first would be Orio saying the same thing twice.
+    start_yoga.name, stop_yoga.name, yoga_status.name,
+})
 
 
 def get_tools() -> list:
@@ -396,12 +496,16 @@ def get_tools() -> list:
         log.warning("vision tool unavailable (%s); Orio runs without it", exc)
         return tools
     tools.append(what_do_you_see)
+    tools.extend(YOGA_TOOLS)  # same deps as vision: the camera and ultralytics
     return tools
 
 
 def close_tools() -> None:
     """Release any held hardware (camera). Call on shutdown."""
     global _detector
+    from . import coaching
+
+    coaching.shutdown()  # before the camera goes: the session reads it
     if _detector is not None:
         _detector.close()
         _detector = None

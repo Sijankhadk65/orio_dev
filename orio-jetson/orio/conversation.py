@@ -19,6 +19,7 @@ from __future__ import annotations
 import sys
 
 from . import body
+from . import coaching
 from . import config
 from .fsm import State, StateMachine
 from .llm import TURN_BREAK, Conversation, LLMUnavailable
@@ -87,6 +88,28 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
     print()
 
     say()
+
+
+def _yoga_guard(tts: TTS, fsm: StateMachine, text: str) -> bool:
+    """Stop a running yoga session on "stop" or any mention of pain.
+
+    Runs BEFORE the LLM and answers with a fixed line, so ending a session
+    never depends on the model picking the right tool — least of all when
+    someone says it hurts. Returns True when it handled the utterance, which
+    then does not go to the model at all.
+    """
+    if not coaching.active():
+        return False
+    kind = coaching.classify(text)
+    if kind is None:
+        return False
+    coaching.stop()
+    line = coaching.HURT_LINE if kind == "hurt" else coaching.STOPPED_LINE
+    fsm.to(State.THINKING)
+    fsm.to(State.SPEAKING)
+    print(f"orio › {line}")
+    tts.speak(line)
+    return True
 
 
 def _make_waker(stt):
@@ -198,7 +221,14 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
 
             if _is_stop(text):
                 return
-            _handle_turn(convo, tts, fsm, text)
+            if not _yoga_guard(tts, fsm, text):
+                _handle_turn(convo, tts, fsm, text)
+            if gated and coaching.active():
+                # No follow-up window during yoga: the coach is silent while
+                # Orio listens (see coaching.py), and 8 s of listening after
+                # every answer would be 8 s of no corrections. "Hey Orio"
+                # still works whenever they want to talk.
+                break
 
 
 def _run_text(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
@@ -214,7 +244,8 @@ def _run_text(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
             continue
         if _is_stop(line):
             return
-        _handle_turn(convo, tts, fsm, line)
+        if not _yoga_guard(tts, fsm, line):
+            _handle_turn(convo, tts, fsm, line)
 
 
 def run() -> None:
@@ -239,6 +270,7 @@ def run() -> None:
 
         tts = get_tts()
         fsm = StateMachine()  # single source of truth for what Orio is doing
+        coaching.configure(tts, fsm)  # yoga sessions speak, and keep quiet, by these
 
         eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
         vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
