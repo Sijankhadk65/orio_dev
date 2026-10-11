@@ -478,6 +478,21 @@ UNSUPPORTED_COMMANDS = {
 }
 
 
+def _coaching() -> str | None:
+    """Why the app may not move Orio right now, or None.
+
+    A yoga session parks the robot: someone is holding a pose in front of it,
+    maybe with their eyes closed. Voice is held to that by the LLM tools'
+    guard (tools.py); the app drives `Body` directly, so it is held to it here.
+    """
+    from . import coaching
+
+    if not coaching.active():
+        return None
+    return ("Orio is coaching yoga and stays still until the session ends — "
+            "press stop, or say \"Hey Orio, stop\"")
+
+
 class _Cancelled(Exception):
     """An app go_to that was stopped, or whose wheels were taken by something else."""
 
@@ -599,6 +614,11 @@ class _Stick:
                 if wait_centre:
                     continue
                 if cruise is None:
+                    why = _coaching()
+                    if why is not None:
+                        telemetry.event("blocked", why)
+                        wait_centre = True  # once per push, not once per position
+                        continue
                     cruise = self._cruise = body.cruise()
                     want = self._latest()  # starting can take a while; the thumb may have lifted
                     if want is None:
@@ -651,13 +671,24 @@ class RobotControl:
             return False, UNSUPPORTED_COMMANDS[name]
         if name not in ("stop", "go_to"):
             return False, f"unknown command {name!r}"
+        if name == "stop":
+            # "Stop" means stop everything, as the voice stop_moving does: a
+            # yoga session too, even on a robot whose wheels are not connected.
+            from . import coaching
+
+            ended = coaching.stop()
+            note = f"ended the {ended.pose.name} session; " if ended is not None else ""
+            body = self._get_body()
+            if body is None or not body.can_drive:
+                return ended is not None, note + NO_WHEELS
+            self._cancel(wait=False)
+            text = body.stop()
+            return text == "stopped", note + text
+        if (why := _coaching()) is not None:
+            return False, why
         body = self._get_body()
         if body is None or not body.can_drive:
             return False, NO_WHEELS
-        if name == "stop":
-            self._cancel(wait=False)
-            text = body.stop()
-            return text == "stopped", text
         return self._go_to(body, target)
 
     def drive(self, x: float, y: float) -> None:
