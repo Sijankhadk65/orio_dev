@@ -941,6 +941,7 @@ dependencies = [
     { name = "sqlite-vec" },
     { name = "ultralytics" },
     { name = "vl53l5cx-ctypes" },
+    { name = "websockets" },
 ]
 
 [package.metadata]
@@ -960,6 +961,7 @@ requires-dist = [
     { name = "sqlite-vec", specifier = ">=0.1.9" },
     { name = "ultralytics", specifier = ">=8.4.115" },
     { name = "vl53l5cx-ctypes", specifier = ">=0.0.3" },
+    { name = "websockets", specifier = ">=17" },
 ]
 
 [[package]]

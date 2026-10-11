@@ -21,6 +21,7 @@ import sys
 from . import body
 from . import coaching
 from . import config
+from . import telemetry
 from .fsm import State, StateMachine
 from .llm import TURN_BREAK, Conversation, LLMUnavailable
 from .tts import TTS, get_tts
@@ -44,7 +45,8 @@ def _is_stop(text: str) -> bool:
     return t in STOP_PHRASES
 
 
-def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) -> bool:
+def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str,
+                 heard: bool = True) -> bool:
     """Generate (THINKING) then speak (SPEAKING) a reply to `user`.
 
     A reply that uses a tool arrives in segments split by `TURN_BREAK` (see
@@ -58,7 +60,13 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
     resting state (LISTENING follow-up, ASLEEP, or IDLE); on an LLM failure it
     recovers through ERROR back to IDLE itself. Returns whether the model
     answered at all.
+
+    `heard=False` keeps `user` out of the app's transcript, for turns whose
+    input is not something a person said: the yoga coach's camera updates.
+    What Orio says back is reported either way, because it is said aloud.
     """
+    if heard:
+        telemetry.heard(user)
     fsm.to(State.THINKING)
     print("orio › ", end="", flush=True)
     segment: list[str] = []
@@ -69,6 +77,7 @@ def _handle_turn(convo: Conversation, tts: TTS, fsm: StateMachine, user: str) ->
         segment.clear()
         fsm.to(State.SPEAKING)  # entered even when silent, so the turn always ends here
         if text:
+            telemetry.said(text)
             tts.speak(text)
 
     try:
@@ -114,12 +123,14 @@ def _yoga_guard(convo: Conversation, tts: TTS, fsm: StateMachine, text: str) -> 
                 "fine, and to see a professional if the pain lasts. No medical advice.]")
     else:
         note = f"[The {pose} session has already been stopped, as they asked.]"
-    if _handle_turn(convo, tts, fsm, f"{text}\n{note}"):
+    telemetry.heard(text)  # what they said, without the note added for the model
+    if _handle_turn(convo, tts, fsm, f"{text}\n{note}", heard=False):
         return True
     line = coaching.HURT_LINE if kind == "hurt" else coaching.STOPPED_LINE
     fsm.to(State.THINKING)
     fsm.to(State.SPEAKING)
     print(f"orio › {line}")
+    telemetry.said(line)
     tts.speak(line)
     return True
 
@@ -205,11 +216,14 @@ def _run_voice(convo: Conversation, tts: TTS, fsm: StateMachine) -> None:
                 held = True
                 pending = woke
                 print("\r" + " " * 40 + "\r", end="")  # clear the asleep line
+                telemetry.wake(waker.label)
                 fsm.to(State.LISTENING)  # hearing the wake word is itself a listen
                 if not pending and cue is not None:
                     # They stopped after "Hey Orio" and are waiting to be heard. A
                     # command run on from the wake word gets no "Hmm?" — it's said.
-                    cue.play()
+                    phrase = cue.play()
+                    if phrase:
+                        telemetry.said(phrase)
             if not _awake(convo, tts, fsm, stt, gated, pending):
                 return
     finally:
@@ -307,11 +321,14 @@ def run() -> None:
         tts = get_tts()
         fsm = StateMachine()  # single source of truth for what Orio is doing
         # The yoga coach speaks by taking turns in this same conversation.
-        coaching.configure(fsm, lambda text: _handle_turn(convo, tts, fsm, text))
+        # Its camera updates are not something a person said, so they stay out
+        # of the app's transcript; what Orio says back still goes in.
+        coaching.configure(fsm, lambda text: _handle_turn(convo, tts, fsm, text, heard=False))
 
         eyes = _start_eyes(fsm)  # animated face, if enabled and a display is present
         vision_debug = _start_vision_debug()  # camera+detection preview, if enabled
         yoga_debug = _start_yoga_debug()  # pose + coaching view, if enabled
+        app_server = _start_app_server(fsm)  # the orio-app's window onto all this
 
         try:
             if config.INPUT_MODE == "voice":
@@ -321,6 +338,8 @@ def run() -> None:
         except KeyboardInterrupt:
             pass
         finally:
+            if app_server is not None:
+                app_server.stop()
             if eyes is not None:
                 eyes.stop()
             if vision_debug is not None:
@@ -345,6 +364,23 @@ def _start_body() -> None:
     """
     for note in body.start().notes:
         print(f"  {note}")
+
+
+def _start_app_server(fsm: StateMachine):
+    """Start the app's WebSocket (orio/server.py) if enabled; return it (or None).
+
+    Never raises, and nothing else waits on it: the app watches the robot, it
+    does not run it, so a port that will not bind only costs the app its view.
+    """
+    try:
+        from .server import start
+
+        server, note = start(fsm)
+    except Exception as exc:  # missing websockets, etc.
+        print(f"⚠ app server disabled: {exc}")
+        return None
+    print(f"  {note}")
+    return server
 
 
 def _start_vision_debug():

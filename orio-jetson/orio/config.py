@@ -1405,6 +1405,48 @@ EYES_DEBUG = _env("ORIO_EYES_DEBUG", "0").strip().lower() not in (
     "0", "false", "no", "off", ""
 )
 
+# ── App server (orio/server.py, docs/app-protocol.md) ─────────────────────────
+# The WebSocket the orio-app connects to. A development window onto the robot,
+# never its controller: nothing on the robot waits for it, and a client that
+# drops costs the robot nothing. On by default so the app can find a running
+# robot; ORIO_APP_SERVER=0 turns it off. The app's profiles default to port 8765
+# at /ws — change both sides together.
+APP_SERVER_ENABLED = _env("ORIO_APP_SERVER", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+APP_HOST = _env("ORIO_APP_HOST", "0.0.0.0")
+APP_PORT = int(_env("ORIO_APP_PORT", "8765"))
+APP_PATH = _env("ORIO_APP_PATH", "/ws")
+
+# Shared secret the app sends in its hello. Read from .env only, like the API
+# keys, so it can't end up committed. Unset = every client is accepted, with a
+# warning at startup — fine on a trusted LAN while Phase 2 is read-only, and
+# the thing Phase 4 closes before any command or drive message is accepted.
+APP_TOKEN = os.environ.get("ORIO_APP_TOKEN", "")
+
+# Status rate (the app calls the link stale after 1.5 s without one), and how
+# many conversation lines a newly connected app is sent to catch up.
+APP_STATUS_HZ = float(_env("ORIO_APP_STATUS_HZ", "5"))
+APP_TRANSCRIPT_BACKLOG = int(_env("ORIO_APP_TRANSCRIPT_BACKLOG", "50"))
+
+# Camera view for the app: JPEG frames over the same WebSocket, the plan's
+# fallback ahead of WebRTC (Phase 7). Encoded on the CPU — the Orin Nano has no
+# hardware encoder — but only while an app is actually watching, once per frame
+# however many apps are, and never faster than ORIO_APP_VIDEO_FPS. A viewer that
+# can't keep up skips frames rather than queueing them. If avoidance slows while
+# someone watches, lower the fps or width before anything else.
+APP_VIDEO_ENABLED = _env("ORIO_APP_VIDEO", "1").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+APP_VIDEO_FPS = float(_env("ORIO_APP_VIDEO_FPS", "10"))
+APP_VIDEO_WIDTH = int(_env("ORIO_APP_VIDEO_WIDTH", "640"))   # height keeps the camera's aspect
+APP_VIDEO_QUALITY = int(_env("ORIO_APP_VIDEO_QUALITY", "60"))  # JPEG, 1..100
+
+# Joystick deadman: the app sends `drive` ~10 Hz while the stick is held, so a
+# gap this long means the thumb, the phone or the link is gone, and the server
+# drives the robot to (0, 0). A disconnect mid-drive stops it at once.
+APP_DRIVE_DEADMAN_S = float(_env("ORIO_APP_DRIVE_DEADMAN_S", "0.3"))
+
 
 
 # ── Scope / persona ──────────────────────────────────────────────────────────

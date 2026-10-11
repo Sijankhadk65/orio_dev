@@ -28,6 +28,7 @@ dependencies = [
     # 2.1.x requires numpy>=2 on Python 3.12, which the system cv2 cannot load,
     # and pulls in opencv-python, pygame, av and pynput. 2.0.18 has no deps.
     "pyorbbecsdk2==2.0.18",
+    "websockets>=17",
 ]
 
 [tool.uv]

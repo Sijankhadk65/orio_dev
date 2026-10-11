@@ -466,6 +466,61 @@ class Body:
             return None, None
         return self._sensor.snapshot()
 
+    def telemetry(self) -> dict:
+        """What the body is doing and how its parts are, for the app's status.
+
+        Read-only and lock-free on purpose: it is polled from the app server's
+        thread several times a second, and must never queue behind a drive
+        tick. Each field is one attribute read, so the worst a race costs is a
+        field one tick old. Shapes follow `docs/app-protocol.md`.
+        """
+        sensors: dict[str, dict] = {}
+
+        sensor = self._sensor
+        reading = sensor.reading if sensor is not None else None
+        if sensor is None:
+            sensors["camera"] = {"ok": False, "detail": "not open"}
+        elif reading is None:
+            sensors["camera"] = {"ok": False, "detail": "no reading yet"}
+        elif reading.error:
+            sensors["camera"] = {"ok": False, "detail": reading.error}
+        else:
+            age = time.monotonic() - reading.timestamp
+            ok = age <= config.AVOID_STALE_S
+            sensors["camera"] = {"ok": ok, "detail": f"Gemini 336L · {age * 1000:.0f} ms old"}
+
+        if config.TOF_ENABLED and sensor is not None:
+            names = sensor.tof_names
+            sensors["tof"] = {
+                "ok": bool(names) and not sensor.tof_error,
+                "detail": sensor.tof_error or ", ".join(names) or "no sensors",
+            }
+
+        heading = self._heading()
+        if self._attitude.reader is None:
+            sensors["imu"] = {"ok": False, "detail": "not open"}
+        else:
+            sensors["imu"] = {"ok": heading is not None,
+                              "detail": "BNO085" if heading is not None else "stale"}
+
+        drive = self._drive
+        sensors["drivetrain"] = {"ok": drive is not None,
+                                 "detail": str(drive.identity) if drive is not None else "not open"}
+        sensors["neck"] = {"ok": self._neck is not None,
+                           "detail": "holding pose" if self._neck is not None else "not open"}
+
+        cruise = self._cruise
+        direction = cruise.direction if cruise is not None else None
+        return {
+            "behaviour": "cruise" if cruise is not None else "idle",
+            "behaviour_detail": direction or "",
+            "heading_deg": heading,
+            "speed_percent": self.speed_percent,
+            "can_drive": self.can_drive,
+            "sensors": sensors,
+            "sectors": [d for _angle, d in reading.sectors] if reading is not None else [],
+        }
+
     def _blind(self, reading) -> str | None:
         """Why this reading cannot be driven on, or None if it can.
 

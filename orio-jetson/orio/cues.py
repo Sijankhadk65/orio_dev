@@ -125,13 +125,16 @@ class ListenCue:
             for phrase in self._phrases:
                 self._cache.clip(phrase)
 
-    def play(self) -> None:
-        """Play a cue and block until it has finished."""
+    def play(self) -> str | None:
+        """Play a cue and block until it has finished; return what was said."""
         if not self.enabled:
-            return
-        audio = self._cache.clip(random.choice(self._phrases))
-        if audio is not None:
-            self._cache.play(audio)
+            return None
+        phrase = random.choice(self._phrases)
+        audio = self._cache.clip(phrase)
+        if audio is None:
+            return None
+        self._cache.play(audio)
+        return phrase
 
 
 class CoachVoice:
