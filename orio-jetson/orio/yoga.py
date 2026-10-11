@@ -1,0 +1,808 @@
+"""Yoga poses, and the perception that coaches them: what is wrong, and when.
+
+Two halves, and only one of them is here. What is WRONG is decided by fixed
+rules over measured body geometry, never by a model guessing — each pose is a
+list of checks in priority order (legs before torso before arms, because a
+correction to the foundation often fixes what sits on it), and the first one
+that fails is the one worth mentioning. WHAT TO SAY about it is the LLM's job
+(coaching.py): a `Cue` carries the measurement as plain facts plus a correct
+teaching cue as a hint, and the model turns that into speech that fits the
+person and the conversation so far — not the same sentence on repeat.
+
+`Framer` comes first: no pose is coached until the person is fully in shot,
+centred, at a workable distance and facing the camera. `Coach` then watches the
+pose itself.
+
+## Measured in 2-D, guarded by depth
+
+Every angle here is taken in the picture (pose.py's `deg_2d`), which is honest
+only when the limbs lie flat to the camera. On the robot the 3-D angles were
+worse, not better: a straight standing knee read 136 deg, from depth samples
+that slid off a thin limb onto the floor beside it. So each pose names the view
+that keeps its joints in the image plane (`view`), and depth does the job it is
+good at: checking the person is square to that view. Shoulder depths come from
+the torso, where the depth is solid. A body turned 20 deg away gets "turn
+toward me" before any angle is judged, because its angles would be wrong.
+
+## Sided poses
+
+Warrior II and Tree are done on either side. Joints in a check are written with
+`{lead}` and `{other}` (e.g. "{lead}_knee"), and the pose's `lead()` decides
+from the body which side that is — the bent knee, the standing leg. The choice
+is made while the person is getting into the pose and then held until they come
+out of it, so a wobble cannot swap which knee is being coached.
+
+## Not a physio
+
+The bands here are generous on purpose, and the cues only ever ask for small
+adjustments. Pain is not something the camera can see: whatever drives the
+session must stop on "it hurts", and say that coming out of a pose is always
+fine. Tree has one check that is about safety rather than form — a foot pressed
+on the side of the knee — and it outranks the rest.
+
+Pure logic: no camera, no speech, no threads. `Framer.update()` and
+`Coach.update()` take a Person per frame and return at most one Cue; the caller
+decides who says it and how.
+"""
+
+from __future__ import annotations
+
+import math
+import time
+from dataclasses import dataclass, field
+from typing import Callable
+
+import numpy as np
+
+from . import config
+from .pose import JOINTS, KP, Person, angle_at, framing
+
+OTHER = {"left": "right", "right": "left"}
+
+
+def _pt(person: Person, name: str) -> np.ndarray | None:
+    i = KP[name]
+    return person.xy[i] if person.seen(i) else None
+
+
+def _mid(person: Person, a: str, b: str) -> np.ndarray | None:
+    pa, pb = _pt(person, a), _pt(person, b)
+    return None if pa is None or pb is None else (pa + pb) / 2.0
+
+
+def _angle(person: Person, joint: str) -> float | None:
+    """2-D angle at a joint named like pose.JOINTS ("left_knee")."""
+    pts = [_pt(person, n) for n in JOINTS[joint]]
+    return None if any(p is None for p in pts) else angle_at(*pts)
+
+
+def _leg_len(person: Person, side: str) -> float | None:
+    """Hip-to-ankle length in pixels: the yardstick for vertical distances,
+    so they mean the same at 1.5 m and at 3 m."""
+    hip, knee, ankle = (_pt(person, f"{side}_{j}") for j in ("hip", "knee", "ankle"))
+    if hip is None or knee is None or ankle is None:
+        return None
+    return float(np.linalg.norm(knee - hip) + np.linalg.norm(ankle - knee))
+
+
+def _part(template: str, sides: dict, roles: dict) -> str:
+    """"{lead}_knee" -> "front knee (their left)"; "left_hip" -> "left hip".
+
+    Spoken-English names for a check's joints, for the facts handed to the LLM.
+    Roles (front/back, standing/lifted) are what a teacher would say; the side
+    in brackets is what the camera measured.
+    """
+    for slot in ("lead", "other"):
+        tag = "{" + slot + "}_"
+        if template.startswith(tag):
+            rest = template[len(tag):].replace("_", " ")
+            role = roles.get(slot)
+            side = sides[slot]
+            return f"{role} {rest} (their {side})" if role else f"{side} {rest}"
+    return template.replace("_", " ")
+
+
+# ── checks ────────────────────────────────────────────────────────────────────
+# A check measures one thing and says how far outside its band it is: `error()`
+# is 0 inside, negative below, positive above, in the measurement's own units.
+# `slack` is the hysteresis — how far past the band a measurement must go before
+# the check FAILS; it then passes again only once back inside the band. That gap
+# is what keeps a joint resting on a band edge from flickering right/wrong.
+#
+# `describe()` states a failing measurement as a plain fact for the LLM, which
+# decides how to say it; the check's own sentence (`cue()`) goes with it as a
+# teaching hint, so the model has a correct cue to build on and is not left to
+# invent the anatomy.
+
+
+@dataclass(frozen=True)
+class Angle:
+    """A joint angle (2-D, degrees, 180 = straight) within [low, high]."""
+
+    joint: str  # pose.JOINTS name; may use {lead}/{other}
+    low: float
+    high: float
+    below: str | None = None  # cue when the angle is under `low`
+    above: str | None = None  # cue when over `high`
+    slack: float = 4.0
+
+    @property
+    def key(self) -> str:
+        return self.joint
+
+    def measure(self, person: Person, sides: dict) -> float | None:
+        return _angle(person, self.joint.format(**sides))
+
+    def error(self, v: float) -> float:
+        return v - self.low if v < self.low else (v - self.high if v > self.high else 0.0)
+
+    def cue(self, err: float) -> str | None:
+        return self.below if err < 0 else self.above
+
+    def describe(self, v: float, err: float, sides: dict, roles: dict) -> str:
+        where = "below" if err < 0 else "above"
+        return (f"{_part(self.joint, sides, roles)} angle is {v:.0f} degrees, {where} the "
+                f"{self.low:.0f}-{self.high:.0f} range it should be in (180 is straight)")
+
+
+@dataclass(frozen=True)
+class Level:
+    """The line between two keypoints within `max_deg` of horizontal."""
+
+    a: str
+    b: str
+    max_deg: float
+    say: str
+    slack: float = 2.0
+
+    @property
+    def key(self) -> str:
+        return f"level:{self.a}-{self.b}"
+
+    def measure(self, person: Person, sides: dict) -> float | None:
+        pa, pb = _pt(person, self.a.format(**sides)), _pt(person, self.b.format(**sides))
+        if pa is None or pb is None:
+            return None
+        dx, dy = abs(pb[0] - pa[0]), abs(pb[1] - pa[1])
+        return math.degrees(math.atan2(dy, dx)) if dx or dy else None
+
+    def error(self, v: float) -> float:
+        return max(0.0, v - self.max_deg)
+
+    def cue(self, err: float) -> str | None:
+        return self.say
+
+    def describe(self, v: float, err: float, sides: dict, roles: dict) -> str:
+        a, b = _part(self.a, sides, roles), _part(self.b, sides, roles)
+        return f"the {a} and {b} are not level: tilted {v:.0f} degrees (should be under {self.max_deg:.0f})"
+
+
+@dataclass(frozen=True)
+class Upright:
+    """Hip midpoint to shoulder midpoint within `max_deg` of vertical."""
+
+    max_deg: float
+    say: str
+    slack: float = 2.0
+
+    @property
+    def key(self) -> str:
+        return "upright"
+
+    def measure(self, person: Person, sides: dict) -> float | None:
+        hips = _mid(person, "left_hip", "right_hip")
+        shoulders = _mid(person, "left_shoulder", "right_shoulder")
+        if hips is None or shoulders is None:
+            return None
+        dx, dy = shoulders[0] - hips[0], hips[1] - shoulders[1]  # image y points down
+        return math.degrees(math.atan2(abs(dx), dy)) if dy > 0 else 90.0
+
+    def error(self, v: float) -> float:
+        return max(0.0, v - self.max_deg)
+
+    def cue(self, err: float) -> str | None:
+        return self.say
+
+    def describe(self, v: float, err: float, sides: dict, roles: dict) -> str:
+        return f"the torso leans {v:.0f} degrees off vertical (should be under {self.max_deg:.0f})"
+
+
+@dataclass(frozen=True)
+class FootOffKnee:
+    """Tree's safety check: the lifted foot must not press on the standing knee.
+
+    Measures the vertical gap between the lifted ankle and the standing knee, in
+    leg lengths. Too small means the foot is on the joint, where sideways
+    pressure can hurt it — above or below is fine.
+    """
+
+    min_gap: float = 0.1
+    say: str = "Move your foot off your knee. Rest it above or below the knee, never on it."
+    slack: float = 0.02
+
+    @property
+    def key(self) -> str:
+        return "foot-off-knee"
+
+    def measure(self, person: Person, sides: dict) -> float | None:
+        ankle = _pt(person, f"{sides['other']}_ankle")
+        knee = _pt(person, f"{sides['lead']}_knee")
+        leg = _leg_len(person, sides["lead"])
+        if ankle is None or knee is None or not leg:
+            return None
+        return abs(float(ankle[1] - knee[1])) / leg
+
+    def error(self, v: float) -> float:
+        return min(0.0, v - self.min_gap)  # negative = too close
+
+    def cue(self, err: float) -> str | None:
+        return self.say
+
+    def describe(self, v: float, err: float, sides: dict, roles: dict) -> str:
+        return ("SAFETY: the lifted foot is pressing on the side of the standing knee "
+                "joint, which can strain it — it belongs above or below the knee")
+
+
+# ── poses ─────────────────────────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class YogaPose:
+    name: str
+    view: str  # "front": the person faces the camera
+    how_to: str  # spoken to get them into it
+    checks: tuple
+    entered: Callable[[Person, dict], bool]  # roughly in the pose at all?
+    lead: Callable[[Person], str | None] | None = None  # which side leads; None = symmetric
+    roles: dict = field(default_factory=dict)  # what to call {lead}/{other}: "front", "back"
+    hold_s: float = config.YOGA_HOLD_S
+
+
+def _mountain_entered(p: Person, sides: dict) -> bool:
+    knees = [_angle(p, f"{s}_knee") for s in ("left", "right")]
+    return all(k is not None and k > 150 for k in knees)
+
+
+def _warrior_lead(p: Person) -> str | None:
+    """The bent knee leads."""
+    left, right = _angle(p, "left_knee"), _angle(p, "right_knee")
+    if left is None or right is None:
+        return None
+    return "left" if left < right else "right"
+
+
+def _warrior_entered(p: Person, sides: dict) -> bool:
+    lead = _angle(p, f"{sides['lead']}_knee")
+    back = _angle(p, f"{sides['other']}_knee")
+    la, ra = _pt(p, "left_ankle"), _pt(p, "right_ankle")
+    ls, rs = _pt(p, "left_shoulder"), _pt(p, "right_shoulder")
+    if None in (lead, back) or any(x is None for x in (la, ra, ls, rs)):
+        return False
+    wide = abs(la[0] - ra[0]) > 1.5 * abs(ls[0] - rs[0])  # feet well past shoulder width
+    return lead < 145 and back > 140 and wide
+
+
+def _tree_lead(p: Person) -> str | None:
+    """The standing leg leads: its ankle is the lower one (image y grows down)."""
+    la, ra = _pt(p, "left_ankle"), _pt(p, "right_ankle")
+    if la is None or ra is None:
+        return None
+    return "left" if la[1] > ra[1] else "right"
+
+
+def _tree_entered(p: Person, sides: dict) -> bool:
+    stand = _pt(p, f"{sides['lead']}_ankle")
+    lifted = _pt(p, f"{sides['other']}_ankle")
+    leg = _leg_len(p, sides["lead"])
+    if stand is None or lifted is None or not leg:
+        return False
+    return (stand[1] - lifted[1]) > 0.15 * leg
+
+
+MOUNTAIN = YogaPose(
+    name="Mountain",
+    view="front",
+    how_to="Stand facing me with your feet together and your arms by your sides.",
+    checks=(
+        Angle("left_knee", 165, 180, below="Straighten your legs and stand tall."),
+        Angle("right_knee", 165, 180, below="Straighten your legs and stand tall."),
+        Upright(8, "Stand up straight, with your shoulders over your hips."),
+        Level("left_shoulder", "right_shoulder", 6, "Relax your shoulders so they sit level."),
+        Angle("left_shoulder", 0, 30, above="Let your arms rest down by your sides."),
+        Angle("right_shoulder", 0, 30, above="Let your arms rest down by your sides."),
+    ),
+    entered=_mountain_entered,
+)
+
+WARRIOR_II = YogaPose(
+    name="Warrior Two",
+    view="front",
+    how_to=("Face me and step your feet wide apart. Turn one foot out, bend that knee, "
+            "and stretch your arms out to the sides at shoulder height."),
+    checks=(
+        Angle("{lead}_knee", 80, 110,
+              below="Ease off your front knee a little, so it stays over your ankle.",
+              above="Bend your front knee deeper, toward a right angle."),
+        Angle("{other}_knee", 160, 180, below="Straighten your back leg."),
+        Upright(10, "Keep your body upright, don't lean over your front leg."),
+        Angle("left_shoulder", 75, 110, below="Lift your arms up to shoulder height.",
+              above="Lower your arms to shoulder height."),
+        Angle("right_shoulder", 75, 110, below="Lift your arms up to shoulder height.",
+              above="Lower your arms to shoulder height."),
+        Angle("left_elbow", 155, 180, below="Reach out through your fingertips and straighten your arms."),
+        Angle("right_elbow", 155, 180, below="Reach out through your fingertips and straighten your arms."),
+    ),
+    entered=_warrior_entered,
+    lead=_warrior_lead,
+    roles={"lead": "front", "other": "back"},
+)
+
+TREE = YogaPose(
+    name="Tree",
+    view="front",
+    how_to=("Face me and stand on one leg. Bend the other knee out to the side, and rest "
+            "that foot on your standing leg, above or below the knee."),
+    checks=(
+        FootOffKnee(),
+        Angle("{lead}_knee", 165, 180, below="Keep your standing leg straight and strong."),
+        Angle("{other}_knee", 0, 110, above="Bend your lifted knee more, and draw your foot higher."),
+        Level("left_hip", "right_hip", 8, "Keep your hips level."),
+        Upright(8, "Stand tall through your spine."),
+    ),
+    entered=_tree_entered,
+    lead=_tree_lead,
+    roles={"lead": "standing", "other": "lifted"},
+)
+
+POSES = {"mountain": MOUNTAIN, "warrior_ii": WARRIOR_II, "tree": TREE}
+
+
+# ── what the coach hands on ───────────────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class Cue:
+    """Something worth saying: the facts, plus a correct way to say them.
+
+    `detail` is the measurement in plain words — what the LLM is told and
+    phrases for itself on the robot. `text` is a correct teaching cue for it:
+    spoken as-is by the bench tool (pose_debug --speak), and handed to the LLM
+    as a hint, so it builds on a right cue instead of inventing the anatomy.
+    `key` names what the cue is about and `repeat` counts how many cues in a row
+    were about it, so a third "bend your knee" can be said a different way.
+    """
+
+    text: str
+    # "framing", "framed", "square", "prompt", "correction", "praise",
+    # "progress", "release", "left"
+    kind: str
+    detail: str = ""
+    key: str = ""
+    repeat: int = 1
+
+
+# Teaching cues that are not tied to one check. Kept here, not inline, so
+# `phrases()` can list every sentence the bench tool might speak.
+_NOT_SEEN = "I can't see you. Step in front of me."
+_STEP_BACK = "Step back a little so I can see all of you."
+_CLOSER = "Come a little closer to me."
+_MIDDLE = "Move toward the middle, where I can see you."
+_FRAMED = "Perfect, I can see all of you."
+_PRAISE = "That's it. Hold it there, and breathe."
+_HALFWAY = "Halfway there. Keep breathing."
+_RELEASE = "And release. Well done."
+_COME_BACK = "Come back into the pose when you're ready."
+_TURN = "Turn to face me. Bring your {far} shoulder toward me a little."
+
+
+def phrases(pose: YogaPose) -> list[str]:
+    """Every teaching cue a session for `pose` can produce."""
+    out = [pose.how_to, _NOT_SEEN, _STEP_BACK, _CLOSER, _MIDDLE, _FRAMED, _PRAISE,
+           _HALFWAY, _RELEASE, _COME_BACK]
+    if pose.view == "front":
+        out += [_TURN.format(far=side) for side in ("left", "right")]
+    for check in pose.checks:
+        for attr in ("below", "above", "say"):
+            text = getattr(check, attr, None)
+            if text:
+                out.append(text)
+    return list(dict.fromkeys(out))  # de-duplicated, order kept
+
+
+def _ema(old: float | None, new: float | None, dt: float, tau: float) -> float | None:
+    if new is None:
+        return None
+    if old is None or dt <= 0 or tau <= 0:
+        return new
+    return old + (1.0 - math.exp(-dt / tau)) * (new - old)
+
+
+def _shoulder_dz(person: Person) -> float | None:
+    """Left shoulder depth minus right, metres; positive = left is farther."""
+    if person.xyz is None:
+        return None
+    zl = person.xyz[KP["left_shoulder"], 2]
+    zr = person.xyz[KP["right_shoulder"], 2]
+    return float(zl - zr) if np.isfinite(zl) and np.isfinite(zr) else None
+
+
+def bearing_deg(centre_x: float, width: int) -> float:
+    """Degrees off straight ahead of a pixel column, negative = left of the
+    picture. Pinhole, over the camera's configured field of view."""
+    half = math.radians(config.STEREO_HFOV_DEG) / 2.0
+    return math.degrees(math.atan((2.0 * centre_x / width - 1.0) * math.tan(half)))
+
+
+# ── framing ───────────────────────────────────────────────────────────────────
+
+# How long the picture must stay good (s) before the person counts as framed,
+# and stay bad before they count as lost. The asymmetry is deliberate: being
+# declared framed starts the pose, so it should be earned; losing it stops the
+# coaching, so a moment's wobble out of shot should not.
+_FRAMED_S = 1.0
+_UNFRAMED_S = 2.0
+# A new framing problem must persist this long (s) before it is worth a word:
+# someone stepping back passes through "too close" and "feet cut off" on the way.
+_SETTLE_S = 1.0
+
+
+@dataclass
+class Framer:
+    """Gets the person properly into shot before any pose is coached.
+
+    Nothing about a pose can be judged from a body cut off at the knees, off at
+    the edge of the lens, or turned sideways, so a session starts here and only
+    moves on once the whole person is in view, near the middle, at a sensible
+    distance and (for a front-view pose) facing the camera, and has stayed that
+    way for `_FRAMED_S`. If that is lost for `_UNFRAMED_S` mid-pose, framing
+    starts again.
+
+    Emits a "framing" cue when the set of problems changes and settles, or as a
+    reminder every `remind_s` while it stays the same; one "framed" cue when it
+    is done. Each says everything wrong at once in `detail` — the LLM can take
+    on all of it in one sentence, which a fixed list of if/else phrases cannot.
+    """
+
+    view: str = "front"
+    centre_deg: float = config.YOGA_CENTRE_DEG
+    min_m: float = config.YOGA_MIN_DISTANCE_M
+    max_m: float = config.YOGA_MAX_DISTANCE_M
+    square_tol_m: float = config.YOGA_SQUARE_TOL_M
+    cue_interval_s: float = config.YOGA_CUE_INTERVAL_S
+    remind_s: float = config.YOGA_FRAMING_REMIND_S
+    smoothing_s: float = config.YOGA_SMOOTHING_S
+    clock: Callable[[], float] = time.monotonic
+
+    framed: bool = field(default=False, init=False)
+    issues: list = field(default_factory=list, init=False)  # [(code, words)], latest frame
+    bearing: float | None = field(default=None, init=False)
+    distance: float | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._last_t: float | None = None
+        self._dz: float | None = None
+        self._codes: tuple = ()
+        self._codes_since: float | None = None
+        self._said_codes: tuple | None = None
+        self._cue_t = -math.inf
+        self._good_since: float | None = None
+        self._bad_since: float | None = None
+        self.last_cue: Cue | None = None
+
+    def _issues(self, person: Person | None, width: int, height: int, dt: float) -> list:
+        if person is None:
+            self.bearing = self.distance = self._dz = None
+            return [("nobody", "nobody is in view of the camera")]
+        out = []
+        cut = framing(person, width, height)
+        if "head not visible" in cut or "cut off at the top" in cut:
+            out.append(("head", "their head is out of the picture"))
+        if "feet not visible" in cut or "cut off at the bottom" in cut:
+            out.append(("feet", "their feet are out of the picture"))
+        if "cut off at the side" in cut:
+            out.append(("edge", "part of them is cut off at the edge of the picture"))
+
+        x1, _, x2, _ = person.bbox
+        self.bearing = _ema(self.bearing, bearing_deg((x1 + x2) / 2.0, width), dt, self.smoothing_s)
+        if self.bearing is not None and abs(self.bearing) > self.centre_deg:
+            mine = "left" if self.bearing < 0 else "right"
+            theirs = "right" if self.bearing < 0 else "left"  # they face the camera
+            out.append(("off-centre",
+                        f"they stand {abs(self.bearing):.0f} degrees to the {mine} of straight "
+                        f"ahead in your view (their {theirs})"))
+
+        self.distance = _ema(self.distance, person.distance_m(), dt, self.smoothing_s)
+        if self.distance is not None:
+            if self.distance > self.max_m:
+                out.append(("far", f"they are {self.distance:.1f} m away; "
+                                   f"{self.min_m:.1f}-{self.max_m:.1f} m works best"))
+            elif self.distance < self.min_m:
+                out.append(("close", f"they are only {self.distance:.1f} m away; "
+                                     f"{self.min_m:.1f}-{self.max_m:.1f} m works best"))
+
+        if self.view == "front":
+            self._dz = _ema(self._dz, _shoulder_dz(person), dt, self.smoothing_s)
+            if self._dz is not None and abs(self._dz) > self.square_tol_m:
+                far = "left" if self._dz > 0 else "right"
+                out.append(("turned", f"their body is turned away: their {far} shoulder is "
+                                      f"{abs(self._dz):.2f} m farther from you than the other"))
+        return out
+
+    _HINTS = {"nobody": _NOT_SEEN, "head": _STEP_BACK, "feet": _STEP_BACK, "close": _STEP_BACK,
+              "edge": _MIDDLE, "off-centre": _MIDDLE, "far": _CLOSER}
+
+    def update(self, person: Person | None, width: int, height: int,
+               t: float | None = None) -> Cue | None:
+        t = self.clock() if t is None else t
+        dt = 0.0 if self._last_t is None else t - self._last_t
+        self._last_t = t
+        self.issues = self._issues(person, width, height, dt)
+        codes = tuple(code for code, _ in self.issues)
+
+        if not codes:
+            self._bad_since = None
+            if self._good_since is None:
+                self._good_since = t
+            if not self.framed and t - self._good_since >= _FRAMED_S:
+                self.framed = True
+                self._said_codes = None
+                where = f" at {self.distance:.1f} m" if self.distance is not None else ""
+                return self._cue(t, _FRAMED, "framed",
+                                 f"their whole body is in view, centred{where}", "framed")
+            return None
+
+        self._good_since = None
+        if self.framed:
+            if self._bad_since is None:
+                self._bad_since = t
+            if t - self._bad_since < _UNFRAMED_S:
+                return None  # a wobble out of shot, not a step out
+            self.framed = False
+        if codes != self._codes:
+            self._codes, self._codes_since = codes, t
+        settled = t - self._codes_since >= _SETTLE_S
+        new = codes != self._said_codes
+        remind = self._said_codes is not None and t - self._cue_t >= self.remind_s
+        if t - self._cue_t < self.cue_interval_s:
+            return None
+        if not ((new and settled) or remind):
+            return None
+        if self.issues[0][0] == "turned":
+            far = "left" if (self._dz or 0) > 0 else "right"
+            hint = _TURN.format(far=far)
+        else:
+            hint = self._HINTS.get(codes[0], _MIDDLE)
+        self._said_codes = codes
+        return self._cue(t, hint, "framing", "; ".join(w for _, w in self.issues), codes[0])
+
+    def _cue(self, t: float, text: str, kind: str, detail: str, key: str) -> Cue:
+        last = self.last_cue
+        repeat = last.repeat + 1 if last is not None and last.key == key else 1
+        self._cue_t = t
+        self.last_cue = Cue(text, kind, detail, key, repeat)
+        return self.last_cue
+
+
+# ── the coach ─────────────────────────────────────────────────────────────────
+
+# How long the pose must be held (s) before it counts as entered, and lost before
+# it counts as left. Both stop a single odd frame from changing the state.
+_ENTER_S = 0.5
+_EXIT_S = 1.5
+_PROMPT_S = 15.0  # waiting this long for them to get into the pose -> remind them
+
+
+@dataclass
+class _Track:
+    """One check's smoothed measurement and whether it is currently failing."""
+
+    value: float | None = None
+    failing: bool = False
+
+
+@dataclass
+class Coach:
+    """Watches one pose, frame by frame. `update()` returns a Cue, or None.
+
+    Framing is not its business — `Framer` gets the person into shot first, and
+    a frame without a usable person is simply skipped here, judging nothing.
+
+    States: "waiting" (not in the pose yet), "adjusting" (in it, something to
+    fix), "holding" (right, the hold timer is running), "done" (held long enough).
+    The hold timer pauses while adjusting rather than resetting — being told to
+    lift your arms should not cost you the ten seconds already held.
+    """
+
+    pose: YogaPose
+    cue_interval_s: float = config.YOGA_CUE_INTERVAL_S
+    smoothing_s: float = config.YOGA_SMOOTHING_S
+    square_tol_m: float = config.YOGA_SQUARE_TOL_M
+    clock: Callable[[], float] = time.monotonic
+
+    state: str = field(default="waiting", init=False)
+    held_s: float = field(default=0.0, init=False)
+    lead: str | None = field(default=None, init=False)
+    failing: str | None = field(default=None, init=False)  # what is being coached
+    last_cue: Cue | None = field(default=None, init=False)
+
+    def __post_init__(self) -> None:
+        self._tracks: dict[str, _Track] = {}
+        self._last_t: float | None = None
+        self._cue_t = -math.inf
+        self._entered_since: float | None = None
+        self._out_since: float | None = None
+        self._waiting_since: float | None = None
+        self._halfway_said = False
+
+    @property
+    def sides(self) -> dict:
+        lead = self.lead or "left"
+        return {"lead": lead, "other": OTHER[lead]}
+
+    # ── speaking ─────────────────────────────────────────────────────────────
+
+    def _say(self, t: float, text: str, kind: str, detail: str = "", key: str = "",
+             urgent: bool = False) -> Cue | None:
+        """A cue, if the interval since the last one allows it.
+
+        The same subject again waits twice as long: they are still working on
+        it. `urgent` cues (praise, release) only wait a short beat, so "that's
+        it" lands while they are still in the moment that earned it.
+        """
+        key = key or kind
+        last = self.last_cue
+        gap = t - self._cue_t
+        if urgent:
+            if gap < 1.0:
+                return None
+        else:
+            need = self.cue_interval_s
+            if last is not None and last.key == key:
+                need *= 2
+            if gap < need:
+                return None
+        repeat = last.repeat + 1 if last is not None and last.key == key else 1
+        self._cue_t = t
+        self.last_cue = Cue(text, kind, detail, key, repeat)
+        return self.last_cue
+
+    # ── measuring ────────────────────────────────────────────────────────────
+
+    def _smooth(self, key: str, raw: float | None, dt: float) -> _Track:
+        tr = self._tracks.setdefault(key, _Track())
+        if raw is None:
+            # Not seen: no judgement either way. Forget the value so a joint that
+            # reappears is judged on what it is now, not what it was.
+            tr.value, tr.failing = None, False
+        else:
+            tr.value = _ema(tr.value, raw, dt, self.smoothing_s)
+        return tr
+
+    def _judge(self, tr: _Track, err: float, slack: float) -> None:
+        if tr.failing:
+            tr.failing = err != 0.0
+        else:
+            tr.failing = abs(err) > slack
+
+    def _square(self, person: Person, dt: float) -> tuple[str, str] | None:
+        """(cue, detail) if the person is not facing the camera squarely."""
+        if self.pose.view != "front":
+            return None
+        tr = self._smooth("square", _shoulder_dz(person), dt)
+        if tr.value is None:
+            return None
+        err = max(0.0, abs(tr.value) - self.square_tol_m)
+        self._judge(tr, err, 0.03)
+        if not tr.failing:
+            return None
+        far = "left" if tr.value > 0 else "right"  # larger z = farther from the camera
+        return (_TURN.format(far=far),
+                f"their body has turned away from you: their {far} shoulder is "
+                f"{abs(tr.value):.2f} m farther than the other, so the angles can't be judged")
+
+    # ── the frame ────────────────────────────────────────────────────────────
+
+    def update(self, person: Person | None, width: int, height: int,
+               t: float | None = None) -> Cue | None:
+        t = self.clock() if t is None else t
+        dt = 0.0 if self._last_t is None else t - self._last_t
+        self._last_t = t
+        if self._waiting_since is None:
+            self._waiting_since = t
+        if self.state == "done" or person is None or framing(person, width, height):
+            return None
+
+        # Which side leads: re-decided only while out of the pose.
+        if self.state == "waiting" or self.lead is None:
+            self.lead = self.pose.lead(person) if self.pose.lead else "left"
+            if self.lead is None:
+                return None
+        sides = self.sides
+        roles = self.pose.roles
+
+        was = self.state
+        if not self._in_pose(person, sides, t):
+            self.failing = None
+            if was != "waiting":
+                # Urgent: it happens once, so a cue held back here is lost.
+                return self._say(t, _COME_BACK, "left",
+                                 f"they came out of the pose before the hold finished "
+                                 f"({self.held_s:.0f} of {self.pose.hold_s:.0f} s held)",
+                                 urgent=True)
+            if t - self._waiting_since >= _PROMPT_S and t - self._cue_t >= _PROMPT_S:
+                return self._say(t, self.pose.how_to, "prompt",
+                                 "they are not in the pose yet")
+            return None
+
+        turn = self._square(person, dt)
+        if turn is not None:
+            self.state, self.failing = "adjusting", "square"
+            return self._say(t, turn[0], "square", turn[1], "square")
+
+        for check in self.pose.checks:
+            tr = self._smooth(check.key, check.measure(person, sides), dt)
+            if tr.value is None:
+                continue
+            err = check.error(tr.value)
+            self._judge(tr, err, check.slack)
+            if tr.failing:
+                key = check.key.format(**sides)
+                self.state, self.failing = "adjusting", key
+                text = check.cue(err)
+                if not text:
+                    return None
+                return self._say(t, text, "correction",
+                                 check.describe(tr.value, err, sides, roles), key)
+
+        self.failing = None
+        hold = self.pose.hold_s
+        # Each of these only takes effect once its cue is actually out — a cue
+        # held back by the one-second beat is retried next frame, never lost,
+        # because "the hold has started" and "release" are the ones that matter.
+        if self.state != "holding":
+            cue = self._say(t, _PRAISE, "praise",
+                            f"every check is in range now; the {hold:.0f} s hold has "
+                            f"started ({self.held_s:.0f} s held so far)", urgent=True)
+            if cue is not None:
+                self.state = "holding"
+            return cue
+        self.held_s += dt
+        if self.held_s >= hold:
+            cue = self._say(t, _RELEASE, "release",
+                            f"they held the pose well for the full {hold:.0f} s — it is complete",
+                            urgent=True)
+            if cue is not None:
+                self.state = "done"
+            return cue
+        if not self._halfway_said and self.held_s >= hold / 2:
+            cue = self._say(t, _HALFWAY, "progress",
+                            f"held {self.held_s:.0f} of {hold:.0f} s, still in good form",
+                            urgent=True)
+            self._halfway_said = cue is not None
+            return cue
+        return None
+
+    def _in_pose(self, person: Person, sides: dict, t: float) -> bool:
+        """Debounced `pose.entered`: in after _ENTER_S of it, out after _EXIT_S without."""
+        now_in = self.pose.entered(person, sides)
+        if self.state == "waiting":
+            if not now_in:
+                self._entered_since = None
+                return False
+            if self._entered_since is None:
+                self._entered_since = t
+            if t - self._entered_since < _ENTER_S:
+                return False
+            self.state, self._out_since = "adjusting", None
+            return True
+        if now_in:
+            self._out_since = None
+            return True
+        if self._out_since is None:
+            self._out_since = t
+        if t - self._out_since < _EXIT_S:
+            return True  # a wobble, not a step out
+        # Out of the pose: start over, side and smoothing included.
+        self.state, self._entered_since, self._waiting_since = "waiting", None, t
+        self._tracks.clear()
+        return False

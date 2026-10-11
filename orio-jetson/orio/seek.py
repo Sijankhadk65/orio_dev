@@ -318,3 +318,14 @@ class Seeker:
         # answered when turns were hops of their own and their states went
         # nowhere: is the policy refusing to take the robot any NEARER.
         cruise.drain()
+
+
+def pivot(body, side: str, degrees: float) -> None:
+    """One measured pivot toward `side`, on its own rather than inside an approach.
+
+    The same turn `Seeker` makes — by angle with the IMU, a timed burst without
+    — wrapped in its own cruise, so the wheels are stopped when it returns. For
+    behaviours that only need to face something, like framing a person for yoga.
+    """
+    with body.cruise() as cruise:
+        Seeker(body, None)._turn(cruise, side, degrees)

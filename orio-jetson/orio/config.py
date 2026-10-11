@@ -637,6 +637,74 @@ VISION_DEBUG = _env("ORIO_VISION_DEBUG", "0").strip().lower() not in (
 VISION_DEBUG_FPS = int(_env("ORIO_VISION_DEBUG_FPS", "15"))
 
 
+# ── Pose (human keypoints, for the yoga assistant) ────────────────────────────
+# YOLO pose checkpoint: 17 COCO body keypoints per person. Same download rule
+# as YOLO_MODEL_PATH — a bare Ultralytics name auto-downloads into models/yolo/.
+# Point it at an exported `.engine` (TensorRT) on the Jetson for real-time rates;
+# ultralytics loads either from the same call.
+POSE_MODEL_PATH = Path(
+    _env("ORIO_POSE_MODEL", str(ROOT / "models" / "yolo" / "yolo11n-pose.pt"))
+)
+
+# Minimum confidence [0,1] for a person box to count at all.
+POSE_CONFIDENCE = float(_env("ORIO_POSE_CONFIDENCE", "0.5"))
+
+# Minimum confidence [0,1] for a single keypoint to be used. Below it the joint
+# is treated as not seen — an occluded knee the model guessed at must not turn
+# into a confident "bend your knee more".
+POSE_KEYPOINT_CONFIDENCE = float(_env("ORIO_POSE_KEYPOINT_CONFIDENCE", "0.5"))
+
+# How far (metres) a keypoint's depth may sit from the torso's before it is
+# discarded. Thin limbs at the silhouette edge often sample the wall behind the
+# person instead of the person; this drops those rather than letting a wrist
+# "be" 3 m away and wreck a 3-D angle. Wider than a body is thick, narrower
+# than the gap to the background in any sensible room.
+POSE_DEPTH_GATE_M = float(_env("ORIO_POSE_DEPTH_GATE_M", "0.6"))
+
+
+# ── Yoga coach (orio/yoga.py) ─────────────────────────────────────────────────
+# Seconds between spoken cues. Shorter than this and the person has no time to
+# act on one cue before the next arrives; a repeat of the SAME cue waits twice
+# as long, so a correction they are working on is not nagged.
+YOGA_CUE_INTERVAL_S = float(_env("ORIO_YOGA_CUE_INTERVAL_S", "4.0"))
+
+# Seconds to hold a pose once it is right, before "and release".
+YOGA_HOLD_S = float(_env("ORIO_YOGA_HOLD_S", "20"))
+
+# Time constant (s) of the smoothing on every measurement. Keypoints jitter a
+# few degrees frame to frame; unsmoothed, a joint sitting on a tolerance edge
+# would flip between right and wrong and the coach would chatter.
+YOGA_SMOOTHING_S = float(_env("ORIO_YOGA_SMOOTHING_S", "0.3"))
+
+# Depth difference (m) between the two shoulders beyond which a person meant to
+# face the camera is "turned". 2-D angles are only honest for a body square to
+# the camera, so this is checked before any of them. At shoulder width ~0.4 m,
+# 0.15 m is a turn of ~20 deg. Shoulders are torso, where depth is reliable —
+# unlike the limbs (see pose.py).
+YOGA_SQUARE_TOL_M = float(_env("ORIO_YOGA_SQUARE_TOL_M", "0.15"))
+
+# Framing (yoga.Framer), checked before any pose is coached. How far off
+# straight ahead (deg) the person may stand, and the distance window (m) the
+# keypoints are reliable in: nearer and limbs leave the frame, farther and the
+# person is too few pixels for the joints to land well. On the robot a standing
+# adult fit head to foot at 1.55 m.
+YOGA_CENTRE_DEG = float(_env("ORIO_YOGA_CENTRE_DEG", "12"))
+YOGA_MIN_DISTANCE_M = float(_env("ORIO_YOGA_MIN_DISTANCE_M", "1.3"))
+YOGA_MAX_DISTANCE_M = float(_env("ORIO_YOGA_MAX_DISTANCE_M", "3.0"))
+# While framing is not right and nothing about it changes, how often (s) Orio
+# brings it up again.
+YOGA_FRAMING_REMIND_S = float(_env("ORIO_YOGA_FRAMING_REMIND_S", "10"))
+
+# A debug window during yoga: the camera with the skeleton, every joint angle,
+# the session phase, framing problems and what the coach is working on. Off by
+# default (a window on the robot's panel, and drawing costs CPU) — set
+# ORIO_YOGA_DEBUG=1 in settings.json or .env to open it at startup.
+YOGA_DEBUG = _env("ORIO_YOGA_DEBUG", "0").strip().lower() not in (
+    "0", "false", "no", "off", ""
+)
+YOGA_DEBUG_FPS = int(_env("ORIO_YOGA_DEBUG_FPS", "15"))
+
+
 
 # ── Depth camera: Orbbec Gemini 336L ─────────────────────────────────────────
 # One USB3 camera for both depth and colour (orio/gemini.py). Depth is computed
@@ -1449,4 +1517,31 @@ About moving:
 - You CANNOT drive right now: your wheels aren't connected to you this time. \
 If asked to move, acknowledge the request warmly and say you can't move at the \
 moment. Do not pretend you moved, and do not promise to move in a minute.
+"""
+
+# Appended when the yoga tools bound this run (see llm.py), like DRIVE_PROMPT:
+# Orio only offers to coach when it really can.
+YOGA_PROMPT = """
+About yoga:
+- You can coach someone through three yoga poses — mountain, warrior two and \
+tree — with start_yoga. Coaching is part of what you do, not outside your scope.
+- Starting a session needs no announcement: call start_yoga, then reply with a \
+few words at most.
+- During a session you get "[Yoga camera update]" messages. They are what your \
+camera and pose measurements show, not words from the person. Answer each one \
+with exactly what you say to them out loud — one or two short, warm sentences, \
+like a good teacher standing beside them. Use the measured facts and the \
+teaching cue you are given; never invent a problem that was not measured.
+- First get them properly into view (whole body, near the middle, a good \
+distance, facing you). Only teach the pose once an update says they are in \
+view. If they are off to one side, you may call center_on_person to turn \
+toward them instead of asking them to move.
+- When the same correction comes up again, do not repeat yourself word for \
+word: say it another way, give one smaller step, or encourage them.
+- Once the pose has started you stay still. If they want you to move, stop the \
+session first.
+- If they mention pain, dizziness, or anything feeling wrong, call stop_yoga at \
+once, tell them to come out of the pose gently, and that stopping is always \
+fine. You are not a doctor or a yoga teacher: give no medical advice, and \
+suggest a professional if pain lasts.
 """
